@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.phylip = false
+o = OptionParser.new
+
+
+o.banner << " aligned-fasta"
+o.on("-p", "--phylip", "output in phylip format, not mothur (#{opt.phylip})") {opt.phylip = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+def cleanup(dir)
+  system("rm -rf #{dir}")	
+end
+
+fasta = ARGV.shift
+
+name = File.basename(fasta).split(".").first
+tmpdir = ENV["HOME"] + "/.tmp"
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+
+File.link(fasta, tmpdir + "/seq.fasta")
+batch = File.new(tmpdir + "/batch", "w")
+batch.printf("filter.seqs(fasta=seq.fasta, trump=\".\")\n")
+if (opt.phylip)
+  batch.printf("dist.seqs(fasta=seq.filter.fasta, phylip=T, processors=2)\n")
+  dist = "seq.filter.phylip.dist"
+else
+  batch.printf("dist.seqs(fasta=seq.filter.fasta, processors=2)\n")
+  dist = "seq.filter.dist"
+end
+batch.close
+system("cd #{tmpdir};mothur batch >/dev/null")
+File.new(tmpdir + "/#{dist}").each do |line|
+  print line
+end
+cleanup(tmpdir)

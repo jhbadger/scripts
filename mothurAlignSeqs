@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+opt.template=ENV["HOME"] + "/lib/mothur/silva/alignment/silva.bacteria.fasta"
+
+o.banner << " fasta"
+o.on("-t ", "--template ", String, 
+  "template for alignment (#{opt.template})") {|t| opt.template = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+def cleanup(dir)
+  system("rm -rf #{dir}")	
+end
+
+fasta = ARGV.shift
+if (opt.template !~/^\//)
+  opt.template = ENV["PWD"] + "/" + opt.template
+end
+
+name = File.basename(fasta).split(".").first
+tmpdir = ENV["HOME"] + "/.tmp"
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+
+File.link(fasta, tmpdir + "/seq.fasta")
+batch = File.new(tmpdir + "/batch", "w")
+batch.printf("align.seqs(candidate=seq.fasta, template=#{opt.template}, flip=T, processors=2)")
+batch.close
+system("cd #{tmpdir};mothur batch >/dev/null")
+File.new(tmpdir + "/seq.align").each do |line|
+  print line
+end
+cleanup(tmpdir)

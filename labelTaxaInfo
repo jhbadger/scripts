@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " taxa-list tree-info"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+taxa, info = ARGV
+
+qHash = Hash.new
+File.new(taxa).each {|line|
+  qHash[line.chomp] = true
+}
+
+File.new(info).each {|line|
+  fields = line.chomp.split("\t")
+  if (fields[2] == "r" && (qHash[fields[3]] || fields[3]=~/^Broad/ || fields[3]=~/Contig/))
+    fields[2] = "q"
+    fields.each {|field|
+      print field + "\t"
+    }
+    printf("\n")
+  else
+    print line
+  end
+}

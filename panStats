@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " matrix"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+matrix, rest = ARGV
+
+counts = Hash.new
+lines = Hash.new
+
+File.new(matrix).each {|line|
+  next if line =~/^#/
+  fields = line.chomp.split("\t")
+  genome, prot = fields.shift, fields.shift
+  num = fields.to_s.count("1")
+  counts[num] = 0 if (!counts[num])
+  lines[num] = "" if (!lines[num])
+  counts[num] += 1
+  lines[num] += line
+}
+
+sum = 0
+counts.values.each {|v|
+  sum += v
+}
+
+counts.keys.sort.each {|num|
+  out = File.new(File.basename(matrix,".matrix") + "_#{num}.txt", "w")
+  out.print lines[num]
+  out.close
+  printf("%2d: %d (%d%%)\n", num, counts[num], counts[num]*100/sum)
+}

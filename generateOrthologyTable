@@ -1,0 +1,88 @@
+#!/usr/bin/env ruby
+
+lineEnd = "\n"
+colSep = "\t"
+
+latex = false
+all = false
+
+if (ARGV.first == "-latex")
+  ARGV.shift
+  latex = true
+  lineEnd = "\\\\\n"
+  colSep = " & "
+end
+
+if (ARGV.first == "-all")
+  ARGV.shift
+  all = true
+end
+
+if (ARGV.size != 4)
+  STDERR.printf("usage: [-latex] [-all] %s orf-list recip-file fasta1 fasta2\n", $0)
+  exit(1)
+end
+
+orfs, recip, fasta1, fasta2 = ARGV
+
+orfdesc1 = Hash.new
+File.new(fasta1).each {|line|
+  if (line =~/^>/)
+    name, rest = line[1..line.length].chomp.split(" ", 2)
+    rest, junk = rest.split("{") if rest.index("{")
+    orfdesc1[name] = rest
+  end
+}
+
+orfdesc2 = Hash.new
+File.new(fasta2).each {|line|
+  if (line =~/^>/)
+    name, rest = line[1..line.length].chomp.split(" ", 2)
+    rest, junk = rest.split("{") if rest.index("{")
+    orfdesc2[name] = rest
+  end
+}
+
+seen = Hash.new
+File.new(orfs).each {|line|
+  seen[line.chomp] = 1
+}
+
+countYes = 0
+countNo = 0
+if (latex)
+  printf("\\begin{table}\n\\begin{center}\n")
+  printf("\\begin{tiny}\n")
+  printf("\\begin{tabular}{cccl}\n")
+  printf("\\hline \\hline\n")
+  printf("{\\em Caulobacter} & {\\em Hyphomonas} & P-value & Function")
+  printf("\\hline\n") 
+end
+
+File.new(recip).each {|line|
+  name, match, p1, p2, ortholog = line.chomp.split("\t") 
+  match, rest = match.split("-") if (match.index("-TG"))
+  next if (!seen[name])
+  if (ortholog == "yes" || all)
+    countYes += 1
+    printf ("*") if (ortholog != "yes")
+    printf("%s#{colSep}%s#{colSep}%s#{colSep}%s#{colSep}%s#{lineEnd}",
+	   name, match, p1, orfdesc1[name], orfdesc2[match])
+  else
+    countNo += 1
+    printf("%s#{colSep}--#{colSep}--#{colSep}%s#{colSep}%s#{lineEnd}",
+	   name, orfdesc1[name], orfdesc2[match])
+  end
+}
+if (latex)
+  printf("\\hline\n\\end{tabular}\n")
+  printf("\\end{tiny}\n")
+  printf("\\end{center}\n")
+  printf("\\caption{The #{countYes} proteins shared by {\\em C. crescentus}\n")
+  printf("and {\\em H. neptunium} and the #{countNo} proteins not shared.\n")
+  printf("Orthology was determined by best reciprocal BLASTP \\citep{Gish2004}\n")
+  printf("matches -- {\\em C. crescentus} proteins without an ortholog don't\n")
+  printf("necessarily lack a homolog in {\\em H. neptunium} -- \n")
+  printf("there could exist a better match of that homolog to another {\\em C. crescentus} protein.}\n") 
+  printf("\\label{}\n\\end{table}\n")
+end

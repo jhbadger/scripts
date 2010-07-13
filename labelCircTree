@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'McCrowTree'
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+opt.title = ""
+opt.highlight = nil
+
+o.banner << " tree tax.txt"
+o.on("-h ", "--highlights ", String, 
+  "file with taxa to highlight") {|h| opt.highlight = h}
+o.on("-t ", "--title ", String, 
+  "tree title (#{opt.title})") {|t| opt.title = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+highlights = Hash.new
+if (opt.highlight)
+  File.new(opt.highlight).each do |line|
+    name = line.chomp.split(" ").first
+    highlights[name] = true
+  end
+end
+
+
+tree, tax = ARGV
+
+tax = loadTax(tax)
+colors = makeColors(tax)
+info = makeInfo(tree, tax, colors, highlights)
+svg = addLegend(info, colors, opt.title)
+system("svg2pdf #{svg} > #{svg.gsub('svg','pdf')}")

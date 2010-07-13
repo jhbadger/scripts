@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'net/ssh'
+
+remote = ENV["GIT_REMOTE"]
+name = ENV["PWD"].split("/").last
+
+if (File.exist?(".git"))
+  STDERR << "You already have a git repository here.\n"
+  exit(1)
+end
+
+if (remote =~/([A-Z|a-z|0-9]*)\@([^\/]*)(\/.*)/)
+  user, server, dir = $1, $2, $3
+  Net::SSH.start(server, user) do |ssh|
+    ssh.exec("cd #{dir}; mkdir #{name}.git; cd #{name}.git; git init --bare")
+  end
+end
+system("git init;git add .")
+system("git commit -m \"initial commit\"")
+system("git remote add origin #{remote}#{name}.git")
+system("git config branch.master.remote origin")
+system("git config branch.master.merge refs/heads/master")
+system("git push --all")

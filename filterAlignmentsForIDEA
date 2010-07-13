@@ -1,0 +1,87 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+opt = OpenStruct.new
+
+opt.minSize = 0.9
+opt.maxSize = 1.1
+opt.align = false
+
+ARGV.options {|opts|
+  opts.banner << " prot-aln [prot-aln...]"
+  opts.on("-a", "--align", 
+          "align sequences (#{opt.align})") {|t| opt.align = t}
+  opts.on("-m ", "--minSize ", Float, 
+          "minimum size of average allowed (#{opt.minSize})") {|t| opt.minSize = t}
+  opts.on("-x ", "--maxSize ", Float, 
+          "maximum size of average allowed (#{opt.maxSize})") {|t| opt.maxSize = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|aln|
+  seqs = Hash.new
+  dnas = Hash.new
+  total = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(aln)).each {|seq|
+    seqs[seq.entry_id] = seq.seq.gsub("-","")
+    total += seqs[seq.entry_id].length
+  }
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(aln.gsub("prot","dna"))).each {|seq|
+    dnas[seq.entry_id] = seq.seq.gsub("-","")
+  }
+  average = total / (1.0 * seqs.size)
+  outProt = File.new(aln.gsub("aln","fa"), "w")
+  outDNA = File.new(aln.gsub("aln","fa").gsub("prot","dna"), "w")
+  seqs.keys.sort.each {|key|
+    if (seqs[key].length > opt.maxSize*average || seqs[key].length < opt.minSize*average)
+      STDERR.printf("removing %s for length...\n", key)
+    else
+      if (seqs[key] && dnas[key])
+        outProt.print Bio::Sequence::AA.new(seqs[key]).to_fasta(key, 60)
+        outDNA.print Bio::Sequence::NA.new(dnas[key]).to_fasta(key, 60)
+      end
+    end
+  }
+  outProt.close
+  outDNA.close
+}
+
+if (opt.align)
+  list = File.new("list.txt", "w")
+  ARGV.each {|aln|
+    inf = aln.gsub("aln", "fa")
+    dna = inf.gsub("prot","dna")
+    daln = dna.gsub("fa","aln")
+    system("muscle -stable -in #{inf} -out #{aln}")
+    system("tranalign -asequence #{dna} -bsequence #{aln} -outseq #{daln}")
+    count = 0
+    length = 0
+    Bio::FlatFile.new(Bio::FastaFormat, File.new(daln)).each {|seq|
+      count += 1
+      length = seq.length
+    }
+    if (count > 5)
+      out = File.new(File.basename(daln, ".aln") + ".PAMLseq", "w")
+      out.printf(" %d %d\n", count, length)
+      File.new(daln).each {|line|
+        out.print line
+      }
+      out.close
+      list.printf("%s.PAMLseq\n", File.basename(daln, ".aln"))
+    end
+  }
+  list.close
+end

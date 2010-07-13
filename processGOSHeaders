@@ -1,0 +1,51 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " seq_combined_predictions.gz"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+reads = File.new("sequence_read.txt", "w")
+mates = File.new("read_mate.txt", "w")
+
+def processHeaders(header)
+  hash = Hash.new
+  fields = header.chomp.gsub("\""," ").split(" ")
+  hash["id"] = fields.shift.gsub(">","")
+  fields.each {|field|
+    name, value = field.split("=")
+    hash[name.gsub("/","")] = value
+  }
+  return hash
+end
+
+seen = Hash.new
+
+IO.popen("zgrep '>' #{ARGV[0]}", "r").each {|line|
+  hash = processHeaders(line)
+  read = hash["read_id"].gsub("JCVI_READ_", "")
+  lib = hash["library_id"].gsub("JCVI_LIB_","")
+  reads.printf("%s\t%s\t%d\n", hash["id"], lib, read)
+  if (hash["mate"] != "0" && !seen[read])
+    mates.printf("%d\t%d\n", read, hash["mate"])
+    seen[read] = true
+  end
+}
+
+reads.close
+mates.close

@@ -1,0 +1,11 @@
+
+require 'rubygems'
+require'bio'
+include Bio
+
+prot = ARGV.pop
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+   if (seq.definition =~/rpsB|S2|rpsC|S3|rpsD|S4|rpsE|S5|rpsF|S6|rpsG|S7|rpsH|S8|rpsI|S9|rpsJ|S10|rpsK|S11|rpsL|S12|rpsM|S13|rpsN|S14|rpsO|S15|rpsP|S16|rpsQ|S17|rpsR|S18|rpsS|S19|rplA|L1rplB|L2|rplC|L3|rplD|L4|rplE|L5|rplF|L6|rplG|L7|rplH|L8|rplI|L9rplJ|L10|rplK|L11|rplL|L12|rplM|L13|rplN|L14|rplO|L15|rplP|L16|rplQ|L17|rplR|L18|rplS|L19|rplT|L20|rplU|L21|rplV|L22|rplW|L23|rplX|L24|rpmA|L27/)
+     print seq
+end
+}

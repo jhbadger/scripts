@@ -1,0 +1,85 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.genomes = 8
+opt.core = 0.9
+opt.prob = 0.2
+opt.size = 1000
+
+ARGV.options {|opts|
+  opts.banner << " name"
+  opts.on("-c ", "--core percent ", Float, 
+          "percent of core protein (default #{opt.core})") {|t| opt.core = t}
+  opts.on("-g ", "--genomes ", Integer, 
+          "number of genomes (default #{opt.genomes})") {|t| opt.genomes = t}
+  opts.on("-p ", "--prob ", Float, 
+          "prob non-core will be conserved (default #{opt.prob})") {|t| opt.prob = t}
+  opts.on("-s ", "--size ", Integer, 
+          "number of genes in genome (default #{opt.size})") {|t| opt.size = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+name = ARGV.shift
+
+genomes = []
+
+gname = "A"
+opt.genomes.times {
+  genomes.push(gname.dup)
+  gname.succ!
+}
+
+matrix = Hash.new
+genomes.each {|genome|
+  gene = genome + "_ORF00001"
+  opt.size.times {
+    matrix[gene] = Hash.new
+    if (rand(1000) < opt.core*1000)
+      core = true
+    else
+      core = false
+    end
+    genomes.each {|gen2|
+      if (core || genome == gen2)
+        matrix[gene][gen2] = "1"
+      elsif rand(1000) < opt.prob*1000
+        matrix[gene][gen2] = "1"
+      else
+        matrix[gene][gen2] = "0"
+      end
+    }
+    gene.succ!
+  }
+}
+
+out = File.new(name + ".matrix", "w")
+
+
+out.printf("#\t\t")
+genomes.each {|genome|
+  out.printf("%s\t", genome)
+}
+out.printf("\n")
+
+matrix.keys.sort.each {|protein|
+  genome, prot = protein.split("_")
+  next if (!genomes.include?(genome))
+  out.printf("%s\t%s\t", genome, prot.upcase)
+  genomes.each {|genome|
+    out.printf("%s\t",matrix[protein][genome])
+  }
+  out.printf("\n")
+}
+out.close

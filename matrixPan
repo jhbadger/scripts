@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Btab'
+opt = OpenStruct.new
+
+opt.evalue = 1e-5
+opt.threshold = 0
+
+ARGV.options {|opts|
+  opts.banner << " btab-file"
+   opts.on("-e ", "--evalue ", Float, 
+          "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
+  opts.on("-t ", "--threshold ", Integer, 
+          "set minimum ORF length (default #{opt.threshold})") {|t| opt.threshold = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+hit = Hash.new
+genomes = Hash.new
+
+Btab.new(ARGV[0]).each {|query|
+  orf, genome = query.name.split("-",2)
+  next if (query.length < opt.threshold)
+  genomes[genome] = true
+  hit[query.name] = Hash.new if hit[query.name].nil?
+  query.matches.each {|match|
+    next if match.evalue > opt.evalue
+    morf, mgenome = match.name.split("-",2)
+    next if (mgenome.nil?)
+    genomes[mgenome] = true
+    hit[match.name] = Hash.new if hit[match.name].nil?
+    hit[query.name][mgenome] = true
+    hit[match.name][genome] = true
+  }
+}
+
+printf("#\t")
+genomes.keys.sort.each {|genome|
+  printf("\t%s", genome)
+}
+printf("\n")
+
+genomes.keys.sort.each {|genome|
+  hit.keys.sort.each {|prot|
+    orf, gen = prot.split("-",2)
+    next if gen != genome
+    printf("%s\t%s\t", genome, orf)
+    genomes.keys.sort.each {|genome2|
+      if (hit[prot][genome2])
+        printf("%d\t",1)
+      else
+        printf("%d\t",0)
+      end
+    }
+    printf("\n")
+  }
+}

@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+
+Dir.glob("*.blastp").each {|file|
+  report = Bio::Blast::WU::Report.open(file, "r").each {|query|
+    queryScore = nil
+    queryName =  query.query_def.split(" ").shift
+    hits = []
+    query.each {|hit|
+     score = hit.score.to_i
+      if (queryScore.nil?)
+	queryScore = score
+	printf("%s %d\t", queryName, score)
+      elsif (score > queryScore*0.1)
+	hitName = hit.definition.split(" ").shift
+	printf("%s %d\t", hitName, score)
+      end
+    }
+  }
+  printf("\n")
+}

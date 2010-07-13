@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+# provides some information about a genome
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s .1con-file .seq-file\n", $0)
+  exit(1)
+end
+
+genome, coding = ARGV
+
+totGenSize = 0
+FlatFile.new(FastaFormat, File.new(genome)).each {|seq|
+  printf("---%s---\n", seq.definition)
+  printf("Length: %d (%8.1f megabases)\n", seq.length, seq.length / 1.0e6)
+  printf("GC:     %d%%\n", Sequence::NA.new(seq.seq).gc)
+  totGenSize += seq.length
+}
+
+printf ("----\n")
+geneCount = 0
+totCoding = 0
+conservedHypo = 0
+hypo = 0
+assigned = 0
+FlatFile.new(FastaFormat, File.new(coding)).each {|seq|
+  if (seq.definition =~ /conserved hypothetical/)
+    conservedHypo += 1
+  elsif (seq.definition =~ /hypothetical/ || seq.definition =~/unnamed/ || seq.definition =~ /unknown/)
+    hypo += 1
+  else
+    assigned += 1
+  end
+  geneCount += 1
+  totCoding += seq.length
+}
+
+printf("Total Gene Number:         %d\n", geneCount)
+printf("Average Gene Length     :  %d\n", totCoding / (1.0*geneCount))
+printf("Percent of Genome Coding:  %3.1f%%\n", (totCoding*100.0) / totGenSize)
+printf("Percent of conserved hypotheticals:  %3.1f%%\n", (conservedHypo*100.0) / geneCount)
+printf("Percent of hypotheticals:  %3.1f%%\n", (hypo*100.0) / geneCount)
+printf("Percent of proteins with assigned function:  %3.1f%%\n", (assigned*100.0) / geneCount)

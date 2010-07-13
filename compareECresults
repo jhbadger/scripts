@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s prot.fasta EC.out\n", $0)
+  exit(1)
+end
+
+prot, ecout = ARGV
+
+ann = Hash.new
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  if (seq.definition =~/\[EC:([^]]*)\]/)
+    ecs = $1.split(" ")
+    name = seq.definition.split(" ").first
+    ann[name] = ecs
+  end
+}
+
+missed = []
+hit = 0
+miss = 0
+File.new(ecout).each {|line|
+  name, ec = line.split("\t")
+  next if ann[name].nil?
+  if (ann[name].include?(ec))
+    hit += 1
+  else
+    miss += 1
+    missed.push([name, ann[name], ec])
+  end
+}
+
+printf("accuracy is %3.1f%%\n", hit * 100.0 / (hit + miss))
+missed.each {|miss|
+  p miss
+}

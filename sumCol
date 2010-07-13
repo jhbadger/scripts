@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby 
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.csv = false
+opt.delimiter = " "
+
+ARGV.options {|opts|
+  opts.banner << " col file"
+  opts.on("-c", "--csv", "Parse using csv library (default #{opt.csv})") {|t| opt.csv = t}
+  opts.on("-d ", "--delimiter ", String, 
+          "delimiter character (default \"#{opt.delimiter}\")") {|t| opt.delimiter = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+col, file = ARGV
+col = col.to_i
+total = 0
+name = nil
+
+opt.delimiter = "\t" if opt.delimiter == "\\t"
+
+if (opt.csv)
+  require 'csv'
+  CSV.foreach(file) {|fields|
+    name = fields[col] if name.nil?
+    total += fields[col].to_f if (!fields[col].nil?)
+  }
+else
+  File.new(file).each {|line|
+    fields = line.chomp.split(opt.delimiter)
+    name = fields[col] if name.nil?
+    total += fields[col].to_f if (!fields[col].nil?)
+  }
+end
+
+printf("Sum of %s is %s\n", name, total)
+
+
+

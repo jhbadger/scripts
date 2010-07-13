@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " dir [...dir...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, rest = ARGV

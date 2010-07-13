@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ZFile'
+
+$VERBOSE = nil
+
+ARGV.options {|opts|
+  opts.banner << " SSUarb.txt[.bz2]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+
+def unAlign(name, seq)
+  return ">#{name}\n#{seq.gsub(".","").gsub("-","").gsub(Regexp.new(".{1,60}"), "\\0\n")}"
+end
+
+def align(name, seq)
+  return ">#{name}\n#{seq.gsub(".","-").gsub(Regexp.new(".{1,60}"), "\\0\n")}"
+end
+
+name = ""
+seq = ""
+tax = ""
+ali = File.new("SSU.afa", "w")
+unali = File.new("SSU.fa", "w")
+taxList = File.new("tax.txt", "w")
+
+STDERR.printf("Loading seqs...\n")
+ZFile.new(ARGV[0]).each {|line|
+  if line =~/\tname/
+    unali.print unAlign(name, seq) if (seq != "")
+    ali.print align(name, seq) if (seq != "")
+    taxList.printf("%s %s\n", name, tax)
+    name = line.split("\"")[1]
+    tax = ""
+  elsif line =~/\tdata/
+    seq = line.split("\"")[1]
+  elsif line =~/tax_embl/
+    tax += line.split("\"")[1]
+  end
+}
+

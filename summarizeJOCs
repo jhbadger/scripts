@@ -1,0 +1,80 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'DBwrapper'
+require 'rsruby'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+o.banner << " joc_cluster_members.txt tigr_paralogous.txt"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+phylodb = MySQL.new("mysql-lan-pro","phylodb", "apis", "apis_user")
+r = RSRuby.instance
+
+joc, tigr = ARGV
+
+clusters = Hash.new
+orgs = Hash.new
+File.new(joc).each do |line|
+  pep, cluster = line.chomp.split("\t")
+  j, org, num = pep.split("|")
+  org.gsub!("_bd","")
+  clusters[cluster] = [] if clusters[cluster].nil?
+  orgs[cluster] = [] if orgs[cluster].nil?
+  clusters[cluster].push(pep)
+  orgs[cluster].push(org) if !orgs[cluster].include?(org) 
+end
+
+tigrc = Hash.new
+tigr_org = Hash.new
+File.new(tigr).each do |line|
+  fields = line.chomp.split("\t")
+  cluster = fields[7]
+  pep = fields[1]
+  next if cluster == "" || cluster.nil? || cluster == "TIGR_fam"
+  j, org, num = pep.split("|")
+  org.gsub!("_bd","")
+  tigrc[cluster] = [] if tigrc[cluster].nil?
+  tigr_org[cluster] = [] if tigr_org[cluster].nil?
+  tigrc[cluster].push(pep)
+  tigr_org[cluster].push(org) if !tigr_org[cluster].include?(org) 
+end
+
+sizes = clusters.keys.collect{|x| clusters[x].size}
+org_sizes = orgs.keys.collect{|x| orgs[x].size}
+r.pdf(joc+".pdf")
+r.hist(sizes, :main=>"Phytax JOC Clusters", :xlim=>r.range(0,20), :ylim=>r.range(0,20000),
+:ylab=>"Counts", :xlab=>"Cluster Size", :col=>"lavender")
+r.dev_off.call
+r.pdf(joc + "_org_sizes.pdf")
+r.hist(org_sizes, :main=>"Phytax Organisms in JOC", :xlim=>r.range(2,14), :ylim=>r.range(0,20000),
+:ylab=>"Counts", :xlab=>"Number of Organisms", :col=>"lavender")
+r.dev_off.call
+
+sizes = tigrc.keys.collect{|x| tigrc[x].size}
+org_sizes = tigr_org.keys.collect{|x| tigr_org[x].size}
+#sizes.reject!{|x| x > 15}
+r.pdf(tigr+".pdf")
+r.hist(sizes, :main=>"Tigr Paralogous Clusters",:ylim=>r.range(0,3000),:xlim=>r.range(1, 11),
+:ylab=>"Counts", :xlab=>"Cluster Size", :col=>"lavender")
+r.dev_off.call
+r.pdf(tigr + "_org_sizes.pdf")
+r.hist(org_sizes, :main=>"Phytax Organisms in Tigr Paralogous Clusters",:ylim=>r.range(0,6000),
+:xlim=>r.range(1,15),:ylab=>"Counts", :xlab=>"Number of Organisms", :col=>"lavender")
+r.dev_off.call
+
+

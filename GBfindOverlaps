@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.count = 20
+ARGV.options {|opts|
+  opts.banner << " genome.gb"
+  opts.on("-c ", "--count ", Integer, 
+          "minimum length for reported overlap (#{opt.count})") {|t| opt.count = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+gb, rest = ARGV
+
+FlatFile.new(GenBank, File.new(gb)).each {|entry|
+  lenMap = []
+  nameMap = []
+  func = Hash.new
+  bogus = Hash.new
+  entry.features.each {|feat|
+    if (feat.feature == "CDS" || feat.feature =~/RNA/)
+      name, product = feat.assoc["gene"], feat.assoc["product"]
+      func[name] = product
+      if (feat.position =~/[complement\(]*([0-9]*)..([0-9]*)/)
+        start, stop = $1.to_i, $2.to_i
+        len = 1 + (stop - start)
+        count = 0
+        start.upto(stop) {|i|
+          if (!lenMap[i].nil?)
+            if (lenMap[i] < len)
+              count += 1
+              if (!bogus[nameMap[i]] && count > opt.count)
+                bogus[nameMap[i]] = true
+                STDERR.printf("%s: %s is bogus! (%s: %s is real)\n", 
+                              nameMap[i], func[nameMap[i]], name, func[name])
+                
+              end
+            elsif (lenMap[i] > len)
+              count += 1
+              if (!bogus[name] && count > opt.count)
+                bogus[name] = true
+                STDERR.printf("%s: %s is bogus! (%s: %s is real)\n", 
+                              name, func[name], nameMap[i], 
+                              func[nameMap[i]])
+                
+              end
+              lenMap[i] = len
+              nameMap[i] = name
+            end
+          else
+            lenMap[i] = len
+            nameMap[i] = name
+          end 
+        }
+      end
+    end
+  }
+}

@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+$VERBOSE = nil
+opt.gap = 3
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " ortho-pairs.fasta"
+  opts.on("-g ", "--gap ", Integer, 
+	  "residues near gap to ignore (#{opt.gap})") {|t| opt.gap = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, rest = ARGV
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  s = seq.seq
+  pos = s.index("-")
+  while(!pos.nil?)
+    (pos - opt.gap).upto(pos + opt.gap) {|i|
+      if ((!s[i].nil?) &&  s[i] > 65)
+	s[i] = s[i].chr.downcase
+      end
+    }
+    pos = s.index("-", pos + 1)
+  end
+  print s.to_fasta(seq.definition, 60)
+} 
+
+

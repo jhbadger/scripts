@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s index idfile\n", $0)
+  exit(1)
+end
+
+index, id_file = ARGV
+
+require 'rubygems'
+require'bio'
+index = Bio::FlatFileIndex.new(index)
+File.new(id_file).each {|line|
+  print index.get_by_id(line.chomp!)
+}
+

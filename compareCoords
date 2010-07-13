@@ -1,0 +1,109 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s orf-coords labeled-coords\n", $0)
+  exit(1)
+end
+
+orf, label = ARGV
+
+class Orf
+  attr :name
+  attr :desc
+  attr :start
+  attr :stop
+  def initialize(name, desc, start, stop)
+    @name = name.split(" ").collect{|x| x + " "}.to_s.chop
+    @desc = desc.split(" ").collect{|x| x + " "}.to_s.chop
+    @start = start.to_i
+    @stop = stop.to_i
+  end
+  def midPoint
+    return (@start + @stop) / 2
+  end
+  def to_s
+    return sprintf("%s %d %d %s %s\n", @name, @start, @stop, 
+		   @desc, strand)
+  end
+  def max
+    return [@start, @stop].max
+  end
+  def min
+    return [@start, @stop].min
+  end
+  def size
+    return (max - min) + 1
+  end
+  def strand
+    if (@start < @stop)
+      return "+"
+    else
+      return "-"
+    end
+  end
+  def compare(orf)
+    response = ""
+    score = 0
+    if (min < orf.min && max < orf.min)
+      if (orf.strand == "+")
+	response = "upstream #{orf.min - max} bases of"
+	score = 25
+      else	
+	response = "downstream #{orf.min - max} bases of"
+	score = 10
+      end
+    elsif (min > orf.max && max > orf.max)
+      if (orf.strand == "-")
+	response = "upstream #{min - orf.max} bases of"
+	score = 25
+      else	
+	response = "downstream #{min - orf.max} bases of"
+	score = 10
+      end
+    elsif (min >= orf.min && max <= orf.max)
+      response = "included in"
+      score = 50
+    elsif (min <= orf.min && max >= orf.min)
+      response = "3' overlaps #{100 * (max - (orf.min - 1)) / size}%"
+      score = 50
+    elsif (min <= orf.max && max >= orf.max)
+      response = "5' overlaps #{100 * (orf.max - (min - 1)) / size}%"
+      score = 50
+    end
+    if (response == "")
+      STDERR.printf("Help! How do I compare #{to_s} and #{orf.to_s}?")
+      exit(1)
+    end
+    return "#{name} #{response} #{orf.name} #{orf.desc}", score
+  end
+end
+
+orfs = []
+File.new(orf).each {|line|
+  name, start, stop, gc, desc = line.chomp.split(" ", 5)
+  desc.gsub!("NULL","")
+  orfs.push(Orf.new(name, desc, start, stop))
+}
+labels = []
+File.new(label).each {|line|
+  name, start, stop, desc = line.chomp.split(" ", 4)
+  labels.push(Orf.new(name, desc, start, stop))
+}
+
+combined = (labels + orfs).sort{|x, y| x.midPoint <=> y.midPoint}
+
+
+1.upto(combined.size - 2) {|i|
+  orf = combined[i]
+  prev = combined[i - 1]
+  aft = combined[i + 1]
+  if (labels.include?(orf))
+    b, bscore = orf.compare(prev)
+    n, nscore = orf.compare(aft)
+    if (nscore > bscore)
+      print n + "\n"
+    else
+      print b + "\n"
+    end
+  end
+}

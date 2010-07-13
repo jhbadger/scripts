@@ -1,0 +1,106 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+@file = nil
+
+ARGV.options {|opts|
+  opts.banner << " gff fasta"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+file, fasta = ARGV
+seq = Hash.new
+name = File.basename(file, ".gff")
+gff = Bio::GFF.new(File.new(file))
+start = false
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|s|
+  seq[s.entry_id] = Bio::Sequence::NA.new(s.seq)
+}
+
+tiling = File.new(name + "_tiling_instr.txt", "w")
+tilingseq = File.new(name + "_tiling_seq.txt", "w")
+gene = File.new(name + "_gene_instr.txt", "w")
+geneseq = File.new(name + "_gene_seq.txt", "w")
+tiling.printf("name\talias\tstart\tend\tstartSeq\tendSeq\tdatabase\torganism\tversion\tchrName\tchrOffset\tlength\tstrand\n")
+ gene.printf("name\tdatabase\talias\tstart\tend\tstartSeq\tendSeq\tdescription\n")
+
+id = nil
+records = Hash.new
+seen = Hash.new
+gff.records.each {|record|
+  next if record.feature.nil?
+  if record.feature == "gene" || record.feature == "exon"
+    nm = record.attributes["name"] 
+    records[nm] = [] if records[nm].nil?
+    if (record.end.to_i - record.start.to_i >= 25)
+      records[nm].push([record.seqname, record.start, record.end, 
+                          record.strand, record.feature])
+      seen[record.seqname] = true
+    end
+  end
+}
+records.keys.sort.each {|key|
+  exnum = 1
+  nm = key + "." + exnum.to_s  
+  subseq = nil
+  records[key].each {|record|
+    db, s, e, strand, feature = record
+    if (feature == "gene")
+      subseq = seq[db].subseq(s.to_i, e.to_i)
+      subseq.reverse_complement! if (strand == "-")
+      geneseq.print subseq.to_fasta(key, 60)
+    end
+  }
+  
+  records[key].each {|record|  
+    db, s, e, strand, feature = record
+    if (feature == "exon" || (feature == "gene" && records[key].size == 1))
+      exon = seq[db].subseq(s.to_i, e.to_i)
+      exon.reverse_complement! if (strand == "-")
+      pos = subseq.index(exon.seq)
+      if (pos.nil?)
+        STDERR.printf("%s in %s has a problem\n", key, db)
+        next
+      end
+      s = 1 + pos
+      e = s + exon.length - 1
+      if (e > 7)
+        ss = subseq.subseq(s, s + 7)
+        se = subseq.subseq(e - 7, e)
+        gene.printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n", 
+                    key, db, nm, s, e, ss.seq, se.seq)
+        exnum += 1
+        nm = key + "." + exnum.to_s
+      end
+    end 
+  }
+}
+
+seq.keys.sort.each {|n|
+  next if !seen[n]
+  tilingseq.print seq[n].to_fasta(n, 60)
+  ss = seq[n].subseq(1, 8)
+  se = seq[n].subseq.subseq(seq[n].length - 7, seq[n].length)
+  tiling.printf("%s\t%s\t1\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, n, 
+                seq[n].length, ss.seq, se.seq, "", name, 1, n, 0, 
+                seq[n].length,"fwd") 
+}
+
+
+tiling.close
+tilingseq.close
+gene.close
+geneseq.close

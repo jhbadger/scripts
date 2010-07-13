@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+$VERBOSE=nil
+opt.project = nil
+opt = OpenStruct.new
+
+
+ARGV.options {|opts|
+  opts.banner << " frg-file [frg-file...]"
+  opts.on("-p ", "--project ", Integer, "project") {|t| opt.project = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+if (opt.project.nil?)
+  STDERR.printf("You must have a project number\n")
+  exit(1)
+end
+
+cmd = "analyze_bactPCR_sample_consolidated.csh"
+pwd = ENV["PWD"]
+ARGV.each {|frg|
+  fileName = File.basename(frg, ".frg")
+  name = fileName.split("_")[2]
+  system("mkdir #{name};cp #{frg} #{name}")
+  rcmd = "runCmd -c \"#{cmd} #{name} #{fileName}\""
+  rcmd += " --project #{opt.project} -o #{name}.out -e #{name}.err --nowait"
+  system("cd #{pwd}/#{name};#{rcmd}")
+}

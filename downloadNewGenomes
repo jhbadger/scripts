@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'uri'
+require 'net/http'
+require 'net/ftp'
+require 'rubygems'
+require 'apis'
+
+if (ARGV.size < 1)
+  STDERR.printf("Usage: %s database\n", File.basename($0))
+  exit(1)
+end
+
+host = "mysql-lan-pro.jcvi.org"
+database = ARGV.pop
+
+db = MySQL.new(host, database, "jbadger", "plankton")
+
+STDERR.printf("Listing existing contigs...\n")
+contigs = Hash.new
+db.query("select name from contigs").each {|row|
+  contigs[row[0]] = true
+}
+
+
+ftp = Net::FTP.new("ftp.ncbi.nlm.nih.gov")
+ftp.login
+ftp.chdir("/genomes/Bacteria")
+STDERR.printf("Fetching ftp list...\n")
+files = ftp.nlst("*_*")
+STDERR.printf("Processing ftp list...\n")
+files.each {|file|
+   p file if file =~/NC_002115/
+  if (file =~/.gbk/)
+   
+    if (!contigs[File.basename(file, ".gbk")])
+      next if file =~/NC_004463.gbk/ # weird Bradyrhizobium
+      STDERR.printf("Downloading %s\n", file)
+      ftp.gettextfile(file)
+    end
+  end
+}  
+
+db.close

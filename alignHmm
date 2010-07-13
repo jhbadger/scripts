@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 2)
+  STDERR.printf("usage: %s hmm-model seq-file [seq-file...]\n", $0)
+  exit(1)
+end
+
+model = ARGV.shift
+
+ARGV.each {|file|
+  name = File.basename(file,"*.fas")
+  system("hmmalign #{model} '#{file}' > '#{name}.align'")
+}

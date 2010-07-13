@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " list"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+list, rest = ARGV
+
+File.new(list).each {|line|
+  line.chomp!
+  dir = "/usr/local/projects/GOSII/ANNOTATION/#{line}/clr_range_filter_pep/"
+  dir = Dir.glob("#{dir}/*_default").first
+  pep = Dir.glob("#{dir}/meta*pep*.gz").first
+  STDERR.printf("%s\n", line)
+  system("gzcat #{pep} > #{line}.pep")
+}

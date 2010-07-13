@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+
+require 'MySQL'
+db = MySQL.new
+Protein.find(:all, :conditions =>"seq like '%J%'").each {|pep|
+  pep.seq = pep.seq.gsub("J","X")
+  pep.save
+}

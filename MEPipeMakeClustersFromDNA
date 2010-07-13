@@ -1,0 +1,51 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.code = 11
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-c ", "--code ", Integer, 
+	  "set genetic code (default #{opt.code})") {|t| opt.code = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dna, rest = ARGV
+
+seen = Hash.new
+FlatFile.new(FastaFormat, File.new(dna)).each {|seq|
+  name = seq.entry_id
+  id = name.split(".").last
+  if (!seen[id])
+    outSeq = File.new(id + ".seq", "w")
+    outPep = File.new(id + ".pep", "w")
+    seen[id] = true
+  else
+    outSeq = File.new(id + ".seq", "a")
+    outPep = File.new(id + ".pep", "a")
+  end
+  outSeq.print  seq.naseq.to_fasta(name, 60)
+  outSeq.close
+  outPep.print  seq.naseq.translate(1, opt.code).to_fasta(name, 60)
+  outPep.close
+}
+
+seen.keys.each {|id|
+  STDERR.printf("Aligning #{id}...\n")
+  system("muscle -clwstrict -in #{id}.pep -out #{id}.aln")
+}

@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s scaffolds.fasta\n", $0)
+  exit(1)
+end
+
+fasta = ARGV.shift
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  if (seq.length < 2000) 
+    print seq
+  else
+    first = Sequence::NA.new(seq.seq[0..999])
+    last = Sequence::NA.new(seq.seq[seq.length - 1000..seq.length - 1])
+    print first.to_fasta(seq.definition + "_first", 60)
+    print last.to_fasta(seq.definition + "_last", 60)
+  end
+}

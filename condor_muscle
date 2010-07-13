@@ -1,0 +1,47 @@
+#!/usr/bin/env perl
+
+use lib "/home/condor/production/request/lib";
+use TIGR::HTCRequest;
+use strict;
+
+(@ARGV == 2) || die ("usage: condor_muscle in-dir out-dir\n");
+
+my ($in, $out) = @ARGV;
+
+if (!-e($out)) {
+  system("mkdir $out");
+  system("chmod 666 $out");
+}
+
+my @arg_list;
+foreach my $file (glob("$in/*")) {
+  my @fields = split("/", $file);
+  my ($name, $rest) = split("[.]", pop(@fields));
+  push(@arg_list, 
+       "/home/jbadger/Projects/APIS/muscle -in $file -out $out/$name.afa");
+}
+
+###initial condor request
+my $request = TIGR::HTCRequest->new(group => "muscle");
+
+#### request: command
+$request->set_command("/home/jbadger/bin/condor_muscle");
+
+### request: argument
+$request->add_param({ value => \@arg_list, type => "ARRAY" });
+
+$request->set_initialdir($out);
+
+## request: keep current envirenment (keep setting for emboss etc.)
+$request->getenv(1);
+
+my $id = $request->submit();
+
+# wait for job finish
+print "Wait for all the processes to finish .......\n";
+$request->wait_for_request();
+
+
+
+
+

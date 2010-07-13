@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s seq.fasta\n", $0)
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+  print seq.seq.upcase.tr(".","-").to_fasta(seq.entry_id, 60)
+}

@@ -1,0 +1,38 @@
+#!/bin/sh
+# @(#) mac2unix Convert Apple Macintosh text files ---> unix text files
+#######################################
+# This UNIX script converts Apple Mac #
+# text files into unix text files via #
+# ASCII <Return> ---> <Line Feed>     #
+# character translation.              #
+#######################################
+echo "-------------------------------------"
+echo "Mac ---> unix file converter         "
+echo "USAGE: mac2unix file1 file2 file3 ..."
+echo "-------------------------------------"
+
+################################
+# Set trap to abort on signal: #
+################################
+trap 'echo "Interrupted by signal" >&2; exit' 1 2 3 15
+
+#####################################
+# Process command-line argument(s): #
+#####################################
+case $# in
+   0) # User forgot to enter a filename:
+     [ -t 0 ] && echo "USAGE: `basename $0` file1 file2 file3 ..." >&2 && exit 1 ;;
+   *) # Process input files:
+     for file in $*
+       do
+         if [ ! -r $file ]; then
+           echo "Cannot read input file \"$file\"" >&2 && exit 2
+         else
+           echo "Converting file \"$file\" ..."
+           /usr/bin/tr '\015' '\012' < "$file" > "tmp.$file"
+           mv "tmp.$file" "$file"
+         fi
+       done
+esac
+echo "... all done! "
+exit

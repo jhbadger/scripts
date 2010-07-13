@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s seq.fasta num-to-pick\n", $0)
+  exit(1)
+end
+
+file, num = ARGV
+
+num = num.to_i
+total = 0
+
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
+  total += 1
+}
+
+pick = Hash.new
+num.times {|i|
+  rnum = rand(total)
+  if (pick[rnum].nil?)
+    pick[rnum] = true
+  else
+    done = false	
+    while (!done)
+      rnum = rand(total)
+      if (pick[rnum].nil?)
+        pick[rnum] = true
+        done = true
+      end
+    end
+  end
+}
+
+total = 0
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
+  print seq if (pick[total])
+  total += 1
+}

@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'FastaDB'
+opt = OpenStruct.new
+
+opt.upLen = 800
+ARGV.options {|opts|
+  opts.banner << " fasta gff-file"
+  opts.on("-l ", "--length ", Integer, 
+          "upstream length (default #{opt.upLen})") {|t| opt.upLen = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, gff = ARGV
+
+firstEx = Hash.new
+File.new(gff).each {|line|
+  contig, method, feature, start, stop, gc, strand = line.split(" ")
+  next if (feature !~ /initial-exon|single-exon/)
+  firstEx[contig] = [] if (firstEx[contig].nil?)
+  firstEx[contig].push([start.to_i, stop.to_i, feature, strand])
+}
+
+FastaDB.new(fasta).each {|seq|
+  if (firstEx[seq.name])
+    firstEx[seq.name].each {|exon|
+      start, stop, feature, strand = exon
+      if (strand == "+")
+        next if (start - opt.upLen < 1)
+        upSeq = seq.naseq.seq[start - (1 + opt.upLen), opt.upLen].upcase
+      else
+        next if (stop + opt.upLen > seq.length)
+        upSeq = seq.naseq[stop + 1, opt.upLen].complement.upcase
+      end
+      print Sequence.new(upSeq).to_fasta(seq.name + "_" + start.to_s, 60)
+    }
+  end
+}

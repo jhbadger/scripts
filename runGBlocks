@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'Phylogeny'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " align.afa [align.afa...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|afa|
+  STDERR.printf("Your trimmed file is in %s\n", afa + ".gblocks") 
+  gblocks(afa + ".gblocks", afa)
+}

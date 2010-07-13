@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require 'optparse'    
+opt = OpenStruct.new
+
+
+opt.f = false
+opt.v = false
+
+ARGV.options {|opts|
+  opts.banner << " expression file"
+  opts.on("-f ", "--file ", String, 
+          "read list of ids to search from file") {|t| opt.f = t}    
+  opts.on("-v", "--inverse", "return lines not matching expression") {|t| opt.v = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+express, file = ARGV
+
+seen = Hash.new  
+if (opt.f)
+  file = express
+  express = false
+  File.new(opt.f).each {|line|
+    fields = line.split(" ")
+    seen[fields[0]] = true
+  }
+end
+
+File.new(file).each {|line|
+  if (express)
+    if (!opt.v)
+      print line if (line =~/#{express}/)
+    else
+      print line if (line !~/#{express}/)
+    end
+  else
+    fields = line.split(" ")
+    if (!opt.v)
+      print line if (seen[fields[0]])
+    else
+      print seq if (!seen[fields[0]])
+  end
+end
+}

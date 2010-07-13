@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'apis'
+opt = OpenStruct.new
+
+$VERBOSE = nil
+opt.all = false
+opt.f = false
+opt.storage = ""
+opt.host = "mysql-lan-pro"
+opt.group = ""
+
+ARGV.options {|opts|
+  opts.banner << " [dataset...dataset]"
+  opts.on("-a", "--all", "search all datasets in chosen storage") {|t| opt.all = t}
+  opts.on("-f ", "--file ", String, 
+           "read list of ids to search from file") {|t| opt.f = t}   
+  opts.on("-s ", "--storage ", String, "storage database") {|t| opt.storage = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+  opts.on("-t ", "--taxon ", String, "taxonomic group to limit to") {|t| opt.group = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1 && !opt.all)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+if (opt.storage == "")
+  STDERR.printf("A storage database must be specified\n")
+  exit(1)
+end
+
+storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
+
+
+if (opt.all)
+  storage.query("select dataset from dataset").each {|dataset|
+    ARGV.push(dataset[0])
+  }
+end
+
+seen = Hash.new  
+if (opt.f)
+  File.new(opt.f).each {|line|
+    seen[line.chomp] = true
+  }
+end
+
+ARGV.each {|dataset|
+  query = "SELECT classification.seq_name, sequence, "
+  query += "class, ord, family, genus, species FROM classification "
+  query += "INNER JOIN sequence ON classification.dataset = sequence.dataset "
+  query += "AND classification.seq_name = sequence.seq_name "
+  query += "WHERE classification.dataset = '#{dataset}' "
+  if (opt.group != "")
+    query += "AND (kingdom = '#{opt.group}' OR class = '#{opt.group}' OR ord = '#{opt.group}' "
+    query += "OR phylum = '#{opt.group}' "
+    query += "OR family = '#{opt.group}' OR genus = '#{opt.group}' OR species = '#{opt.group}') "
+  end
+  if (opt.f)
+    query += "AND classification.seq_name IN ("
+    seen.keys.sort.each {|key|
+      query += "'#{key}',"
+    }
+    query.chop!
+    query += ") "
+  end 
+  storage.query(query).each {|row|
+    name = row.shift
+    seq = row.shift
+    chl = row.shift
+    tax = chl + "_"
+    last = row.pop
+    while (last == "Mixed" || last == "Undefined" || last.nil? && !row.empty?)
+      last = row.pop
+    end
+    tax += last if !last.nil?
+    header = dataset + "_" + name + "_" + tax
+    print ">#{header}\n#{seq.gsub("*","").gsub(Regexp.new(".{1,60}"), "\\0\n")}"
+  }
+}

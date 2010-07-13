@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " hypho.pep_vs_newgha.pep.recip hypho.tex"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+recip, tex = ARGV
+
+tex = File.new(tex).read
+File.new(recip).each {|line|
+  old, hne = line.split(" ")
+  tex.gsub!(old, hne)
+}
+print tex
+
+

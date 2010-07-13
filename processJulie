@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Blast'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " julie-list dna-file conversion-table"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+julie, dna, table, rest = ARGV
+
+xref = Hash.new
+File.new(table).each {|line|
+  jul, norf = line.chomp.split("\t")
+  xref[jul] = norf.split("-").first
+}
+
+def writeOrf(orf, seq)
+  outName = orf.tr(">","")
+  out = File.new(outName + ".fasta", "w")
+  out.printf("%s\n%s\n", orf, seq)
+  out.close
+  return outName
+end
+
+def blastOrf(name, dna, seq)
+  blast = name + ".blast"
+  system("tblastn #{dna} #{name}.fasta -E1e-4 > #{blast} 2>/dev/null")
+  return blast
+end
+
+File.new(julie).each {|line|
+  task, rationale, orf, seq = line.chomp.split("\t")
+  if (task =~/extend|new ORF|delete/)
+    name = writeOrf(orf, seq)
+    blast = blastOrf(name, dna, seq)
+    Blast.new(blast).each {|query|
+      hit = query.firstHit
+      if (!hit.nil?)
+        start = hit.sstart.to_i
+        stop = hit.send.to_i
+        if (hit.strand == "+")
+          stop += 3 # add stop
+        else
+          stop -= 3 # add stop
+        end
+        if (task =~/new ORF/)
+          printf("%s\t%s\t%s\t%s\t%s\n", name,
+                 hit.name, start, stop, hit.strand)
+        elsif (task =~/extend|delete/)
+          printf("%s\t%s\t%s\t%s\t%s\toldId=%s\n", xref[name],
+                 hit.name, start, stop, hit.strand, name)
+        end
+      else
+        STDERR.printf("%s not found in genome!\n")
+      end
+    }
+  end
+}

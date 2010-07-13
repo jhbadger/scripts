@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s dna.gb [dna.gb...]\n", $0)
+  exit(1)
+end
+
+ 
+ARGV.each {|dna|
+  FlatFile.new(GenBank, File.new(dna)).each {|seq|
+    STDERR.print seq.accession + "\t" + seq.seq_len.to_s + "\t" 
+    STDERR.print seq.organism + "\t\t" +  "000" + "\t" + 
+      seq.taxonomy + "\t" + seq.date + "\t" + seq.date + "\tY" +
+      "\t" + "Chromosome" + "\t" + "\n"
+    seq.each_cds {|cds|
+      product, pid, pseq = nil, nil, nil
+      cds.qualifiers.each {|qualifier|
+	value, name = qualifier.value, qualifier.qualifier
+	product = value if (name == "product")
+	pid = value if (name == "locus_tag")
+	pseq = value if (name == "translation")
+      }
+      head = pid + " " + product + " {" + seq.organism + "}"
+      #head = seq.accession
+      print Sequence.new(pseq).to_fasta(head, 60)
+    }
+  }
+}
+

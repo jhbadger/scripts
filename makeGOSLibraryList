@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " pep [...pep]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|pep|
+  name = File.basename(pep, ".pep")
+  `grep ">" #{pep}`.split("\n").each {|line|
+    printf("%s\t%s\n", line.chomp.gsub(">",""), name)
+  }
+}

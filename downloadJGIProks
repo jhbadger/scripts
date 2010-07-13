@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+
+require 'uri'
+require 'net/http'
+require 'net/ftp'
+require 'rubygems'
+require 'httpclient'
+
+
+def getTax(species)
+  link = "http://www.ncbi.nlm.nih.gov"
+  link += "/sites/entrez?db=Taxonomy&cmd=search&term="
+  clnt = HTTPClient.new
+  species = species.gsub(" ","%20")
+  num = 0
+  clnt.get(link + species).body.content.split("\n").each {|line|
+    if (line =~/wwwtax.cgi\?id=([0-9]+)/)
+      num = $1
+    end
+  }
+  link = "http://www.ncbi.nlm.nih.gov"
+  link += "/Taxonomy/Browser/wwwtax.cgi?id="
+  tax = ""
+  return nil, nil if num == 0
+  clnt.get(link + num).body.content.split("TI").each {|line|
+    if line=~/TLE=\"([^\"]*)\">([^<]*)</
+      next if $2 == "cellular organisms"
+      tax += $2 + "; "
+    end
+  }
+  sleep 0.2
+  return num.to_i, tax
+end
+
+
+site = "ftp.jgi-psf.org"
+ftp = Net::FTP.new(site)
+ftp.login
+mainPath = "/pub/JGI_data/Microbial/"
+ftp.chdir(mainPath)
+STDERR.printf("Fetching ftp list...\n")
+files = ftp.nlst("*_*")
+STDERR.printf("Processing ftp list...\n")
+files.each {|file|
+  next if file < "y"
+  STDERR.printf file + "\n"
+  g, sp = file.gsub(".","").split("_")
+  item = g + " " + sp
+  dirs = ftp.nlst(file)
+  sleep 0.2
+  next if !dirs.grep(/Finished/).empty?
+  ftp.nlst(dirs.last + "/*.fsa").each {|f|
+    outName = file + "_" + File.basename(f)
+    if (!File.exist?(outName))
+      STDERR.printf("Downloading %s\n", file)
+      ftp.gettextfile(f, outName) 
+      sleep 0.2
+    end
+  }
+}  
+
+
+Dir.glob("*.fsa").each {|file|
+  File.new(file).each {|line|
+    if (line =~/organism=([A-Z|a-z|0-9|\ |\.]*)\]/)
+      org = $1
+      num, tax = getTax(org)
+      if (num.nil? || tax == "")
+        STDERR.printf("I can't process %s (%s) (tax %d)\n", org, file, num)
+      else
+        printf("%s\t%d\t%s\n", file, num, tax)
+      end
+      break
+    end
+  }
+}

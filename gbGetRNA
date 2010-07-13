@@ -1,0 +1,82 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.type = nil
+opt.one = nil
+ARGV.options {|opts|
+  opts.banner << " gb-file"
+  opts.on("-t ", "--type ", String, 
+          "set type of rRNA (5S, 16S, or 23S)") {|t| opt.type = t}
+  opts.on("-o", "--oneper", "only one seq per species") {|t| opt.one = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+def getSpec(organism, gb)
+  $VERBOSE = nil
+  if (organism == "")
+    if (gb =~/TG_([^\_]*)_/)
+      org = $1
+      `getdb #{org}`.each {|line|
+        if line =~/organism:/
+          o, g, s, e = line.split(" ")
+          s = e.tr("-","") if (s == "sp.")
+          organism = g + " " + s
+        end
+      }
+    end
+  end
+  g, s = organism.downcase.split(" ")
+  return g[0].chr + "_" + s
+end
+
+ARGV.each {|gb|
+  FlatFile.new(GenBank, File.new(gb)).each {|seq|
+    spec = getSpec(seq.organism, gb)
+    count = Hash.new
+    count["5S"] = 0
+    count["16S"] = 0
+    count["23S"] = 0
+    seq.features.each {|gene|
+      if (gene.feature == "rRNA")
+        if (gene.position =~/([0-9]*)\.\.([0-9]*)/)
+          start, stop = $1, $2
+          rseq = Sequence::NA.new(seq.seq[$1.to_i - 1..$2.to_i - 1])
+          rseq = rseq.complement if (gene.position =~/complement/)
+          if (rseq.length < 1000) 
+            rType = "5S"
+          elsif (rseq.length < 2000)
+            rType = "16S"
+          else
+            rType = "23S"
+          end
+        end
+        if (opt.type.nil? || opt.type == rType)
+          count[rType] += 1
+          if (!opt.one)
+            header = spec + "_" + rType + "_" + count[rType].to_s
+          else
+            header = spec
+          end
+          print rseq.to_fasta(header, 60)
+          break if (opt.one)
+        end
+      end
+    }
+  }
+}

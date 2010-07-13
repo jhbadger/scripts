@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s blast-dir fasta-file\n", $0)
+  exit(1)
+end
+
+dir, fasta = ARGV
+
+done = Hash.new
+Dir.glob(dir + "/*.blastp").each {|file|
+  name = File.basename(file, ".blastp")
+  done[name] = true if (!File.exists?(dir + "/" + name))
+}
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  name = seq.definition.split(" ").first
+  print seq if (!done[name])
+}

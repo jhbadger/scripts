@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+
+ARGV.options {|opts|
+  opts.banner << " html-align(converted-to-text)"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+align, rest = ARGV
+
+header = ""
+seq = ""
+species = nil
+File.new(align).each {|line|
+  if (line =~ /html&id=([^>]*)>\/([0-9]*)-([0-9]*)/)
+    header = $1 + "_" + $2 + "_" + $3
+  elsif (line.length > 60)
+    line.tr!("\t\*","")
+    line.tr!("\.","-")
+    print Sequence.new(line.chomp).to_fasta(header, 60)
+  else
+    header = line.chomp.tr(" ", "_") + " " + header
+  end
+}

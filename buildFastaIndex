@@ -1,0 +1,19 @@
+#!/usr/bin/env perl
+
+
+
+  use Bio::Index::Fasta; # using fasta file format
+  use strict; # some users have reported that this is necessary
+
+  ## Usage: build_fasta_index.pl -i input_fasta -o index_file
+  ## The input_fasta cannot be moved around after the index has been made  
+
+my %opt=@ARGV;
+my $in=$opt{'-i'};
+my $out=$opt{'-o'};
+
+ 
+  my $inx = Bio::Index::Fasta->new(
+      -filename => $out,
+      -write_flag => 1);
+  $inx->make_index($in);

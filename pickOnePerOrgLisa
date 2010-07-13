@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+
+if (ARGV.size != 1)
+  STDERR << "Usage: #{$0} fasta\n"
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+  name = seq.definition.split(": ").last
+  if (!seqs[name])
+    seqs[name] = seq
+  end
+}
+
+seqs.keys.sort.each {|key|
+  print seqs[key]
+}

@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'FastaDB'
+opt = OpenStruct.new
+
+opt.size = 10000
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-s ", "--splitSize ", Integer, 
+          "size to split on (default #{opt.size})") {|t| opt.size = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+seq, rest = ARGV
+
+FastaDB.new(seq).each {|seq|
+  0.step(seq.length, opt.size) {|i|
+    header = seq.name + "_" + (i + 1).to_s + "_" + (i + opt.size).to_s
+    print Sequence.new(seq.seq[i..i+opt.size - 1]).to_fasta(header, 60)
+  }
+}

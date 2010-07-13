@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+require 'Btab'
+
+if (ARGV.size != 2 && ARGV.size != 3)
+  STDERR.printf("usage: %s btab1 btab2 [pValue]\n", $0)
+  exit(1)
+end
+
+btab1, btab2, pValue = ARGV
+
+pValue = "0.1" if (pValue.nil?)
+pValue = pValue.to_f 
+
+hitName = Hash.new
+hitVal = Hash.new
+names = []
+
+Btab.new(btab1).each {|query|
+  names.push(query.name)
+  match = query.matches.first
+  if (match.name == "" || match.evalue > pValue)
+    hitName[query.name] = "xxx"
+    hitVal[query.name] = "xxx"
+  else
+    hitName[query.name] = match.name
+    hitVal[query.name] = match.evalue
+  end
+}
+
+Btab.new(btab2).each {|query|
+  match = query.matches.first
+  if (match.name == "" || match.evalue > pValue)
+    hitName[query.name] = "xxx"
+    hitVal[query.name] = "xxx"
+  else
+    hitName[query.name] = match.name
+    hitVal[query.name] = match.evalue
+  end
+}
+
+names.sort.each {|name|
+  if (hitName[hitName[name]] == name)
+    bestR = "yes"
+  else
+    bestR = "no"
+  end
+  printf("%s\t%s\t%s\t%s\t%s\n", name, hitName[name], hitVal[name],
+	 hitVal[hitName[name]], bestR)  
+}

@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size != 2)
+  STDERR << "Usage: #{File.basename($0)} fasta tax\n"
+  exit(1)
+end
+
+fasta, tax = ARGV
+
+tx = Hash.new
+sp = Hash.new
+
+STDERR << "Loading tax...\n"
+File.new(tax).each do |line|
+  name, t = line.chomp.split(" ", 2)
+  next if t.nil? || t.index(";").nil?
+  levels = t.split(";")
+  tx[name] = ""
+  levels.each do |level|
+    rank, num = level.gsub('"',"").split("(")
+    num = num.to_i
+    if (num > 80)
+      tx[name] += rank + ";"
+      sp[name] = rank + "_" + name.gsub("|","")
+    else
+      break
+    end
+  end
+  tx[name].chop!
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  name = seq.entry_id
+  if (tx[name] && sp[name])
+    print Bio::Sequence::NA.new(seq.seq).to_fasta(sp[name] + " " + tx[name], 60)
+  else
+    STDERR.print "No taxonomy for " + name + "\n"
+  end
+end

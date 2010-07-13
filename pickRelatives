@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+opt.level = 3
+opt.num = 1
+
+ARGV.options {|opts|
+  opts.banner << " fasta list full-tax"
+  opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+  opts.on("-n ", "--num ", Integer,
+          "number to pick (default #{opt.num})") {|t| opt.num = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, sub, full = ARGV
+
+ids = Hash.new
+File.new(sub).each {|line|
+  n, t = line.chomp.split(" ", 2)
+  taxon = t.split(";")[opt.level]
+  ids[taxon] = [] if ids[taxon].nil?
+}
+
+File.new(full).each {|line|
+  name, t = line.chomp.split(" ",2)
+  taxon = t.split(";")[opt.level]
+  ids[taxon].push(name) if !ids[taxon].nil? && ids[taxon].size < opt.num
+}
+
+taxa = ids.values.flatten
+
+Bio::FlatFile.new(Bio::FastaFormat, IO.popen("bzcat #{fasta}","r")).each {|seq|
+  print seq if taxa.include?(seq.entry_id)
+}

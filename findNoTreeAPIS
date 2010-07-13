@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'apis'
+opt = OpenStruct.new
+
+opt.storage = "misc_apis"
+opt.host = "mysql-lan-pro"
+opt.min = 50
+
+ARGV.options {|opts|
+  opts.banner << " [dataset .. dataset..]"
+  opts.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+  opts.on("-m ", "--min ", Integer, "minimum ORF length (default #{opt.min})") {|t| opt.min = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1 && !opt.all)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
+
+ARGV.each {|dataset|
+  storage.query("SELECT seq_name, sequence FROM sequence WHERE dataset = '#{dataset}' AND processed = 1 AND length(sequence) >= #{opt.min}").each {|row|
+    print ">#{row[0]}\n#{row[1].gsub(Regexp.new(".{1,60}"), "\\0\n")}"
+  }
+}
+

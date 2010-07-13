@@ -1,0 +1,47 @@
+#!/usr/bin/ruby
+
+require 'ostruct'
+require 'csv'
+require 'Stats'
+opt = OpenStruct.new
+
+require 'optparse'
+
+opt.csv = false
+opt.grep = false
+
+ARGV.options {|opts|
+  opts.banner << " col1 col2"
+  opts.on("-c ", "--csv ", String, "use csv file given") {|t| opt.csv = t}
+  opts.on("-g ", "--grep ", String, "grep each line for term") {|t| opt.grep = t}
+  opts.parse!
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+col1, col2 = ARGV[0].to_i, ARGV[1].to_i
+
+x = []
+y = []
+
+if (opt.csv)
+  inFile = CSV.open(opt.csv, "r")
+else
+  inFile = STDIN
+end
+
+inFile.each {|line|
+  next if (opt.grep && line.to_s !~ /#{opt.grep}/)
+  if (!opt.csv)
+    fields = line.chomp.split(" ")
+    x.push(fields[col1].to_f)
+    y.push(fields[col2].to_f)
+  else
+    x.push(line[col1].data.to_f)
+    y.push(line[col2].data.to_f)
+  end
+}
+printf("%8.3f\n", x.correlationWith(y))

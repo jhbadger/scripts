@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'FastaDB'
+
+ARGV.options {|opts|
+  opts.banner << " alignment [alignment...] tree"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+tree = ARGV.pop
+
+seqs = Hash.new
+ARGV.each {|align|
+  name = File.basename(align).split(".").first
+  len = nil
+  seqs[name] = Hash.new
+  FastaDB.new(align).each {|seq|
+    len = seq.length
+    seqs[name][seq.definition] = seq
+  }
+  out = File.new(name + ".sim", "w")
+  `seq-gen -mJTT -a0.5 -l#{len} < #{tree} | readseq -p -f=fasta`.each {|line|
+    if (line =~/^>/)
+      out.printf("%s\n",line.split(/ |,/).first)
+    else
+      out.print line
+    end
+  }
+  out.close
+}
+
+seqs.keys.each {|name|
+  nseqs = []
+  FastaDB.new(name + ".sim").each {|seq|
+    s = seq.seq
+    0.upto(seqs[name][seq.definition].seq.length - 1) {|i|
+      s[i] = "X" if (seqs[name][seq.definition].seq[i].chr == "X")
+    }
+    nseqs.push(Sequence.new(s).to_fasta(seq.definition, 60))
+  }
+  out = File.new(name + ".sim", "w")
+  nseqs.each {|seq|
+    out.print seq
+  }
+}

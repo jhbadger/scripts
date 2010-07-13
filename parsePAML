@@ -1,0 +1,92 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " dir [dir..]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+model = nil
+bestModel = nil
+bestL = -1e6
+w = []
+dnds = []
+ARGV.each {|glob|
+  dirs = Dir.glob(glob)
+  dirs = [glob] if (dirs.empty?)
+  dirs.each {|dir|
+    file = Dir.glob("#{dir}/*.PAMLout").first
+    if (file.nil?)
+      STDERR.printf("Skipping %s\n", dir)
+      next
+    end
+    File.new(file).each {|line|
+      if (line =~/^Model ([0-9]*)/)
+	model = $1
+      elsif (line =~/^lnL/)
+	l = line.split(" ")[-2].to_f
+	if (l > bestL)
+	  bestL = l
+	  bestModel = model
+	end
+      end
+    }
+    file = "#{dir}/rst"
+    inPos = false
+    posData = ""
+    out = File.new(File.basename(dir,".PAML") + ".pos", "w")
+    aa = File.new(File.basename(dir,".PAML") + ".aa", "w")
+    aas = []
+    File.new(file).each {|line|
+      if (line =~/^Model ([0-9]*)/)
+	model = $1
+      elsif (line =~/^w:/ && model == bestModel)
+	w = line.split(" ")
+	w.shift
+	0.upto(w.length - 1){|i|;w[i] = w[i].to_f}
+      elsif (line =~/[0-9]+ [A-Z]\   [0-9]+/ && model == bestModel)
+	fields = line.split(" ")
+	num = fields[0].to_i
+        aas[num - 1] = fields[1]
+	fields.shift
+	fields.shift
+	dnds[num] = 0
+	0.upto(w.length - 1){|i|
+	  dnds[num] += (fields[i].to_f * w[i])
+	}
+      elsif (line =~/^Positively selected/)
+	inPos = true
+	posData = ""
+      elsif (line =~/^Ancestral|^lnL/)
+	inPos = false
+	out.print "Model #{model}\n#{posData}" if (posData.length > 50)
+      end
+      posData += line if (inPos)
+    }
+    out.close
+    aa.print Sequence::AA.new(aas.to_s).to_fasta("Reference",60)
+    aa.close
+    out = File.new(File.basename(dir,".PAML") + ".dnds", "w")
+    1.upto(dnds.length - 1) {|i|
+      out.printf("%d %8.3e\n", i, dnds[i])
+    }
+    out.close
+  }
+}

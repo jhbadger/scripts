@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " recip recip recip [recip...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+matrix = Hash.new
+count = Hash.new
+
+ARGV.each {|recip|
+  x, y = File.basename(recip.gsub(/.pep|.fasta|.recip/,"")).split("_vs_")
+  if (matrix[x].nil?)
+    matrix[x] = Hash.new
+  end
+  count[x] = 0
+  yes = 0
+  File.new(recip).each {|line|
+    x1, y1, p1, p2, orth = line.chomp.split(" ")
+    yes += 1 if (orth == "yes")
+    count[x] += 1.0
+  }
+  matrix[x][y] = yes
+  matrix[x][x] = count[x]
+}
+
+printf("  %d\n", matrix.keys.size)
+matrix.keys.sort.each {|x|
+  printf("%-10s  ", x[0..9])
+  matrix.keys.sort.each {|y|
+    if (count[x] > count[y])
+      d = 1 - (matrix[x][y] / count[y])
+    else
+      d = 1 - (matrix[x][y] / count[x])
+    end 
+    printf("%6.5f ", d)
+  }
+  printf("\n")
+}
+

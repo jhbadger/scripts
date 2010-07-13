@@ -1,0 +1,88 @@
+#!/usr/bin/env ruby
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+def loadDict(kamus)
+  dict = Hash.new
+  File.new(kamus).each {|line|
+    melayu, ingg = line.downcase.chomp.split(" = ")
+    dict[melayu] = ingg
+  }
+  return dict
+end
+
+opt.kamus = "#{ENV["HOME"]}/lib/Melayu-english.txt"
+
+ARGV.options {|opts|
+  opts.banner << " \"text\""
+  opts.on("-d ", "--dictionary ", String, "change dictionary file") {|t| opt.kamus = t}
+  opts.on("-l", "--lookup", "lookup English word") {|t| opt.lookup = t}
+  opts.on("-f", "--file", "read from file (default command-line)") {|t| opt.fromFile = t}
+  opts.on("-m", "--missing", "list missing words") {|t| opt.missing = t}
+  opts.on("-b", "--both", "show both languages side-by-side") {|t| opt.both = t}
+  opts.parse!
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dict = loadDict(opt.kamus)
+
+if (opt.fromFile)
+  text = File.new(ARGV.first).read
+else
+  text = ARGV.first
+end
+
+if (opt.lookup)
+  text.split(/ |,|\(|\)|-|;|"|\.|\?|\!|:/).each {|word|
+    dict.keys.each {|key|
+      if (dict[key] =~ /#{word}/)
+	printf("%s = %s\n", key, dict[key])
+      end
+    }
+  }
+  exit(0)
+end
+
+def parseWord(word, dict)
+  match = nil
+  word.downcase!
+  word =~ /^([p|m|s]e[n|m]?[g|y]?)?(.*)/
+  prefix, word  = $1, $2
+  word, suffix = $1, $2 if (word =~ /(.*)(nya)/)
+  match = dict[word]
+  if (match) 
+    match += " (-er)" if (prefix =~/^p/)
+    match += " (possessive)" if (suffix == "nya")
+    match = "one " + match if (prefix == "se")
+  end
+  return match
+end
+
+text.split(/\. |\n|\r|\? \! /).each {|sentence|
+  next if sentence.length < 2
+  print sentence + "\n" if (!opt.missing && !opt.both)
+  sentence.split(/ |,|\(|\)|-|;|"|\.|\?|\!|:/).each {|word|
+    next if (word == "" || word == "\n")
+    match = nil
+    match = dict[word.downcase]
+    match = parseWord(word, dict) if (!match)
+    if (opt.both)
+      printf("%s = %s\n", word, match) if (!match.nil?)
+      next
+    end
+    if (match.nil?)
+      if (opt.missing)
+	printf("%s\n", word)
+      else
+	printf("**%s** ", word)
+      end
+    else 
+      printf("/%s/ ", match) if (!opt.missing)
+    end
+  }
+  printf("\n\n") if (!opt.missing && !opt.both)
+}

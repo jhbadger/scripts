@@ -1,0 +1,115 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'GOS'
+require 'gchart'
+opt = OpenStruct.new
+
+opt.level = 1
+
+colors = {:red=>'ff0000', :green=>'00ff00', :blue=>'0000ff',
+:yellow=>'ffff00', :cyan=>'00ffff', :magenta=>'ff00ff',
+:violet=>'ee82ee', :chocolate=>'d2691e', :dark_orange=>'ff8c00',
+:gray21=>'363636',:aquamarine2=>'76eec6', :orange_red4=>'8b2500',
+:pale_green=>'98fb98', :spring_green=>'00ff7f', :indian_red=>'cd5c5c',
+:indian_red1=>'ff6a6a', :indian_red2=>'ee6363',
+:indian_red3=>'cd5555', :indian_red4=>'8b3a3a',
+:lavender=>'e6e6fa', :lavender_blush=>'fff0f5',
+:lavender_blush1=>'fff0f5', :lavender_blush2=>'eee0e5',
+:lavender_blush3=>'cdc1c5', :lavender_blush4=>'8b8386',
+:lawn_green=>'7cfc00', :light_blue=>'add8e6', :light_blue1=>'bfefff',
+:light_blue2=>'b2dfee', :light_blue3=>'9ac0cd',
+:light_blue4=>'68838b', :light_coral=>'f08080', :light_cyan=>'e0ffff',
+:light_cyan1=>'e0ffff', :light_cyan2=>'d1eeee',
+:light_cyan3=>'b4cdcd', :light_cyan4=>'7a8b8b',
+:light_goldenrod=>'eedd82', :light_goldenrod1=>'ffec8b',
+:light_goldenrod2=>'eedc82', :light_goldenrod3=>'cdbe70',
+:light_goldenrod4=>'8b814c', :light_goldenrod_yellow=>'fafad2',
+:light_gray=>'d3d3d3', :light_green=>'90ee90', :light_grey=>'d3d3d3',
+:light_pink=>'ffb6c1', :light_pink1=>'ffaeb9', :light_pink2=>'eea2ad',
+:light_pink3=>'cd8c95', :light_pink4=>'8b5f65',
+:light_salmon=>'ffa07a', :light_salmon1=>'ffa07a',
+:light_salmon2=>'ee9572', :light_salmon3=>'cd8162',
+:light_salmon4=>'8b5742', :light_sea_green=>'20b2aa',
+:light_sky_blue=>'87cefa', :light_sky_blue1=>'b0e2ff',
+:light_sky_blue2=>'a4d3ee', :light_sky_blue3=>'8db6cd',
+:light_sky_blue4=>'607b8b', :light_slate_blue=>'8470ff',
+:light_slate_gray=>'778899', :light_slate_grey=>'778899',
+:light_steel_blue=>'b0c4de', :light_steel_blue1=>'cae1ff'}
+
+ARGV.options {|opts|
+  opts.banner << " neighbor-summary.txt [neighbor-summary.txt...]"
+  opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+counts = Hash.new
+total = Hash.new
+
+ARGV.each {|name|
+  File.new(name).each {|line|
+    pep, taxonomy = line.chomp.split("\t", 2)
+    counts[name] = Hash.new if counts[name].nil?
+    total[name] = 0 if total[name].nil?
+    tax = taxonomy.split("\t")
+    taxon = tax[opt.level]
+    next if taxon.nil?
+    level = opt.level    
+    if ((taxon.nil? || taxon == "Mixed") && level > 1)
+      taxon = "Mixed " + tax[level - 1]
+      level -= 1
+    end
+    counts[name][taxon] = 0 if (counts[name][taxon].nil?)
+    counts[name][taxon] += 1
+    total[name] += 0.01
+  }
+}
+  
+percents = Hash.new
+counts.keys.sort.each {|site|
+  percents[site] = Hash.new
+  counts[site].keys.sort.each {|taxon|
+    percents[site][taxon] = counts[site][taxon] / total[site]
+    if (percents[site][taxon] < 2 && taxon != "Misc Other")
+      STDERR.printf("Deleting %s in %s\n", taxon, site)
+      percents[site]["Misc. Other"] = 0 if (percents[site]["Misc. Other"].nil?)
+      percents[site]["Misc. Other"] += percents[site][taxon]
+      percents[site].delete(taxon)
+    end
+  }
+}
+
+
+taxaColors = Hash.new
+col = colors.values
+percents.keys.each{|site|
+  percents[site].keys.each {|taxon|
+    taxaColors[taxon] = col.shift if taxaColors[taxon].nil?
+  }
+}
+percents.keys.sort.each {|site|
+  chco = "&chco="
+  percents[site].keys.each {|taxon|
+    chco += taxaColors[taxon] + ","
+  }
+  chco.chop!
+  url = Gchart.pie(:data => percents[site].values, 
+                   :legend => percents[site].keys, 
+                   :width=>450, :title => site)
+  
+  printf("<img src=\"%s%s\"/>\n\n", url, chco)
+}

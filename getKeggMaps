@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " kegg-search.html"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+file = ARGV.pop
+
+url = "http://www.genome.ad.jp/tmp/mark_pathway_www"
+
+id = 0
+File.new(file).each {|line|
+  if (line =~/mark_pathway_www\?([0-9]*)/)
+    id = $1.to_i if (id == 0)
+    p line
+  end
+  if (line =~/\<b\>([a-z|0-9]*)/)
+    map = $1
+    STDERR.printf("Fetching #{map}\n")
+    system("wget -nd '#{url}#{id}/#{map}.gif'")
+    sleep(0.5)
+  end
+  
+}

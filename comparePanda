@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " panda-tax combo-tax"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+panda, combo = ARGV
+
+pn = Hash.new
+File.new(panda).each {|line|
+  tax, genus, species = line.chomp.split(" ")
+  genus = "" if species.nil?
+  species = "" if species.nil?
+  pn[genus + " " + species] = tax.to_i
+}
+
+File.new(combo).each {|line|
+  tax, genus, species = line.chomp.split(" ")
+  genus = "" if species.nil?
+  species = "" if species.nil?
+  print line if pn[genus + " " + species].nil?
+}
+

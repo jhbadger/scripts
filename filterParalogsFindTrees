@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+require 'Newick'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+opt.verbose = false
+o.banner << " findtrees.csv"
+o.on("-v", "--verbose", "be verbose") {opt.verbose  = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+csv, rest = ARGV
+seen = Hash.new
+
+inFile = Hash.new
+CSV.foreach(csv) {|fields|
+  inFile[fields.first] = true if fields[1] != "Tree"
+}
+
+CSV.foreach(csv) {|fields|
+  name, tree = fields
+  if (tree == "Tree")
+    fields.push("Number of Copies")
+    print fields.to_csv 
+    next
+  end
+  contig = name.split("-",2).last
+  tree = NewickTree.new(tree)
+  paralogs = tree.taxa.grep(/#{contig}/)
+  if (!seen[name])
+    num = 0
+    paralogs.each {|paralog|
+      pname =  paralog.split("__").first
+      if inFile[pname]
+        if (opt.verbose)
+          STDERR.printf("%s %s\n", pname, name)
+        end
+        num += 1 
+      end
+      seen[pname] = true
+    }
+    fields.push(num)
+    print fields.to_csv
+  end
+}

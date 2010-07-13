@@ -1,0 +1,95 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require'bio'
+include Bio
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " blast-dir organism.att"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dir, att = ARGV
+
+taxonomy = Hash.new
+File.new(att).each {|line|
+  name, tax = line.chomp.split("\t")
+  taxonomy[name] = tax
+}
+
+bact = File.new("BacteriaOnly.txt", "w")
+diatoms = File.new("DiatomsBacteria.txt","w")
+auero = File.new("DiatomsAureococcusBacteria.txt","w")
+phyto = File.new("DiatomsAureococcusPhytophoraBacteria.txt","w")
+alve = File.new("DiatomsAureococcusPhytophoraAlveolataBacteria.txt","w")
+
+Dir.glob("#{dir}/*.blastp").each {|file|
+  report = Blast::WU::Report.open(file, "r").each {|query|
+    bacteria = false
+    euk = false
+    phy = false
+    alv = false
+    tp = false
+    au = false
+    alv = false
+
+    query.each {|hit|
+      next if hit.hsps.empty?
+      hname = hit.definition
+      if (hname =~/\{([^\}]*)/)
+        species = $1
+      else
+        species = "Unknown"
+      end
+      next if species =~/Phaeodactylum/
+      tax = taxonomy[species]
+      if tax =~/^Bacteria/
+	bacteria = true
+      elsif species =~/^Thalassiosira/
+	tp = true
+      elsif species =~/^Aureococcus/
+	au = true
+      elsif species =~/^Phytophthora/
+	phy = true
+      elsif tax =~/Alveolata/
+	alv = true
+      elsif tax =~/^Eukaryota/
+	euk = true
+      end
+    }
+    qname =  query.query_def.split(" ").first
+    if (File.exists?("trees/#{qname}.tree"))
+      apis = "yes"
+    else
+      apis = "no"
+    end
+    bact.printf("%s %s\n", qname, apis) if (bacteria && !tp && !au && !phy && 
+				   !alv && !euk)
+    diatoms.printf("%s %s\n", qname,apis) if (bacteria && tp && !au && !phy && 
+				   !alv && !euk)
+    auero.printf("%s %s\n", qname, apis) if (bacteria && au && !phy && 
+					     !alv && !euk)
+    phyto.printf("%s %s\n", qname, apis) if (bacteria && phy && !alv && !euk)
+    alve.printf("%s %s\n", qname, apis) if (bacteria && alv && !euk)
+  }
+}
+
+bact.close
+diatoms.close
+phyto.close
+auero.close
+alve.close

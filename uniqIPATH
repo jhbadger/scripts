@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " ipath-list"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+list, rest = ARGV
+
+seen = Hash.new
+File.new(list).each {|line|
+  ec, color, width = line.chomp.split(" ")
+  seen[ec] = true if width == "W10"
+  print line if width=="W10" || !seen[ec]
+}

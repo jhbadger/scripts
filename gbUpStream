@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+pep = false
+if (ARGV[0] == "-pep")
+  pep = true
+  ARGV.shift
+end
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s [-pep] gb-file\n", $0)
+  exit(1)
+end
+
+upLen = 100
+gb = ARGV.first
+
+FlatFile.new(GenBank, File.new(gb)).each {|seq|
+  dna = seq.seq
+  seq.features.each {|feat|
+    if (feat.feature == "CDS")
+      locus = ""
+      product = ""
+      upStream = ""
+      translation = ""
+      feat.qualifiers.each {|qual|
+	locus = qual.value if qual.qualifier == "locus_tag"
+        locus = qual.value if (qual.qualifier == "gene" && locus == "")
+	product = qual.value if qual.qualifier == "product"
+	translation = qual.value if qual.qualifier == "translation"
+      }
+      if (feat.position =~/([0-9]*)[\.][\.]([0-9]*)/)
+	start, stop = $1.to_i, $2.to_i
+	if (feat.position =~ /complement/)
+	  start, stop = stop, start
+	end
+	if (start < stop)
+	  next if (start - upLen < 0)
+	  upStream = dna.subseq(start - upLen, start - 1)
+	else
+	  next if (start + upLen > dna.length)
+	  upStream = dna.subseq(start + 1, start + upLen)
+	  upStream = upStream.complement
+	end 
+      end
+      header = locus + " " + product
+      print Sequence.new(upStream).to_fasta(header, 60)
+      if (pep)
+	STDERR.print Sequence.new(translation).to_fasta(header, 60)
+      end
+    end
+  }
+}

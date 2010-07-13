@@ -1,0 +1,19 @@
+#!/usr/bin/ruby
+
+require 'csv'
+require 'apis'
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " ogt-file seq-file rna-file"
+  opts.parse!
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+ogt, seq, rna = ARGV
+
+

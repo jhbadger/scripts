@@ -1,0 +1,70 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'Phylogeny'
+opt = OpenStruct.new
+$VERBOSE = nil
+opt.outgroup = nil
+opt.project = nil
+
+ARGV.options {|opts|
+  opts.banner << " tree fasta"
+  opts.on("-o ", "--outgroup ", String, "outgroup") {|t| opt.outgroup = t}
+  opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+def cleanup(dir)
+  system("rm -rf #{dir}")	
+end
+
+tree, fasta = ARGV
+
+if (opt.project)
+  cmd = $0
+  cmd += " -o #{opt.outgroup}" if (opt.outgroup)
+  cmd += " #{tree} #{fasta}"
+  system("qsub -P #{opt.project} -e #{tree}.stderr -cwd -o #{tree}.stdout \"#{cmd}\"")
+else
+  name = File.basename(fasta).split(".").first
+  tmpdir = ENV["HOME"] + "/.tmp"
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tname = tmpdir + "/" + name
+  dna = isDNA?(fasta)
+  aliHash = aliasFasta(fasta, nil, tname)
+  tree = NewickTree.fromFile(tree)
+  tree.reAlias(aliHash)
+  tree.fixPhylip
+  tree = estimateMLBranchLengths(tree, tname, tmpdir)
+  tree.unAlias(aliHash)
+  if (opt.outgroup)
+    outNode = tree.findNode(opt.outgroup)
+    if (outNode.nil?)
+      STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
+    else
+      tree = tree.reroot(outNode)
+    end 
+  else
+    tree = tree.midpointRoot
+  end  
+  Dir.glob("#{tname}*").each{|file|
+    File.unlink(file) 
+  }
+  print tree.to_s + "\n"
+end
+cleanup(tmpdir)
+ 

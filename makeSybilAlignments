@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.align = nil 
+
+ARGV.options {|opts|
+  opts.banner << " sybil-cluster.txt sp-list fasta [fasta..]"
+  opts.on("-a", "--align", "align seqs") {|t| opt.align = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+syb = ARGV.shift
+sp = ARGV.shift
+
+species = []
+seqs = Hash.new
+File.new(sp).each {|line|
+  species.push(line.chomp)
+}
+
+count = 0
+need = Hash.new
+File.new(syb).each {|line|
+  fields = line.chomp.split("\t")
+  next if fields.first.nil?
+  desc = count.to_s+"_"+fields.last.tr(" \"'()&\r/", "_")
+  seqs[desc] = []
+  species.size.times {|i|
+    seqs[desc].push(fields[i])
+    need[fields[i]] = true
+  }
+  count += 1
+}
+
+
+ARGV.each {|fasta|
+  FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+    if (need[seq.entry_id])
+      need[seq.entry_id] = seq
+    end
+  }
+}
+
+seqs.keys.sort.each {|key|
+  out = File.new(key + ".fa", "w")
+  seqs[key].size.times {|i|
+    if (need[seqs[key][i]].class != Bio::FastaFormat)
+      STDERR.printf("sequence %s not found in peptides\n", seqs[key][i])
+      exit(1)
+    end
+    need[seqs[key][i]].definition = species[i]
+    out.print  need[seqs[key][i]]
+  }
+  out.close
+  system("muscle -in #{key}.fa -out #{key}.aln") if (opt.align)
+  system("paupFasta -m nj -e #{key}.aln") if (opt.align)
+}

@@ -1,0 +1,58 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'apis'
+opt = OpenStruct.new
+
+opt.all = false
+opt.storage = "gosii_io_apis"
+opt.host = "mysql-lan-pro"
+
+ARGV.options {|opts|
+  opts.banner << " [dataset .. dataset..]"
+  opts.on("-a", "--all", "include all datasets in database") {|t| opt.all = t}
+  opts.on("-s ", "--storage ", String, 
+          "storage database (default #{opt.storage})") {|t| opt.storage = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1 && !opt.all)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
+
+if (opt.all)
+  storage.query("select dataset from dataset").each {|dataset|
+    ARGV.push(dataset[0])
+  }
+end
+
+out = Hash.new
+printf("Seq,Read, Kingdom, Phylum, Class, Order, Family, Genus, Species\n")
+ARGV.each {|dataset|
+  storage.query("SELECT read_info.seq_name, read_name, kingdom, phylum, class, ord, family, genus, species FROM read_info, classification WHERE read_info.seq_name = classification.seq_name AND dataset='#{dataset}'").each {|row|
+    na = false
+    printf("%s", row.shift)
+    row.each {|field|
+      if (field == "Mixed" || field == "Undefined")
+        na = true
+      end
+      if (na)
+        printf(",NA")
+      else
+        printf(",%s", field)
+      end
+    }
+    printf("\n")
+  }
+}

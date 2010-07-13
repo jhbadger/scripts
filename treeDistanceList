@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Newick'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " target-tree other-tree [other-tree...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+target = NewickTree.fromFile(ARGV.shift)
+
+ARGV.each {|file|
+  tree = NewickTree.fromFile(file)
+  d1, d2 = target.compare(tree)
+  printf("%4d %s\n", d1.size + d2.size, file)
+}

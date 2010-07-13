@@ -1,0 +1,64 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Stats'
+require 'rubygems'
+require 'csv'
+opt = OpenStruct.new
+
+def distance(array1, array2)
+  d = 0
+  array1.size.times {|i|
+    d += (array1[i] - array2[i])**2
+  }
+  d = Math.sqrt(d)
+  return d
+end
+
+ARGV.options {|opts|
+  opts.banner << " bias.csv target"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, target = ARGV
+
+lines = Hash.new
+CSV.foreach(csv) {|row|
+  name = row.shift
+  row.size.times {|i|
+    row[i] = row[i].to_f
+  }
+  lines[name] = row
+}
+
+far = 1e8
+distName = ""
+best = 0
+bestName = ""
+lines.keys.each {|key|
+  next if key == target
+  corr = lines[target].correlationWith(lines[key])
+  dist = distance(lines[target], lines[key])
+  if (corr > best)
+    best = corr
+    bestName = key
+  end
+  if (dist < far)
+    far = dist
+    distName = key
+  end
+}
+printf("Best correlation with %s is %s at %8.4f\n", target, bestName, best)
+printf("Closest distance to %s is %s at %8.4f\n", target, distName, far) 

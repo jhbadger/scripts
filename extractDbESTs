@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'DBwrapper'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " species-list.txt gbest.gz [...gbest.gz]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+
+list = ARGV.shift
+keep = Hash.new
+File.new(list).each {|line|
+  keep[line.chomp] = true
+}
+
+out = File.new("out.seq", "w")
+ARGV.each {|file|
+  STDERR.printf("Now processing %s...\n", file)
+  f = IO.popen("zcat #{file}")
+  Bio::FlatFile.new(Bio::GenBank, f).each {|seq|
+    if (keep[seq.organism])
+      header = seq.entry_id + " " + seq.definition + " {" + seq.organism + "}"
+      out.print seq.seq.to_fasta(header, 60)
+    end
+  }
+  f.close
+}
+out.close

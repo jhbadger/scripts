@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby 
+
+require 'optparse'
+require 'rubygems'
+require 'csv'
+require 'ostruct'
+
+opt = OpenStruct.new
+
+ARGV.options {|o|
+  o.banner << " seq-dir csv"
+  begin
+    o.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts o
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts o
+    exit(1)
+  end
+}
+
+dir, csv = ARGV
+
+lesion = File.new("lesion.fa", "w")
+normal = File.new("normal.fa", "w")
+control = File.new("control.fa", "w")
+
+CSV.foreach(csv) {|fields|
+  jcvi, hmp, triplet, barcode, oldcode, code = fields
+  next if barcode.nil? || barcode =~/Barcode/ 
+  out = nil
+  Dir.glob(dir + "/" + "*" + barcode + "*").each {|file|
+    if (code =~/^PL/)
+      out = lesion
+    elsif (code =~/^PN/)
+      out = normal
+    elsif(code =~/^C/)
+      out = control
+    end
+    if (out)
+      File.new(file).each {|line|
+        out.print line
+      }
+    end
+  } 
+}
+
+lesion.close
+normal.close
+control.close

@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s aa-index\n", $0)
+  exit(1)
+end
+
+aaindex = ARGV.shift
+
+name = nil
+top = []
+bottom = []
+scores = Hash.new
+
+File.new(aaindex).each {|line|
+  line.chomp!
+  if (line == "//")
+    printf("%s = ", name)
+    p scores
+    name = nil
+    top = []
+    bottom = []
+    scores = Hash.new
+    next
+  end
+  name = line.split(" ",2).last.downcase if (line =~/^H/)
+  if (line =~ /^I/)
+    line.split(" ").each {|pair|
+      t, b = pair.split("/", 2)
+      top.push(t) if (!b.nil?)
+      bottom.push(b) if (!b.nil?)
+    }
+  elsif (line =~/^ / && !top.empty?)
+    values = line.split(" ")
+    values.size.times {|i|
+      scores[top[i]] = values[i].to_f if (scores[top[i]].nil?)
+      scores[bottom[i]] = values[i].to_f if (!scores[top[i]].nil?)
+    }
+  end
+  
+}

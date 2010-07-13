@@ -1,0 +1,42 @@
+#!/usr/bin/ruby
+
+require 'csv'
+require 'Stats'
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " ogt-file"
+  opts.parse!
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+ogt, rest = ARGV
+
+tmp = Array.new
+gcl = Array.new
+g3 = Array.new
+ek = Array.new
+wy = Array.new
+rg = Array.new
+
+CSV.open(ogt, "r").each {|line|
+  sp, tax, temp, source, gc, rgc, gc3,  ekqh, wyqt = line
+  next if (sp.data == "Species" || gc.data == "-") 
+  tmp.push(temp.data.to_i)
+  gcl.push(gc.data.to_i)
+  rg.push(rgc.data.to_i)
+  g3.push(gc3.data.to_i)
+  ek.push(ekqh.data.to_f)
+  wy.push(wyqt.data.to_f)  
+}
+printf("gc correlation: \t%8.3f\n", tmp.correlationWith(gcl))
+printf("RNA gc correlation:\t%8.3f\n", tmp.correlationWith(rg))
+printf("gc3 correlation:\t%8.3f\n", tmp.correlationWith(g3))
+printf("(E+K)/(Q+H) corr.:\t%8.3f\n", tmp.correlationWith(ek))
+printf("WY/QT correlation:\t%8.3f\n", tmp.correlationWith(wy))
+

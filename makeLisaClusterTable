@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " cluster-site-csv [cluster-site.csv...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+
+order = []
+counts = Hash.new
+dataset = nil
+ARGV.each do |csv|
+  CSV.foreach(csv) do |row|
+    cam, cluster, num = row
+    if (cam == "Cluster")
+      dataset = num
+      next
+    end
+    order.push(cam) if csv == ARGV.first && !cam.nil?
+    counts[dataset] = Hash.new if counts[dataset].nil?
+    if (cluster.nil?)
+       counts[dataset][cam] = nil
+    else
+	counts[dataset]["CAM_CL_" + cluster] = num 
+    end
+  end
+end
+
+print (["Cluster"]+ counts.keys.sort).to_csv
+
+order.each do |cluster|
+  row = [cluster]
+  counts.keys.sort.each do |dataset|
+    counts[dataset][cluster] = 0 if counts[dataset][cluster].nil?
+    row.push(counts[dataset][cluster])
+  end
+  print row.to_csv
+end  

@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " expression fasta [..fasta] [..fasta]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+expression = ARGV.shift
+
+ARGV.each {|file|
+  count = 0 
+  FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+    if (seq.definition =~/#{expression}/)
+      count += 1
+    end
+  }
+  printf("%5d %s\n", count, File.basename(file))
+}

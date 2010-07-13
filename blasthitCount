@@ -1,0 +1,21 @@
+#!/usr/bin/env ruby -w
+require 'rubygems'
+require'bio'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage:blast-dir\n", $0)
+  exit(1)
+end
+
+dir = ARGV.pop
+
+Dir.glob(dir + "/*.blastp").each {|file|
+  p file
+  report = Bio::Blast::Default::Report.open(file, "r").each {|query|
+    count = 0
+    query.each {|hit|
+      count += 1 if (hit.evalue.to_f < 1e-10)
+    }
+  }
+  printf("%s\t%d\n", File.basename(file, ".blastp"), count)
+}

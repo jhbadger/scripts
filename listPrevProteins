@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'MySQL'
+opt = OpenStruct.new
+
+opt.col = 0
+ARGV.options {|opts|
+  opts.banner << " list.btab"
+  opts.on("-c ", "--column ", Integer, 
+	  "choose column to process (default #{opt.col})") {|t| opt.col = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+list, rest = ARGV
+
+db = MySQL.new
+
+seen = Hash.new
+File.new(list).each {|line|
+  id = line.split(" ")[opt.col]
+  if (!seen[id])
+    begin
+      printf("%s\t%s\n", id, db.prevGene(id).annotation)
+      seen[id] = true
+    rescue
+      STDERR.printf("Skipping %s\n", id)
+    end
+  end
+}
+

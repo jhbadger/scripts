@@ -1,0 +1,84 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'DBwrapper'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " rdp.out gold.db clstr-file"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 3)
+  STDERR << o
+  exit(1)
+end
+
+rdp, gold, clstr = ARGV
+
+clust = Hash.new
+names = []
+
+File.new(clstr).each {|line|
+  if (line =~/^>/)
+    names.each {|name|
+      clust[name] = names.size
+    }
+    names = []
+  elsif line =~/>([^\.]*)/
+    names.push($1)
+  end
+}
+names.each {|name|
+  clust[name] = names.size
+}
+
+db = SQLite.new(gold)
+
+levs = ["phylum", "class", "ord", "family", "genus"]
+
+count = Hash.new
+tax = Hash.new
+name = ""
+goldcount = Hash.new
+
+File.new(rdp).each {|line|
+  if (line.chomp =~/>([^\ ]*)/)
+    name = $1
+  else
+    fields = line.chomp.split("; ")
+    classification = [fields[4], fields[6], fields[8], fields[10], fields[12],
+      fields[14], fields[16], fields[18]
+    ]
+    classification.delete("Actinobacteridae")
+    classification.delete("Actinomycineae")
+    classification.delete("Corynebacterineae")
+    classification.delete("Propionibacterineae")
+    classification.delete("Micrococcineae")
+    
+    tax[name] = ""
+    count[name] = [0,0,0,0,0]
+
+    levs.size.times {|i|
+      taxon = classification[i].to_s.gsub("\"","").capitalize
+      goldcount[levs[i]] = Hash.new if (goldcount[levs[i]].nil?)
+      goldcount[levs[i]][taxon] = db.count("gold WHERE #{levs[i]} = '#{taxon}'") if (goldcount[levs[i]][taxon]).nil?
+      count[name][i] += goldcount[levs[i]][taxon]
+      tax[name] += taxon
+      tax[name] += "; " if levs[i] != "genus"
+    }
+  end
+}
+print ["sequence", "count", "taxonomy","Sequenced Phylum","Sequenced Class",
+ "Sequenced Order", "Sequenced Family", "Sequenced Genus"].to_csv
+count.keys.sort.each {|name|
+  line = [name, clust[name], tax[name]] + count[name]
+  print line.to_csv
+}

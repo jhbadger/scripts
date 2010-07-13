@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'MySQL'
+require 'rubygems'
+require'bio'
+opt = OpenStruct.new
+
+opt.evalue = 1e-9
+$VERBOSE = nil
+
+ARGV.options {|opts|
+  opts.banner << " pep [...pep...]"
+  opts.on("-e ", "--evalue ", Float, 
+        "evalue for blast parse  (default #{opt.evalue})") {|t| opt.evalue = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+db = MySQL.new
+ARGV.each {|pep|
+  count = 0
+  name = File.basename(pep,".pep")
+  STDERR.printf("Processing %s...\n", name)
+  out = File.new(name + ".mix", "w")
+  list = File.new(name + ".list", "w")
+  blast = Dir.glob("combo.blast/*#{name}.blastp").first
+  Bio::Blast::WU::Report.open(blast, "r").each {|query|
+    query.each {|hit|
+      id = hit.definition.split(" ").first
+      if (hit.evalue.to_f < opt.evalue)
+	out.print db.fetchProtID(id)
+        list.printf("%s\n", id)
+        count += 1
+      end 
+    }
+  }
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each {|seq|
+    out.print seq
+    count += 1
+  }
+  out.close
+  list.close
+  STDERR.printf("\tAligning %s...\n", name)
+  if (count < 400)
+    system("muscle -in #{name}.mix -out #{name}.afa")
+  else
+    system("muscle -in #{name}.mix -out #{name}.afa -maxiters 2")
+  end
+  system("trimAlignment #{name}.afa 0.5")
+  system("mv #{name}.afa_trim #{name}.afa")
+  STDERR.printf("\tTreeing %s...\n", name)
+  system("quickTreeFasta -f #{name}.afa")
+  system("newickDraw #{name}_nj.tree -f #{name}.list -l #{name}")
+}
+

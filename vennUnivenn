@@ -1,0 +1,130 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Venn'
+opt = OpenStruct.new
+
+opt.lists = false
+opt.norm = false
+opt.nototals = false
+opt.inbox = false
+
+ARGV.options {|opts|
+  opts.banner << " univenn.txt\n"
+  opts.on("-i", "--inbox", 
+          "include inbox legend (#{opt.inbox})") {|t| opt.inbox = t} 
+  opts.on("-l", "--lists", 
+        "output lists of shared genes") {|t| opt.lists = t} 
+  opts.on("-p", "--percents", 
+        "label percentages rather than raw numbers") {|t| opt.norm = t} 
+  opts.on("-t", "--nototals", 
+          "don't list totals (#{opt.nototals})") {|t| opt.nototals = t} 
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+uni, rest = ARGV
+
+group = false
+seqs = false
+
+key = ["A","B","C","D"]
+bins = Hash.new
+labels = Hash.new
+total = Hash.new
+allTot = 0
+
+missing = []
+File.new(uni).each {|line|
+  next if line =~/^#/
+  if line=~/^>Groups/
+    group = true
+  elsif line=~/^>Venn/
+    group = false
+    seqs = true
+  elsif (line=~/^>/)
+    group = false
+    seqs = false
+  elsif (group)
+    num, name, tot = line.chomp.split("\t")
+    labels[key[num.to_i - 1]] = name
+    total[key[num.to_i - 1]] = 0
+  elsif (seqs)
+    seq, num, list = line.chomp.split("\t")
+    list = num if list.nil?
+    bin = ""
+    if (list.nil?)
+      missing.push(seq)
+    else
+      list.split(",").each {|num|
+        bin += key[num.to_i - 1]
+        total[key[num.to_i - 1]] += 1
+      }
+      allTot += 1
+      bins[bin] = [] if bins[bin].nil?
+      bins[bin].push(seq)
+    end
+  end
+}
+
+
+if (labels.size == 3)
+  venn = $venn3
+elsif (labels.size == 4)
+  venn = $venn4
+end
+
+
+["A", "AB", "ABC", "ABCD", "ABD", "AC", "ACD", "AD", "B", "BC", "BCD", "BD", "C", "CD", "D"].each{|key|
+  bins[key] = [] if bins[key].nil?
+}
+
+
+alltot = 0
+bins.values.each {|v| alltot+=v.size}
+bins.keys.sort{|x,y| y.length <=> x.length}.each {|bin|
+  if (opt.norm)
+    count = (bins[bin].size * 1000 / alltot).to_i/10.0
+  else
+    count = bins[bin].size
+  end
+  bin += "only" if bin.length == 1
+  venn.gsub!(bin, count.to_s)
+}
+
+labels.keys.each {|key|
+  venn.gsub!(key+"namestring", labels[key])
+  if (!opt.nototals)
+    venn.gsub!(key+"total", total[key].to_s)
+  else
+    venn.gsub!(key+"total", "")
+  end 
+}
+
+if (opt.inbox)
+  y = 330
+  ty = 343
+  if (labels.size == 3)
+    y += 50
+    ty += 50
+  end
+  venn.gsub!("</svg>","<rect x=\"340\" y=\"#{y}\" width=\"40\" height=\"18\" fill=\"none\" stroke=\"black\" stroke-width=\".2\"/>
+  <rect x=\"380\" y=\"#{y}\" width=\"40\" height=\"18\" fill=\"#BBBBBB\" stroke=\"black\" stroke-width=\".2\"/>
+  <text x=\"375\" y=\"#{ty}\" text-anchor=\"end\" font-family=\"Verdana\" font-size=\"10\" fill=\"black\" >#{allTot}</text>
+  <text x=\"415\" y=\"#{ty}\" text-anchor=\"end\" font-family=\"Verdana\" font-size=\"10\" fill=\"black\" >#{missing.size}</text>
+  </svg>")
+end
+
+print venn
+
+

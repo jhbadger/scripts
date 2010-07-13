@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Newick'
+opt = OpenStruct.new
+
+opt.contig = "./contig.att"
+opt.debug = false
+
+ARGV.options {|opts|
+  opts.banner << " must could tree-dir"
+  opts.on("-c ", "--contig ", String, 
+          "contig.att (default #{opt.contig})") {|t| opt.contig = t}
+  opts.on("-d", "--debug", "report debug info") {|t| opt.debug = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dir, must, could = ARGV
+taxName = Hash.new
+taxSp = Hash.new
+
+File.new("contig.att").each {|line|
+  name, size, species, strain, id, tax = line.split("\t")
+  taxName[name] = tax
+  taxSp[species] = tax
+}
+
+
+Dir.glob(ARGV.first + "/*.tree") {|tree|
+  found = true
+  mustHave = false
+  name = File.basename(tree, ".tree")
+  tree = NewickTree.fromFile(tree)
+  tree.taxa.each {|taxon|
+    tname = taxon.split(/-|__/)[1]
+    if(taxName[tname] =~/#{must}/)
+      mustHave = true
+    elsif (taxName[tname] !~/#{could}/)
+      found = false
+    end
+  }
+  printf("%s\n", name) if found && mustHave
+}

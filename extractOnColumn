@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: cat list | %s acc-column other-list\n", $0)
+  exit(1)
+end
+
+col, list = ARGV
+col = col.to_i
+accs = Hash.new
+
+
+STDIN.each {|line|
+  accs[line.split(" ")[col]] = true
+}
+
+File.new(list).each {|line|
+  accs.keys.each {|acc|
+    print line if (line =~ /#{acc}/)
+  }
+}
+

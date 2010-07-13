@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+
+require 'http-access2'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s missing-word-file\n", $0)
+  exit(1)
+end
+
+file = ARGV.shift
+
+clnt = HTTPAccess2::Client.new
+
+File.new(file).each {|line|
+  word = line.chomp
+  ready = false
+  url = "http://search.cari.com.my/dictionary/dic_malay.php?db_table=mdict"
+  url += "&words=fix1&keyword=#{word}"
+  clnt.get(url).body.content.split("\n").each {|line|
+    if (line =~ /<td align=center size=3 height=20><font color=white>Bahasa Melayu<\/font><\/td><td align=center><font color=white>Bahasa Inggeris<\/font><\/td><td align=center>/)
+      ready = true
+    end
+    if (ready && line =~/<font color=red>([^<]*)<\/font>/)
+      malay = $1
+      line =~/<nobr>&nbsp;([^<]*)<\/nobr>/
+      english = $1
+      printf("%s = %s\n", malay, english) 
+      break
+    end
+  } 
+}

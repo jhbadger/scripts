@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'TigrGenBank'
+opt = OpenStruct.new
+
+opt.sublist = nil
+opt.fasta = nil
+ARGV.options {|opts|
+  opts.banner << " gbfile [..gbfile]"
+  opts.on("-c", "--catlist", 
+           "produce list of ") {|t| opt.fasta = t}
+   opts.on("-s ", "--sublist ", String, 
+           "limit analyze to genes in list") {|t| opt.sublist = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+gb = TigrGenBank.new
+ARGV.each {|gbfile|
+  gb.add(gbfile)
+}
+
+if (opt.sublist)
+  subArray = []
+  File.new(opt.sublist).each {|line|
+    orf, rest = line.chomp.split("-")
+    subArray.push(orf)
+  }
+  opt.sublist = subArray
+end
+
+counts, tot = gb.summarizeMain(opt.sublist)
+counts.keys.sort {|a, b| counts[b].size <=> counts[a].size}.each {|key|
+  printf("%6d %4.1f%%\t%s\n", counts[key].size, 100 * counts[key].size / tot, 
+         key)
+}
+printf("%6d\n", tot)

@@ -1,0 +1,130 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'apis'
+opt = OpenStruct.new
+
+opt.all = false
+opt.storage = ""
+opt.host = "mysql-lan-pro"
+
+ARGV.options {|opts|
+  opts.banner << " cdhit.clstr [dataset .. dataset..]"
+  opts.on("-a", "--all", "use all datasets in database") {|t| opt.all = t}
+  opts.on("-s ", "--storage ", String, "storage database") {|t| opt.storage = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})")
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2 && !opt.all)
+    STDERR.puts opts
+    exit(1)
+  end  
+}
+
+cdhit = ARGV.shift
+
+if (opt.storage == "")
+  STDERR.printf("A storage database must be specified\n")
+  exit(1)
+end
+
+
+datasets = []
+
+storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
+if (opt.all)
+  storage.query("select dataset from dataset").each {|dataset|
+    datasets.push(dataset[0])
+  }
+else
+  datasets = ARGV
+end
+
+
+inClause = "("
+datasets.each {|set|
+  inClause += "'#{set}',"
+}
+inClause.chop!
+inClause += ")"
+
+
+STDERR.printf("Loading data from database...\n")
+
+dataset = Hash.new
+storage.query("select seq_name, dataset from sequence where dataset in #{inClause}").each {|row|
+  dataset[row[0]] = row[1]
+}
+
+annotation = Hash.new
+storage.query("select seq_name, annotation from annotation where source = 'APIS' and dataset in #{inClause}").each {|row|
+  annotation[row[0]] = row[1]
+}
+
+annotation = Hash.new
+storage.query("select seq_name, annotation from annotation where source = 'APIS' and dataset in #{inClause}").each {|row|
+  annotation[row[0]] = row[1]
+}
+
+apis = Hash.new
+storage.query("select seq_name, kingdom, phylum, class, ord, family, genus, species from classification where dataset in #{inClause}").each {|row|
+  name = row.shift
+  apis[name] = ""
+  row.each {|field|
+    field.gsub!(",","")
+    break if field == "Undefined"
+    apis[name] += "; " if apis[name] != ""
+    apis[name] += field
+    break if field == "Mixed"
+  }
+}
+
+STDERR.printf("Processing cluster file...\n")
+
+num = nil
+cluster = Hash.new
+samples = []
+File.new(cdhit).each{|line|
+  if (line=~/^>Cluster (.*)/)
+    num = $1.to_i
+    cluster[num] = Hash.new
+  elsif (line=~/>(.*)\.\.\./)
+    pep = $1
+    if (dataset[pep].nil?)
+      STDERR.printf("Can't find dataset for %s\n!", pep)
+      exit(1)
+    else
+      cluster[num][dataset[pep]] = Array.new if (cluster[num][dataset[pep]].nil?)
+      cluster[num][dataset[pep]].push(pep)
+    end
+  end
+}
+printf("cluster, hits, apis, annotation")
+datasets.sort.each {|set|
+  printf(",%s",set)
+}
+printf("\n")
+
+cluster.keys.sort.each {|num|
+  hits = 0
+  s = ""
+  rep = nil
+  datasets.sort.each {|set|
+    if (cluster[num][set])
+      cluster[num][set].sort.each {|pep|
+        rep = pep if rep.nil?
+        s += sprintf("%s ",pep)
+        hits += 1
+      }
+    end
+    s += ","
+  }
+  printf("%d,%d,%s,%s,%s\n", num, hits, apis[rep], annotation[rep], s)
+}

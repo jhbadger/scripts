@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+
+charged = ["D", "E", "K", "R"]
+polar = ["S", "T", "N", "Q"]
+nonpolar = ["G", "A", "V", "L", "I", "F", "W", "Y", "P", "M", "C", "H"]
+gap = ["-"]
+
+threeletter = {"A"=>"ala","C"=>"cys","D"=>"asp","E"=>"glu","F"=>"phe",
+  "G"=>"gly","H"=>"his","I"=>"ile","K"=>"lys","L"=>"leu","M"=>"met",
+  "N"=>"asn","P"=>"pro","Q"=>"gln","R"=>"arg","S"=>"ser","T"=>"thr",
+  "V"=>"val","W"=>"trp","Y"=>"tyr"}
+
+
+opt.class = false
+opt.rasmol = false
+
+ARGV.options {|opts|
+  opts.banner << " afa pos [..pos..["
+  opts.on("-c", "--class", "summarize by class") {|t| opt.class = t}    
+  opts.on("-r", "--rasmol", "output rasmol info") {|t| opt.rasmol = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+afa = ARGV.shift
+
+seqs = Hash.new
+aa = Hash.new
+
+FlatFile.new(FastaFormat, File.new(afa)).each {|seq|
+  seqs[seq.entry_id] = seq
+  aa[seq.entry_id] = ""
+}
+
+res = ""
+select = ""
+ARGV.each {|pos|
+  pos = pos.to_i
+  seqs.keys.each {|key|
+    count = 0
+    0.upto(seqs[key].length) {|i|
+      r = seqs[key].seq[i].chr
+      count += 1 if (r != "-")
+      if (count == pos)
+        res = r
+        break
+      end
+    }
+    if (opt.rasmol && key == "pdb")
+      printf("pdb: %s%d\n",threeletter[res],pos)
+      select += threeletter[res] + pos.to_s + ","
+    end
+    if (opt.rasmol && key == "Reference")
+      printf("ref: %s%d\n",threeletter[res],pos)
+    end
+    if (opt.class)
+      aa[key] += "+" if (charged.include?(res))
+      aa[key] += "P" if (polar.include?(res))
+      aa[key] += "N" if (nonpolar.include?(res))
+      aa[key] += "-" if (gap.include?(res))
+    else
+      aa[key] += res
+    end
+  }
+}
+
+if (opt.rasmol)
+  printf("select %s\n", select)
+end
+
+seqs.keys.sort.each {|key|
+  printf("%20s %s\n", key, aa[key])
+}

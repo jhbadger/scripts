@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " gold-table"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+table, rest = ARGV
+
+names = nil
+orgs = Hash.new
+File.new(table).each {|line|
+  fields = line.chomp.split("\t")
+  if (names.nil?)
+    names = fields
+  else
+    org = fields[6] + " " + fields[9]
+    orgs[org] = Hash.new
+    fields.size.times {|i|
+      orgs[org][names[i]] = fields[i]
+    }
+  end
+}
+
+oldOrg = orgs.keys.first
+
+orgs.keys.sort.each {|org|
+  if (orgs[org]["SPECIES"] == orgs[oldOrg]["SPECIES"])  
+    print  oldOrg + "\t" +  orgs[oldOrg]["ORFs"] + "\n"
+    print org + "\t" +  orgs[org]["ORFs"] + "\n"
+  end
+  oldOrg = org
+}

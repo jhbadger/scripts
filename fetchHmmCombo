@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'MySQL'
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " hmm-res-file evalue"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+file, evalue = ARGV
+evalue = evalue.to_f
+
+db = MySQL.new
+
+
+ids = []
+start = false
+File.new(file).each {|line|
+  if (start)
+    fields = line.chomp.split(" ")
+    ids.push(fields[0]) if (fields[9].to_f <= evalue && !fields[0].nil?)
+  end
+  start = true if (line =~/\[\]/)
+  start = false if (line =~/^\n/)
+}
+
+
+ids.each {|id|
+  print db.fetchProtID(id)
+}
+  
+ 

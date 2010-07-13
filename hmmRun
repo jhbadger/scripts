@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+$VERBOSE=nil
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.project = nil
+ARGV.options {|opts|
+  opts.banner << " cutoff-csv hmm-dir seq.pep"
+  opts.on("-p ", "--project ", Integer, 
+          "JCVI project (for grid)") {|t| opt.project = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.printf("nope nope nope\n")
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, db, pep = ARGV
+
+cutoff=Hash.new
+names=Hash.new
+File.new(csv).each {|line|
+  name,hmm,value=line.chomp.split(",")
+  cutoff[hmm]=value
+  names[hmm]=name
+}
+
+
+
+cutoff.keys.each {|hmm|
+  cmd = "hmmRunSingle #{names[hmm]} #{db}/#{hmm} #{pep} #{cutoff[hmm]}"
+  if (opt.project.nil?)
+    STDERR.printf("Processing #{names[hmm]}...\n")
+    system("#{cmd} 2>#{names[hmm]}.err")
+  else
+    system("runCmd -c \"#{cmd}\" -e #{names[hmm]}.err --nowait --project #{opt.project}")
+  end
+}
+

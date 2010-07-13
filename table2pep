@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " gos2.pep csv [...csv]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+pep = ARGV.shift
+
+seen = Hash.new
+outFiles = Hash.new
+
+ARGV.each {|csv|
+  name = File.basename(csv, ".csv")
+  seen[name] = Hash.new
+  outFiles[name] = File.new(name + ".pep", "w")
+  File.new(csv).each {|line|
+    orf = line.split(",").first
+    seen[name][orf] = true
+  }
+}
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each {|seq|
+  seen.keys.each {|name|
+    outFiles[name].print seq if (seen[name][seq.entry_id])
+  }
+}
+
+outFiles.keys.each {|name|
+  outFiles[name].close
+}

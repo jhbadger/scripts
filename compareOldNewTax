@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'DBwrapper'
+require 'optparse'
+require 'ostruct'
+require 'amatch'
+
+opt = OpenStruct.new
+opt.host = "mysql-lan-pro"
+opt.threshold = 0.7
+opt.level = -1
+
+o = OptionParser.new
+o.banner << " database"
+o.on("-h ", "--host ", String, 
+     "database host (default #{opt.host})") {|h| opt.host = h}
+o.on("-l ", "--level ", Integer, 
+     "level to compare") {|l| opt.level = l}
+o.on("-t ", "--threshold ", Float, 
+     "match threshold (default #{opt.threshold})") {|t| opt.threshold = t}
+begin
+  o.parse!
+rescue
+  STDERR <<  $!.message
+  STDERR.<< o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR.<< o
+  exit(1)
+end
+
+
+database, rest = ARGV
+
+db = MySQL.new(opt.host, database, "apis", "apis_user")
+
+db.query("SELECT DISTINCT species, taxon_id, taxonomy, old_taxonomy FROM contigs").each {|row|
+  species, taxon_id, taxonomy, old_taxonomy = row
+  next if old_taxonomy == ""
+  if (opt.level > -1)
+    taxonomy = taxonomy.split(";")[opt.level]
+    old_taxonomy = old_taxonomy.split(";")[opt.level]
+    taxonomy = "" if !taxonomy
+    old_taxonomy = "" if !old_taxonomy
+  end
+  m = Amatch::PairDistance.new(old_taxonomy)
+  score = m.match(taxonomy)
+  if (score < opt.threshold)
+    printf("%s\t%s\t%s\t%d\t%8.3f\n", species, old_taxonomy, 
+           taxonomy, taxon_id, score)
+  end
+
+}
+
+db.close

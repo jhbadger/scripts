@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s btab-file\n", $0)
+  exit(1)
+end
+
+pvalue = Hash.new
+
+file = ARGV.first
+File.new(file).each {|line|
+  fields = line.chomp.split("\t")
+  query = fields[0]
+  subject = fields[5]
+  next if (query == subject)
+  evalue = fields[19].to_f
+  
+  pvalue[query] = Hash.new if pvalue[query].nil?
+  pvalue[query][subject] = evalue
+}
+
+groups = []
+

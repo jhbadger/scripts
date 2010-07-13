@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " sqlite.db table.txt [...table.txt]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+db = ARGV.shift
+
+ARGV.each {|txt|
+  table = File.basename(txt, ".txt")
+  cmd = ".separator " + "\"\\t\"" "\n" + ".import " + txt + " " + table + "\n"
+  system("echo '#{cmd}' | sqlite3 #{db}")
+}

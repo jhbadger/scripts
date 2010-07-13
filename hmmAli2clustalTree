@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s hmmali-file [hmmali-file...]\n", $0)
+  exit(1)
+end
+
+ARGV.each {|file|
+  name = File.basename(file).split("[\.]")[0]
+  system("hmmAli2Fasta '#{file}' > '#{name}'.tmp")
+  system("clustalw -tree -infile='#{name}.tmp'")
+  File.unlink("#{name}.tmp")
+}

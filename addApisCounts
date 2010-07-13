@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " dir [...dir]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|dir|
+  STDERR.printf("Processing %s...\n", dir)
+  seqs = Dir.glob("#{dir}/seq/*").size
+  trees = Dir.glob("#{dir}/trees/*.tree").size
+  nline = sprintf("%d of %d query peptides had 3 or more homologs of sufficent length in order to make a tree (%3.1f%%)", trees, seqs, trees*100.0/seqs)
+  if `grep "#{nline}" #{dir}/index.html`.empty?
+    newhtml = File.new("#{dir}/index.tmp", "w")
+    File.new("#{dir}/index.html").each {|line|
+      newhtml.print line unless line =~/recentdups/
+      if line =~/or description/
+        p nline
+        newhtml.print nline + "<br>\n"
+      end
+    }
+    newhtml.close
+    system("rm #{dir}/index.html;mv #{dir}/index.tmp #{dir}/index.html")
+  end
+}

@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+
+o.banner << " aligned-fasta"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+def cleanup(dir)
+  system("rm -rf #{dir}")	
+end
+
+fasta = ARGV.shift
+
+name = File.basename(fasta).split(".").first
+tmpdir = ENV["HOME"] + "/.tmp"
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+
+File.link(fasta, tmpdir + "/seq.fasta")
+batch = File.new(tmpdir + "/batch", "w")
+batch.printf("summary.seqs(fasta=seq.fasta)")
+batch.close
+system("cd #{tmpdir};mothur batch")
+cleanup(tmpdir)

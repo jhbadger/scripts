@@ -1,0 +1,10 @@
+#!/usr/bin/env perl
+use Inline Ruby => 'require "Newick"';
+
+$x = NewickTree->new("(C_elegans:0.43,(H_sapiens_1:0.34,H_sapiens_2:0.37)100:0.06,(A_thaliana:0.29,I_purpurea:0.30)100:0.148);");
+print $x->midpointRoot()->to_s()."\n";
+$taxa = $x->taxa;
+
+foreach $t (@$taxa) {
+  print "$t\n";
+}

@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " gff"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+gff, rest = ARGV
+
+def printLine(fields)
+  fields.each {|field|
+    if field != fields.last
+      printf("%s\t", field) 
+    else
+      printf("%s\n", field)
+    end
+  }
+end
+
+
+genes = Hash.new
+File.new(gff).each {|line|
+  fields = line.chomp.split("\t")
+  if fields[2] == "exon"
+    if fields[8] =~/Id ([0-9|\_|b|d]*)/
+      fields[8] = "name " + $1
+      genes[$1] = [] if (genes[$1].nil?)
+      genes[$1].push(fields)
+    end
+  end
+}
+
+genes.keys.sort.each {|id|
+  records = genes[id]
+  records.sort! {|x, y| x[3].to_i <=> y[3].to_i}
+  gene = records[0].dup
+  gene[2] = "gene"
+  gene[3] = records[0][3]
+  gene[4] = records.last[4]
+  records.sort! {|x, y| y[3].to_i <=> x[3].to_i} if (records[0][6] == "-")
+  records.push(gene)
+  records.each {|record|
+    record.each {|field|
+      printf("%s\t", field)
+    }
+    printf("\n")
+  }
+}

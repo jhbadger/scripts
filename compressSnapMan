@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " snap-list"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+list, rest = ARGV
+
+
+nums = []
+File.new(list).each {|line|
+  num = line.to_i
+  nums.push(num)
+}
+
+data = ""
+0.upto(nums.size - 1) {|i|
+  if (nums[i + 1] = nums[i] + 1)
+    nums
+  end
+}

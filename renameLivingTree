@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'Newick'
+
+if (ARGV.size != 2)
+  STDERR << "Usage: #{File.basename($0)} LTP.newick tax.txt\n"
+  exit(1)
+end
+
+tree, tax = ARGV
+
+tree = NewickTree.fromFile(tree)
+taxa = tree.taxa
+ali = Hash.new
+sps = Hash.new
+taxa.collect {|x| sp = x.split("__").first;ali[x] = sp;sps[sp]=x}
+
+File.new(tax).each do |line|
+  id, tx = line.chomp.split(" ", 2)
+  sp = tx.split(";").last
+  sp.gsub!(" ","_") if (!sp.nil?)
+  if (sps[sp])
+    ali[sps[sp]] = sp + "__" + id
+  end
+end
+
+
+tree.unAlias(ali)
+print tree.to_s(true, false)

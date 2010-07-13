@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " dna-file btab-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dna, btab = ARGV
+
+seqs = Hash.new
+FlatFile.new(FastaFormat, File.new(dna)).each {|seq|
+  seqs[seq.entry_id] = seq.naseq
+}
+
+printed = Hash.new
+list = File.new("list.txt", "w")
+File.new(btab).each {|line|
+  fields = line.chomp.split("\t")
+  name = fields[0]
+  hit = fields[5]
+  outSeq = File.new("#{hit}.seq","a")
+  outPep = File.new("#{hit}.pep","a")
+  s = fields[6].to_i
+  e = fields[7].to_i
+  subseq = seqs[name].subseq(s, e)
+  subprot = subseq.translate(1, 11)
+  outName = hit+"-"+name
+  if (!printed[outName])
+    outSeq.print subseq.to_fasta(outName, 60)
+    outPep.print subprot.to_fasta(outName, 60)
+  end
+  printed[outName] = true
+  outSeq.close
+  outPep.close
+  if (!printed[hit])
+    list.printf("%s\n", hit)
+  end
+  printed[hit] = true
+}
+list.close

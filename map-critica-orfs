@@ -1,0 +1,63 @@
+#!/usr/bin/perl -w
+
+(@ARGV==1) || die ("usage: map-critica-orfs cds-list\n");
+ 
+while(<>) {
+  chop ($_);
+  ($contig,$start,$end)=split(" ",$_);
+  $average=$start+$end/2;
+  $average=pad_num($average);
+  $key=$contig." ".$average." ".$start." ".$end;
+  $orf{$key}=$_;
+}
+
+$oldcontig="";
+
+foreach $key (sort (keys %orf)) {
+  ($contig,$average,$end,$start)=split(" ",$key);
+  if ($start>$end) {
+    $tmp=$start;
+    $start=$end;
+    $end=$tmp;
+  }
+  $overlap=0;
+  if ($contig ne $oldcontig) {
+    if ($oldcontig ne "") {
+      print("\n");
+    }
+    $overlap=0;
+  }
+  else {
+    $overlap=1+$oldend-$oldstart;
+    if ($start<$oldstart) {
+      $overlap-=($oldstart-$start);
+    }
+    if ($start>$oldstart) {
+      $overlap-=($start-$oldstart);
+    }
+    if ($end<$oldend) {
+      $overlap-=($oldend-$end);
+    }
+  }
+  if ($overlap>0) {
+    $percentover=100*$overlap/(1+$end-$start);
+  }
+  else {
+    $percentover=0;
+  }
+  printf("%s\t%6d %3d\n",$orf{$key},$overlap,$percentover);
+  $oldcontig=$contig;
+  $oldend=$end;
+  $oldstart=$start;
+}
+
+sub pad_num {
+  my ($num)=@_;
+  if ($num<10000000) {$num=" ".$num;}
+  if ($num<1000000) {$num=" ".$num;}
+  if ($num<100000) {$num=" ".$num;}
+  if ($num<10000) {$num=" ".$num;}
+  if ($num<1000) {$num=" ".$num;}
+  if ($num<100) {$num=" ".$num;}
+  return $num;
+}

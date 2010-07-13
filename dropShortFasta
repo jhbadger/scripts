@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+
+ARGV.options {|opts|
+  opts.banner << " fasta length-threshold"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, length = ARGV 
+length = length.to_i
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  print seq if seq.length >= length 
+}

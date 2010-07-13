@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'apis.rb'
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s sub-contig.att cluster-list\n", $0)
+  exit(1)
+end
+
+contig, list, method = ARGV
+
+specList = Hash.new
+File.new(contig).each {|line|
+  contig, length, species = line.split("\t")
+  species.tr!(" ", "_")
+  species.tr!("(","")
+  species.tr!(")","")
+  specList[contig] = species
+}
+
+clusterName = "clust0000"
+File.new(list).each {|cluster|
+  size, homologs = cluster.chomp.split("\t")
+  homologs = homologs.split(" ")
+  homologFile = "homologs/#{clusterName}.fasta"
+  aliasFile = "alias/#{clusterName}.alias"
+  clusterExtractHomologs(clusterName, homologFile, aliasFile, specList, homologs)
+  alignFile = "alignments/#{clusterName}.aln" 
+  align(alignFile, homologFile, clusterName)
+  treeFile = "trees/#{clusterName}_ml.tree"
+  makeProMLTree(treeFile, alignFile, clusterName, aliasFile)
+  treeFile = "trees/#{clusterName}_nj.tree"
+  makeNJTree(treeFile, alignFile, clusterName, aliasFile)
+  treeFile = "trees/#{clusterName}_pars.tree"
+  makeParsTree(treeFile, alignFile, clusterName, aliasFile)
+  clusterName.succ!
+}

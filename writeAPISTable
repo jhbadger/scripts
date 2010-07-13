@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'GOS'
+
+ARGV.options {|opts|
+  opts.banner << " out-file hmm-file dir [dir...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+file = ARGV.shift
+hmm = ARGV.shift
+
+out = File.new(file, "w")
+out.printf("Peptide, Sample, Size, APIS Annotation, Taxonomy, HMM, HMM Annotation, Directory\n")
+
+ARGV.each {|dir|
+  buildInfoTable(out, hmm, dir)
+}
+out.close

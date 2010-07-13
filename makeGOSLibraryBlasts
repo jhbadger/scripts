@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+$VERBOSE = nil
+require 'optparse'
+require 'rubygems'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " blast.bz2 [blast.bz2...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+files = Hash.new
+ARGV.each {|blast|
+  bz =  IO.popen("bzcat #{blast}", "r")
+  bz.each {|line|
+    pep, qstart, qend, qstrand, subject, sstart, send, sstrand, ident, similar, 
+    alen, qgap, sgap, qlen, slen, qx, sx, type, dummy, dummy, dummy, dummy, 
+    evalue, bit, entropy, qdef, sdef = line.chomp.split("\t")
+    d, sdef = sdef.split(" ", 2)
+    sdef, rest = sdef.split("/offset")
+    evalue = evalue.to_f
+    if (qdef =~/library_id=([^\ ]*)\ /)
+      lib = $1
+      lib.gsub!("JCVI_LIB_","")
+      files[lib] = File.new(lib+".blast", "w") if (files[lib].nil?)
+      files[lib].printf("%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%3.1f\t%3.1f\t%d\t%8.3e\n", 
+                        pep, lib, subject, sdef, slen, qstart.to_i + 1 , qend.to_i + 1, 
+                        sstart.to_i + 1, send.to_i + 1, 100.0*ident.to_i/alen.to_i, 
+                        100.0*similar.to_i/alen.to_i, bit, evalue)
+    else
+      STDERR.printf("Skipping %s\n", pep)
+    end
+  }
+  bz.close
+}
+
+files.keys.each {|lib|
+  files[lib].close
+}

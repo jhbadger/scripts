@@ -1,0 +1,229 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Venn'
+require 'rubygems'
+require 'csv'
+opt = OpenStruct.new
+
+opt.lists = false
+opt.subset = nil
+
+ARGV.options {|opts|
+  opts.banner << " venn.csv\n"
+  opts.on("-l", "--lists", 
+        "output lists of shared genes") {|t| opt.lists = t} 
+  opts.on("-s ", "--subset ", String, 
+          "fields to include in venn (eg \"1,2,3\")") {|t| opt.subset = t} 
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rest = ARGV
+
+subset = Hash.new
+if (opt.subset)
+  opt.subset.split(",").each {|sub|
+    subset[sub.to_i - 1] = true
+  }
+end
+
+name = []
+list = []
+map = []
+orths = Hash.new
+
+CSV.foreach(csv) {|fields|
+  rep = fields.shift
+  if (name.empty?)
+    fields.size.times {|i|
+      if (!opt.subset || subset[i])
+        map.push(i)
+        name.push(fields[i])
+        list.push([])
+      end
+    }
+  else
+    good = false
+    subfields = []
+    map.each {|m|
+      subfields.push(fields[m])
+      good = true if (!fields[m].nil?)
+    }
+    if (good)
+      orths[rep] = subfields.dup
+      subfields.size.times {|i|
+        list[i].push(rep) if (!subfields[i].nil?)
+      }
+    end
+  end
+}
+
+only = []
+core = []
+twoway = []
+threeway = []
+fourway = []
+
+name.size.times {|i|
+  core[i] = list[i].dup
+  only[i] = list[i].dup
+}
+
+name.size.times {|i|
+  name.size.times{|j|
+    if (i != j)
+      only[i] -= list[j]
+      core[i] = core[i] & list[j]
+    end
+  }
+}
+
+if (name.size > 4)
+  name.size.times {|i|
+    fourway[i] = []
+    name.size.times{|j|
+      if (i != j)
+        fourway[i][j] = []
+        name.size.times{|k|
+          if (k != i && k != j)
+            fourway[i][j][k] = []
+            name.size.times{|l|
+              if (l != i && l != j && l != k)
+                fourway[i][j][k][l] = (list[i] & list[j] & list[k] & list[l]) - core[i]
+              end
+            }
+          end
+        }
+      end
+    }
+  }
+end
+
+if (name.size > 3)
+  name.size.times {|i|
+    threeway[i] = []
+    name.size.times{|j|
+      if (i != j)
+        threeway[i][j] = []
+        name.size.times{|k|
+          if (k != i && k != j)
+            threeway[i][j][k] = (list[i] & list[j] & list[k])
+            threeway[i][j][k] -= core[i]
+            name.size.times{|l|
+              if (l != i && l != j && l != k && name.size > 4)
+                threeway[i][j][k] -= fourway[i][j][k][l]
+              end
+            }
+          end
+        }
+      end
+    }
+  }
+end
+
+name.size.times {|i|
+  twoway[i] = []
+  name.size.times{|j|
+    if (i != j)
+      twoway[i][j] = (list[i] & list[j]) - core[i]
+      name.size.times{|k|
+        if (k != i && k != j && name.size > 3)
+          twoway[i][j] -= threeway[i][j][k]
+          name.size.times{|l|
+            if (l != i && l != j && l != k && name.size > 4)
+              twoway[i][j] -= fourway[i][j][k][l]
+            end
+          }
+        end
+      }
+    end
+  }
+}
+
+
+def printArray(list, i, orths, file)
+  fp = File.new(file, "w")
+  list.each {|entry|
+    fp.printf("%s\n", orths[entry][i])
+  }
+  fp.close
+end
+
+
+if (opt.lists)
+  name.size.times {|i|
+    printArray(core[i], i, orths, name[i] + "_core.txt")
+    printArray(only[i], i, orths, name[i] + "_only.txt")
+    name.size.times {|j|
+      if (i != j)
+        printArray(twoway[i][j], i, orths, name[i] + "+" + name[j] + ".txt")
+        (j + 1).upto(name.size - 1) {|k|
+          if (k != i && name.size > 3)
+            printArray(threeway[i][j][k], i, orths, name[i] + "+" + name[j] + "+" + name[k] + ".txt")
+            (k + 1).upto(name.size - 1) {|l|
+              if (l != i && l != j && name.size > 4)
+                printArray(fourway[i][j][k][l], i, orths, name[i] + "+" + 
+                           name[j] + "+" + name[k] + "+" + name[l] + ".txt")
+              end
+            }
+          end
+        }
+      end
+    }
+  }
+end
+
+if (name.size == 3)
+  venn = $venn3
+elsif (name.size == 4)
+  venn = $venn4
+end
+
+
+key = ["A","B","C","D","E"]
+
+name.size.times {|i|
+  venn.gsub!(key[i]+"namestring", name[i])
+  venn.gsub!(key[i]+"only", only[i].size.to_s)
+  venn.gsub!(key[i]+"total", list[i].size.to_s)
+  name.size.times{|j|
+    if (i != j)
+      venn.gsub!(">" + key[i]+key[j]+"<", 
+                 ">" + twoway[i][j].size.to_s + "<")
+      name.size.times{|k|
+        if (k != i && k != j && name.size > 3)
+          venn.gsub!(">" + key[i]+key[j]+key[k] + "<", 
+                     ">" + threeway[i][j][k].size.to_s + "<")
+          name.size.times{|l|
+            if (l != i && l != j && l != k && name.size > 4)
+              venn.gsub!(">" + key[i]+key[j]+key[k]+key[l]+ "<", 
+                         ">" + fourway[i][j][k][l].size.to_s + "<")
+            end
+          }
+        end
+      }
+    end
+  }
+}
+if (name.size == 3)
+  venn.gsub!("ABC", core[0].size.to_s)
+elsif (name.size == 4)
+  venn.gsub!("ABCD", core[0].size.to_s)
+elsif (name.size == 5)
+  venn.gsub!("ABCDE", core[0].size.to_s)
+end
+
+print venn
+
+

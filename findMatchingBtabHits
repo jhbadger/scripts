@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Btab'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " list btab [...btab...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+list = ARGV.shift
+
+seen = Hash.new
+File.new(list).each do |line|
+  seen[line.chomp] = true
+end
+
+ARGV.each do |btab|
+  Btab.new(btab).each do |query|
+    query.each do |match|
+      if (seen[match.name])
+        STDOUT << query.name << " " << match.qrange.first << " " << match.qrange.last << "\n"
+      end
+    end
+  end
+end

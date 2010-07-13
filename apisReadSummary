@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'DBwrapper'
+
+opt = OpenStruct.new
+opt.storage = "misc_apis"
+opt.host = "mysql-lan-pro"
+opt.all = false
+
+o = OptionParser.new
+o.banner << " dataset [...dataset...]"
+o.on("-a", "--all", "dump all datasets") {opt.all = true}
+o.on("-s ", "--storage ", String, 
+     "storage database (default #{opt.storage})") {|s| opt.storage = s}
+o.on("-h ", "--host ", String, 
+     "database host (default #{opt.host})") {|h| opt.host = h}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1 && !opt.all)
+  STDERR << o
+  exit(1)
+end
+
+db = MySQL.new(opt.host, opt.storage, "access", "access")
+
+if (opt.all)
+  db.query("select dataset from dataset").each {|dataset|
+    ARGV.push(dataset[0])
+  }
+end
+
+
+peps = Hash.new
+reads = Hash.new
+seen = Hash.new
+
+ARGV.each {|dataset|
+  peps[dataset] = 0
+  reads[dataset] = 0
+  db.query("SELECT seq_name FROM sequence WHERE dataset = '#{dataset}'").each{|row|
+    pep = row[0]
+    peps[dataset] += 1
+    read = pep.split("_").first
+    if (!seen[read])
+      seen[read] = true
+      reads[dataset] += 1
+    end
+  }
+}
+
+printf(",reads,peptides, peptides/read\n")
+ARGV.each {|dataset|
+  printf("%s,%d,%d,%.2f\n",dataset, reads[dataset], peps[dataset], peps[dataset]/reads[dataset].to_f)
+}

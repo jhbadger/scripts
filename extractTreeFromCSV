@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'csv'
+require 'Newick'
+
+ARGV.options {|opts|
+  opts.banner << " csv"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rest = ARGV
+
+CSV.foreach(csv) {|row|
+  seq, dataset, tax, ann, tree = row
+  next if seq == "Seq"
+  tree = NewickTree.new(tree)
+  tree.draw(seq + ".tree.pdf", "width", giLink = true)
+}

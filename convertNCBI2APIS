@@ -1,0 +1,51 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+require 'apis'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, rest = ARGV
+
+seenSp = Hash.new
+File.new(prot).each {|line|
+ m, g, s = line.chomp.gsub("...","").split(" ")
+ short = g[0..3]+s[0..3]
+ seenSp[g + " " + s] = short
+}
+
+db = MySQL.new("mysql-lan-pro", "viraldb", "apis", "apis_user")
+att = File.new("compdb2.att", "w")
+seenSp.keys.each {|key|
+  hit = false
+  db.query("SELECT species, strain, taxon_id, taxonomy FROM contigs WHERE species LIKE '#{key}%' LIMIT 1").each {|row|
+    hit = true
+    species, strain, id, tax  = row 
+    [seenSp[key], "0", species, strain, id, tax, "Chromosome", "0", 
+     "0", "0", "0"].each {|field|
+      att.printf("%s\t", field)
+    }
+    att.printf("\n")
+  }
+  STDERR.printf("Missing %s...\n", key) if !hit
+}
+db.close
+att.close

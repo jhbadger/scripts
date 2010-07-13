@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s prot.fasta annotation-file\n", $0)
+  exit(1)
+end
+
+prot, ann = ARGV
+
+func = Hash.new
+File.new(ann).each {|line|
+  orf, desc = line.chomp.tr(">","").split(" ", 2)
+  func[orf] = desc
+}
+
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  orf = seq.definition.split(" ").first
+  seq.definition += " #{func[orf]}" if (!func[orf].nil?)
+  print seq  
+}

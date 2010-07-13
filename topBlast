@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'Blast'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s blast-file\n", $0)
+  exit(1)
+end
+
+blast, rest = ARGV
+
+Blast.new(blast).each {|query|
+  print query.name + "\t" + query.description + "\n"
+  count = 0
+  query.each {|match|
+     print "\t" + match.name + "\t" + match.pvalue.to_s + "\t" + match.description + "\n"
+     count += 1
+     break if (count == 5)
+  }
+}

@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'GeneExpression'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.threshold = nil
+
+o.banner << " expression-csv"
+o.on("-t", "-threshold", Float, "r value threshold") {|t| opt.threshold = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+STDERR << "Loading Spreadsheet...\n"
+table = CSV.read(ARGV.first, headers: true, converters: :numeric)
+
+STDERR << "Calculating R values...\n"
+total = Hash.new
+table.headers.each do |col|
+  next if (col == "Contigs" || col == "Isogroup" || col == "Gene")
+  break if (col == "Sum")
+  total[col] = table[col].last
+end
+
+if (!table.headers.include?("R"))
+  print (table.headers.push("R")).to_csv
+else
+  print table.headers.to_csv
+end
+
+table.each do |row|
+  if (!row["Gene"].nil? || !row["Contigs"].nil?)
+    row["R"] = (100*rvalue(total, row)).to_i/100.0
+    next if (opt.threshold && row["R"] < opt.threshold)
+  end
+  print row.to_csv
+end

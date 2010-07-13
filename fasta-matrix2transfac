@@ -1,0 +1,90 @@
+#!/usr/local/bin/perl -w
+# FILE: fasta-matrix2transfac
+# AUTHOR: William Stafford Noble
+# CREATE DATE: 5/1/03
+# PROJECT: MHMM
+
+$USAGE = "USAGE: fasta-matrix2transfac <file>
+
+Input file format is like this:
+
+>NF-kappaB
+ 0      0     40      0
+ 0      0     40      0
+ 1      0     39      0
+27      0     13      0
+21     13      1      5
+ 8      1      3     28
+ 1      2      2     35
+ 2     18      0     20
+ 3     36      0      1
+ 0     38      0      2
+
+The above matrix, called NF-kappaB, has width 10.  Columns are assumed
+to be in alphabetical order (ACGT).
+";
+
+# Read the command line.
+if (scalar(@ARGV) < 1) {
+  print(STDERR $USAGE);
+  exit(1);
+}
+$fasta_matrices = shift(@ARGV);
+
+# Open the input file.
+open($fasta_matrices, "<$fasta_matrices") 
+    || die("Can't open $fasta_matrices.");
+
+# Read each matrix.
+$matrix_width = 0;
+while ($line = <$fasta_matrices>) {
+  chomp($line);
+
+  # Have we found the beginning of a new matrix?
+  ($first_word) = split(' ', $line);
+  if (substr($first_word, 0, 1) eq ">") {
+
+    # Print the previous matrix, if it exists.
+    if ($matrix_width > 0) {
+      &print_transfac_matrix($id, $matrix_width, @matrix);
+    }
+
+    # Store the new ID, and reset the matrix.
+    $id = substr($first_word, 1);
+    $matrix_width = 0;
+  } else {
+    $matrix{$matrix_width} = $line;
+    $matrix_width++;
+  }
+}
+close($fasta_matrices);
+
+# Print the final matrix.
+&print_transfac_matrix($id, $matrix_width, @matrix);
+exit(0);
+
+sub print_transfac_matrix {
+  my($id, $matrix_width, @matrix) = @_;
+  my($i_matrix);
+  @alph = ("A", "C", "G", "T"); 
+
+  # Start entry.
+  print("ID $id\n");
+  print "P0";
+  foreach $letter (@alph) {
+    printf(" %5s", $letter);
+  }
+  print "\n";
+
+  # Print the matrix.
+  for ($i_matrix = 0; $i_matrix < $matrix_width; $i_matrix++) {
+    printf("%2d ", $i_matrix + 1);
+    print($matrix{$i_matrix});
+    print("\n");
+  }
+
+  # End entry
+  print "XX\n";
+  print "\/\/\n";
+
+}

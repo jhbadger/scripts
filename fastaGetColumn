@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 2 && ARGV.size != 3)
+  STDERR.printf("usage: cat list | %s acc-column fasta [addCol]\n", $0)
+  exit(1)
+end
+
+col, fasta, addCol = ARGV
+col = col.to_i
+addCol = addCol.to_i if !addCol.nil?
+
+accs = Hash.new
+add = Hash.new
+
+STDIN.each {|line|
+  accs[line.split(" ")[col]] = true
+  add[line.split(" ")[col]] = line.split(" ")[addCol] if (!addCol.nil?)
+}
+
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  acc, rest = seq.definition.split(" ", 2)
+  if (accs[acc])
+    seq.definition = acc + " " + add[acc] + " " + rest if (addCol)
+    print seq 
+  end
+}

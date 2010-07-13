@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.a = 0.0
+opt.c = 0.5
+opt.n = 3
+
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-a ", "--alignment ", Float, 
+          "cd-hit minimum alignment coverage (default #{opt.a})") {|t| opt.a = t}
+  opts.on("-c ", "--cutoff ", Float, "cd-hit cutoff (default #{opt.c})") {|t| opt.c = t}
+  opts.on("-n ", "--word ", Integer, "cd-hit word size (default #{opt.n})") {|t| opt.n = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, rest = ARGV
+
+name = prot.split(".").first
+param = "-d 0 -c #{opt.c} -aS #{opt.a} -l 75 -i #{prot} -o #{name}_tmp -n #{opt.n}"
+system("cd-hit #{param}")
+
+
+def process(seqs, clusters)
+  seqs.each {|seq|
+    prot, genome = seq.split("-", 2)
+    clusters[genome] = Hash.new if (clusters[genome].nil?)
+    clusters[genome][prot] = Hash.new if (clusters[genome][prot].nil?)
+    seqs.each {|seq2|
+      prot2, genome2 = seq2.split("-", 2)
+      clusters[genome][prot][genome2] = true
+    }
+  }
+end
+
+seqs = []
+clusters = Hash.new
+File.new("#{name}_tmp.clstr").each {|line|
+  if (line=~/^>/)
+    process(seqs, clusters)
+    seqs = [] 
+  else
+    n, len, nm = line.split(" ")
+    seqs.push(nm.gsub(">","").gsub("...",""))
+  end
+}
+process(seqs, clusters)
+
+out = File.new(name + ".matrix", "w")
+
+out.printf("#\t")
+clusters.keys.sort.each {|genome|
+  out.printf("\t%s", genome)
+}
+out.printf("\n")
+
+clusters.keys.sort.each {|genome|
+  clusters[genome].keys.sort.each {|prot|
+    out.printf("%s\t%s\t", genome, prot)
+    clusters.keys.sort.each {|genome2|
+      if (clusters[genome][prot][genome2])
+        out.printf("%d\t",1)
+      else
+        out.printf("%d\t",0)
+      end
+    }
+    out.printf("\n")
+  }
+}
+
+out.close
+
+File.unlink("#{name}_tmp") if File.exists?("#{name}_tmp")
+File.unlink("#{name}_tmp.bak.clstr") if File.exists?("#{name}_tmp.bak.clstr")
+File.unlink("#{name}_tmp.clstr") if File.exists?("#{name}_tmp.clstr")
+

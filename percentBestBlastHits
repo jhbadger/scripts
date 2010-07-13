@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+require 'rubygems'
+require'bio'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s \"*.blastn|p|etc\"\n", $0)
+  exit(1)
+end
+
+count = 0
+best = Hash.new
+Dir.glob(ARGV[0]) {|file|
+  count += 1
+  report = Bio::Blast::WU::Report.open(file, "r").each {|query|
+    qname = query.query_def.split(" ").first
+    STDERR.printf("#%d %s\n", count, qname) if (count%10 == 1)
+    qsp = $1 if query.query_def =~/\{([^\}]*)\}/
+    query.each {|hit|
+      if (best[qname].nil?)
+        hitname = hit.definition.split(" ").first
+        hitsp = $1 if hit.definition =~/\{([^\}]*)\}/
+        next if hitsp.nil?
+        if (hitname != qname)
+          best[qname] = hitsp
+        end
+      end
+    }
+  }
+}
+
+sum = Hash.new
+
+best.keys.each {|q|
+  sum[best[q]] = 0 if (sum[best[q]].nil?)
+  sum[best[q]] += 1
+}
+
+sum.keys.sort {|x, y| sum[y] <=> sum[x]}.each {|key|
+  printf("%5d %s\n", sum[key], key)
+}

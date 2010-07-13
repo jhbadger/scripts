@@ -1,0 +1,58 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s genbank-file nuc.csv\n", $0)
+  exit(1)
+end
+
+gb, csv = ARGV
+
+nuc = Hash.new
+aa = Hash.new
+header = ""
+isolates = []
+header = ""
+File.new(csv).each {|line|
+  if (header == "")
+    header = line
+    next
+  end
+  fields = line.chomp.gsub(" ","").split(",")
+  isolate = fields.shift
+  if (isolate =~/isolate/i)
+    header = line.chomp
+    next
+  end
+  isolates.push(isolate)
+  nuc[isolate] = fields
+  nuc[isolate].each {|field|
+    if (field.length > 3)
+      aa[field] = "?"
+    else
+      aa[field] = ""
+    end
+    aa[field] = "tigr" if (field == "tigr")
+  }
+}
+
+
+$/="\n//"; # each "line" is a genbank record                   
+File.new(gb).each {|seq|
+  lines = seq.split("\n")
+  acc = lines.grep(/^ACCESSION/).first.split(" ").last
+  if (aa[acc])
+    protlines = lines.grep(/protein_id=\"/)
+    if (protlines.first =~/\"([^\"]*)\"/)
+      aa[acc] = $1
+    end
+  end
+}
+
+print header
+isolates.each {|isolate|
+  print isolate + ","
+  nuc[isolate].each {|field|
+    print aa[field] + ","
+  }
+  print("\n")
+}

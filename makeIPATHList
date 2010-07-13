@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'apis'
+opt = OpenStruct.new
+
+
+opt.width = 10
+opt.storage = "misc_apis"
+opt.host = "mysql-lan-pro.jcvi.org"
+opt.list = nil
+opt.taxonomy = nil
+
+ARGV.options {|opts|
+  opts.banner << " dataset [dataset...]"
+  opts.on("-l ", "--list ", String, "provide optional list of ec numbers to limit to") {|t| opt.list = t}
+  opts.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+  opts.on("-t ", "--taxonomy ", String, "limit to taxonomies (comma separated)") {|t| opt.taxonomy = t}
+  opts.on("-w ", "--width ", Integer, 
+          "set line width (default #{opt.width})") {|t| opt.width = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+colors = ["#ff0000", "#00ff00", "#0000ff", "#ff00ff"]
+mixed = "#000000"
+
+storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
+ec = Hash.new
+
+seen = Hash.new
+if (opt.list)
+  File.new(opt.list).each {|line|
+    num, rest = line.chomp.split(" ")
+    seen[num] = true
+  }
+end
+
+tax = Hash.new
+eccolor = Hash.new
+
+ARGV.each {|dataset|
+  storage.query("select seq_name, kingdom, phylum, class, ord, family, genus, species from classification where dataset='#{dataset}'").each {|row|
+    name = row.shift
+    tax[name] = ""
+    row.each {|field|
+      tax[name] += field + "; "
+      break if field == "Mixed" || field == "Undefined"
+    }
+  }
+}
+
+
+
+opt.taxonomy.split(",").each {|taxonomy|
+  color = colors.shift
+  ARGV.each {|dataset|
+    storage.query("select seq_name, annotation from annotation where dataset='#{dataset}' and source='EC'").each {|row|
+      name, ecnum = row
+      next if (opt.list && !seen[ecnum])
+      next if tax[name].nil?
+      if (!opt.taxonomy || tax[name].index(taxonomy))
+        ec[name] = ecnum
+        if (!eccolor[ecnum])
+          eccolor[ecnum] = color
+        elsif (eccolor[ecnum] != color)
+          eccolor[ecnum] = mixed
+        end
+      end
+    }
+  }
+}
+                 
+  
+ec.values.sort.uniq.each {|ec|
+  printf("E%s %s W%d\n", ec, eccolor[ec], opt.width)
+}
+

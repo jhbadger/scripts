@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'csv'
+
+csv = ENV["HOME"] + "/Documents/Numbers.csv"
+
+if (ARGV.first == "-l")
+  verb = true 
+  ARGV.shift
+else
+  verb = false
+end
+
+ARGV.each {|lang|
+  CSV.foreach(csv) {|fields|
+    l = fields.shift
+    if (l == lang)
+      nums = Hash.new
+      num = 0
+      fields.each {|field|
+        nums[field] = num
+        num += 1
+      }
+      fields.sort.each {|num|
+        print nums[num]
+      }
+      if (verb)
+        fields.sort.each {|num|
+          print " " + num
+        }
+      end
+      print "\n"
+    end
+  }
+}

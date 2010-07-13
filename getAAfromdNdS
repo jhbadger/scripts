@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt.threshold = 0.8
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " dnsds.txt alignment"
+  opts.on("-t ", "--threshold", Float,
+	  "threshold to report (#{opt.threshold})") {|t| opt.threshold = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dnds, afa = ARGV
+
+seqs = []
+FlatFile.new(FastaFormat, File.new(afa)).each {|seq|
+  seqs.push(seq.seq)
+}
+
+File.new(dnds).each {|line|
+  num, w = line.split(" ")
+  num = num.to_i
+  w = w.to_f.abs
+  aas = Hash.new
+  if (w >= opt.threshold)
+    seqs.each {|seq|
+      aas[seq[num - 1].chr] = true 
+    }
+    printf("%d\t%.2f\t%s\n",num, w, aas.keys.sort.to_s)
+  end
+}

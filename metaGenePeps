@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require 'optparse'
+require 'apis'
+opt = OpenStruct.new
+
+$VERBOSE = false
+opt.min = 45
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-m ", "--min ", Integer, "minimum orf length (#{opt.min})") {|t| opt.min = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta , rest = ARGV
+
+asProt(fasta, opt.min, true, true)
+

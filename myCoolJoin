@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " csv-file1 csv-file2"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv1, csv2 = ARGV
+
+lines = Hash.new
+File.new(csv1).each {|line|
+  fields = line.chomp.split(",")
+  line = line.split(",",2).last
+  lines[fields[0]] = line.chomp
+}
+
+File.new(csv2).each {|line|
+  fields = line.chomp.split(",")
+  if (lines[fields[0]])
+    printf lines[fields[0]] + "," + line
+  end
+}

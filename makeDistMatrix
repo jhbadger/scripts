@@ -1,0 +1,79 @@
+#!/usr/bin/env ruby
+
+require 'Phylogeny'
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s [-speciesMax n] id/file [id/file..]\n", $0)
+  exit(1)
+end
+
+maxSpec = 1e6
+if (ARGV.index("-speciesMax"))
+  maxSpec = ARGV.delete_at(ARGV.index("-speciesMax") + 1).to_i
+  ARGV.delete("-speciesMax")
+end
+
+def processArgs(list, maxSpec)
+  taxList = Hash.new
+  aliasHash = Hash.new
+  current = []
+  seqName = "seq0000"
+  seenSpec = Hash.new
+
+  list.each {|member|
+    `getdb -x #{member}`.each {|line|
+      field, rest = line.chomp.split(": ", 2)
+      if (field == "species")
+	g, s =  rest.split(" ")
+	sp = g + "_" + s 
+	seenSpec[g] = 0 if seenSpec[g].nil?
+	seenSpec[g] += 1
+	next if (seenSpec[g] > maxSpec)
+	aliasHash[seqName] = sp
+	taxList[seqName] = current.dup
+	seqName.succ!
+      elsif (field == "superkingdom")
+	current[0] = rest
+      elsif (field == "phylum")
+	current[1] = rest
+      elsif (field == "class")
+	current[2] = rest
+      elsif (field == "order")
+	current[3] = rest
+      elsif (field == "family")
+	current[4] = rest
+      elsif (field == "genus")
+	current[5] = rest
+      elsif (field == "species")
+	current[6] = rest
+      end
+    }
+  }
+  return taxList, aliasHash
+end
+
+taxList, aliasHash = processArgs(ARGV, maxSpec)
+
+treeFile = "taxDist.tre"
+distMatrix = "taxDist.txt"
+distFile = File.new(distMatrix, "w")
+
+distFile.printf(" %d\n", taxList.size)
+taxList.keys.sort.each {|name1|
+  distFile.printf("%-10s ", name1)
+  taxList.keys.sort.each {|name2|
+    size = [taxList[name1].size, taxList[name2].size].min
+    dist = 0
+    size.times {|i|
+      dist += 5.0 / 10**i if (taxList[name1][i] != taxList[name2][i])
+    }
+    distFile.printf("%f ", dist)
+  }
+  distFile.printf("\n")
+}
+
+distFile.close
+
+File.unlink(treeFile) if File.exists?(treeFile)
+tree = makeQuickDistTree(treeFile, distMatrix, aliasHash)
+

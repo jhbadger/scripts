@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " dir"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dir, rest = ARGV
+
+count = 0
+files = Dir.glob("#{dir}/blast/*.btab")
+files.each {|file|
+  count += 1
+  if (count % 1000 == 0)
+    STDERR.printf("%d%% done...\n", (count*100)/files.size)
+  end
+  size = File.size(file)
+  if (size < 130)
+    name = File.basename(file,".blastp.btab")
+    if (!File.exists?("#{dir}/alignments/#{name}.afa"))
+      File.unlink(file)
+      File.unlink("#{dir}/seq/#{name}.fasta")
+    end
+  end
+}

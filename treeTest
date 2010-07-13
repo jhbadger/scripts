@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 3)
+  STDERR.printf("usage: %s newick-file alias-file tree-file [tree-file...]", 
+		$0)
+  exit(1)
+end
+
+newick, ali = ARGV.shift, ARGV.shift
+
+File.new(newick).each {|line|
+  print line if (line !~/^log/ && line !~/^boot/ && line !~/^savetree/ &&
+		 line !~/^quit/)
+}
+
+printf("BEGIN TREES;\n")
+
+ARGV.each {|tree|
+  printf("TREE %s = %s", File.basename(tree), `unAlias -r #{tree} #{ali}`)
+}
+
+printf("ENDBLOCK;\n")
+printf("lscores all /shtest=rell khtest=rell;\n")

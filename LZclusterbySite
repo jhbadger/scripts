@@ -1,0 +1,58 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+opt = OpenStruct.new
+
+
+opt.delimiter = "\t"
+
+ARGV.options {|opts|
+  opts.banner << " txt"
+  opts.on("-d ", "--delimiter ", String, 
+          "delimiter character (default \"#{opt.delimiter}\")") {|t| opt.delimiter = t}      
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+file, rest = ARGV
+clusters=Hash.new
+libraries=Hash.new
+
+#pulling in the file and giving names to columns.  .push puts something onto array, need the .nil to create empty array if the clusterID has never been seen before (if it had been seen before it goes into the previous array for that cluster)
+
+File.new(file).each {|line|
+  library, pepID, clusterID, taxa1, taxa2 = line.chomp.split(opt.delimiter)
+  clusters[clusterID]=[] if clusters[clusterID].nil?
+  clusters[clusterID].push(library)
+  libraries[library]=true
+}
+
+#printing header
+printf("Cluster")
+libraries.keys.sort.each {|library|
+    print "," + library
+}
+print "\n"
+
+#sorting clusters and libraries, then printing clusterID, grep each library and counting the size
+clusters.keys.sort.each {|cluster|
+  print cluster
+  libraries.keys.sort.each {|library|
+    print ","
+    print clusters[cluster].grep(library).size
+  }
+  print "\n"
+}
+
+

@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'active_record'
+require 'rubygems'
+require'bio'
+require 'MySQL'
+
+db = MySQL.new
+
+
+if (File.exist?("ecdb.pep"))
+  STDERR.printf("Looks like there's already ecdb.pep in this directory.\n")
+  STDERR.printf("Use a different directory or delete copy here first.\n")
+  exit(1)
+else
+  out = File.new("ecdb.pep", "w")
+  Ecprotein.find(:all).each {|pep|
+    pep.seq = pep.seq.tr("UJ","X")
+    out.print db.ecfasta(pep)
+  }
+end
+out.close

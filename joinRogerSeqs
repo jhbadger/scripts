@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " fasta"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+seqs, rest = ARGV
+
+forward = Hash.new
+rev = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(seqs)).each do |seq|
+  crap, well, tigr, id = seq.entry_id.split("_")
+  if (id =~/T1F/)
+    forward[well] = seq
+  elsif (id =~/T1R/)
+    rev[well] = seq
+  else
+    STDERR << id << " is neither!\n"
+  end
+end
+
+forward.keys.each do |well|
+  if (forward[well].seq.length > 150)
+    seq = forward[well].seq
+    if (rev[well])
+      seq += ("N"*10) + Bio::Sequence::NA.new(rev[well].seq).complement.seq
+    end
+    print Bio::Sequence::NA.new(seq).to_fasta(well, 60) if seq.length > 800
+  end
+end

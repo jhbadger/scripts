@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+
+require 'FastaDB'
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " pep-file apis-dir"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+pep, dir = ARGV
+
+seen = Hash.new
+FastaDB.new(pep).each {|seq|
+  prefix, num = seq.name.split(/[0-9]/, 2)
+  if (!seen[prefix])
+    if (!File.exists?(prefix))
+      Dir.mkdir(prefix) 
+      Dir.mkdir(prefix + "/alignments")
+      Dir.mkdir(prefix + "/seq")
+      Dir.mkdir(prefix + "/blast")
+      Dir.mkdir(prefix + "/trees")
+      Dir.mkdir(prefix + "/homologs")
+      Dir.mkdir(prefix + "/neighbors")
+    end
+    fp = File.new("#{prefix}/#{prefix}.seq", "w")
+    fp.print seq
+    fp.close
+    seen[prefix] = true
+  else
+    fp = File.new("#{prefix}/#{prefix}.seq", "a")
+    fp.print seq
+    fp.close
+  end
+  File.link("#{dir}/seq/#{seq.name}.fasta", "#{prefix}/seq/#{seq.name}.fasta")
+  
+  if (File.exists?("#{dir}/alignments/#{seq.name}.afa"))
+    File.link("#{dir}/alignments/#{seq.name}.afa", "#{prefix}/alignments/#{seq.name}.afa")
+    File.link("#{dir}/blast/#{seq.name}.blastp", "#{prefix}/blast/#{seq.name}.blastp")
+    File.link("#{dir}/neighbors/#{seq.name}.nei", "#{prefix}/neighbors/#{seq.name}.nei")
+    File.link("#{dir}/trees/#{seq.name}.tree", "#{prefix}/trees/#{seq.name}.tree")
+    File.link("#{dir}/trees/#{seq.name}.tree.pdf", "#{prefix}/trees/#{seq.name}.tree.pdf")
+  end
+}
+
+
+index = File.new("index.html", "w")
+seen.keys.sort.each {|prefix|
+  index.printf("<a href=\"#{prefix}\">#{prefix}</a><p>\n")
+  system("cd #{prefix};apisReport --private #{prefix} #{prefix} #{prefix}.seq")
+}
+index.close

@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+require 'rubygems'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " posmap alias fna [...fna...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 3)
+  STDERR << o
+  exit(1)
+end
+
+posmap, ali  = ARGV.shift, ARGV.shift
+
+seen = Hash.new
+
+STDERR << "Loading posmap...\n"
+
+count = Hash.new
+ZFile.new(posmap).each do |line|
+  contig, read = line.chomp.split("\t")
+  seen[read] = true
+  count[contig] = 0 if (!count[contig])
+  count[contig] += 1
+end
+
+singletons = count.keys.select {|x| count[x] == 0}
+STDERR.printf("There are %d singletons in the assembly\n", singletons.size)
+
+alin = Hash.new
+STDERR << "Loading alias...\n"
+ZFile.new(ali).each do |line|
+  read, newname = line.chomp.split("\t")
+  alin[newname] = read
+end
+
+ARGV.each do |file|
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each do |seq|
+    if (!seen[alin[seq.entry_id]])
+      seq.definition = seq.entry_id + " " + alin[seq.entry_id]
+      print seq 
+    end
+  end
+end

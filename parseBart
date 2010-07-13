@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+ARGV.each {|filename|
+  data = ""
+  good = true
+  #system("cp #{filename} #{filename}.old")
+  if (File.stat(filename).directory?)
+    system("/Users/jbadger/parseBart #{filename}/*")
+  else
+    notSeenPrev = true
+    notSeenNext = true
+    File.new(filename).each {|line|
+      line.gsub!('HREF="/[0-9]*/[0-9]*/','HREF="')
+      line.gsub!('HREF="[0-9]*/','HREF="')
+      line.gsub!('HREF="[0-9]*/','HREF="')
+      line.gsub!('HREF="[0-9]*/','HREF="')
+      line.gsub!("&#146;","'")
+      line.gsub!("&#156;","oe")
+      line.gsub!("http://www.bartleby.com/","")
+      good = false if (line =~ /AD CODE BEGIN/)
+      good = true if (line =~ /-- BEGIN CHAPTER/)
+      if (line =~ /-- END CHAPTER --/ || line =~ /-- END BOTTOM/)
+	good = false
+	notSeenPrev = true
+	notSeenNext = true
+      elsif (line =~ /PREVIOUS/)
+	if(notSeenPrev)
+	  data += line
+	  notSeenPrev = false
+	end
+      elsif (line =~ /NEXT/)
+	if(notSeenNext)
+	  data += line
+	  notSeenNext = false
+	end
+      else
+	data += line if (good)
+      end
+    }
+    fp = File.new(filename,"w")
+    
+    fp.print data
+    fp.close
+  end
+}

@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+
+$VERBOSE=nil
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " fasta-file-with-library-ids directory-to-run-in"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+
+fasta, dir = ARGV
+
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  if (seq.definition =~/library_name=([^\ ]*)\ /)
+    lib = $1
+    name = dir + "/" + seq.entry_id
+    Dir.glob(name + "*.*").each {|file|
+      newname = dir + "/" + lib + "-" + File.basename(file)
+      cmd="sed -i -e s/#{seq.entry_id}/#{lib}-#{seq.entry_id}/ #{file}"
+      system(cmd)
+      File.rename(file, newname)
+    }
+  end 
+}

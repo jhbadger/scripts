@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'FastaDB'
+opt = OpenStruct.new
+
+
+opt.reverse = false
+
+ARGV.options {|opts|
+  opts.banner << " org-abbrev assemble-id new-abbr new-origin"
+  opts.on("-r", "--reverse", "reverse complement the sequence") {|t| opt.reverse = t} 
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 4)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+org, id, norg, origin = ARGV
+origin = origin.to_i
+
+if (org == norg)
+  STDERR.printf("Can't use same abbr as input\n")
+  exit(1)
+end
+
+FastaDB.new("TG_#{org}_#{id}.con").each {|seq|
+  length = seq.length
+  nseq = seq.seq[origin...length] + seq.seq[0..origin - 1]
+  seq = Sequence.new(nseq)
+  seq = seq.naseq.complement if (opt.reverse)
+  out = File.new("TG_#{norg}_#{id}.con", "w")
+  out.print seq.to_fasta("TG_#{norg}_#{id}", 60)
+  out.close
+  out = File.new("TG_#{norg}_#{id}.ent", "w")
+  File.new("TG_#{org}_#{id}.ent").each {|line|
+    id, start, stop, gc, function = line.chomp.split(" ",5)
+    start = start.to_i
+    stop = stop.to_i
+    id.gsub!(org, norg)
+    if (start <= origin)
+      start = (length - origin + start) % length
+    else
+      start -= origin
+    end
+    if (stop <= origin)
+      stop = (length - origin + stop) % length
+    else
+      stop -= origin
+    end
+    out.printf("%15s %7d %7d %5s %s\n", id, start, stop, gc, function)
+  }
+  out.close
+  break
+}

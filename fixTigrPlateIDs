@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " fasta [...fasta]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+ARGV.each do |file|
+  system("cp #{file} #{file}.orig")
+  out = File.new(file, "w")
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file + ".orig")).each do |seq|
+    if (seq.definition =~/([A-Z][0-9]*)_TIGR/)
+      seq.definition = $1
+    end
+    out.print seq
+  end
+  out.close
+end

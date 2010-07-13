@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+def compareTax(match, realTax, fwdTax, revTax)
+  6.times {|i|
+    if (realTax[i] == fwdTax[i] && realTax[i] == revTax[i] && !realTax[i].nil?)
+      match[i] += 1
+    else
+      break
+    end
+  }
+  match[6] += 1.0
+end
+
+
+require 'Phylogeny'
+comboDir = "/usr/local/projects/EVOL/jbadger/"
+
+tax = loadTax(comboDir + "contig.att", true)
+match = [0, 0, 0, 0, 0, 0, 0]
+
+File.new("/home/jbadger/bac_summary.txt").each {|line|
+  next if (line =~ /Unknown/)
+  line = line.gsub(/ |\:|\(|\)|\//,"_")
+  bac, real, fwd, rev = line.chomp.split("\t")
+  realTax = tax[real]["Taxonomy"].split("; ")
+  if (tax[fwd].nil?) 
+    old = fwd
+    fwd = "Mitochondrion_" + fwd
+    fwd = "Chloroplast_" + old if (tax[fwd].nil?)
+    printf("what? #{fwd}\n") if (tax[fwd].nil?)
+  end
+  if (tax[rev].nil?) 
+    old = rev
+    rev = "Mitochondrion_" + rev
+    rev = "Chloroplast_" + old if (tax[rev].nil?)
+    printf("what? #{fwd}\n") if (tax[rev].nil?)
+  end
+  fwdTax = tax[fwd]["Taxonomy"].split("; ")
+  revTax = tax[rev]["Taxonomy"].split("; ") 
+  compareTax(match, realTax, fwdTax, revTax)
+}
+
+
+list = ["kingdom", "phylum", "class", "order", "family", "genus"]
+6.times {|i|
+  printf("%15s %3d\n", list[i], match[i]*100/match[6])
+}

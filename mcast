@@ -1,0 +1,191 @@
+#!/usr/local/bin/perl -w
+# FILE: mcast 
+# CREATE DATE: 13-1-2003
+# AUTHOR: Timothy L. Bailey
+# PROJECT: MHMM
+# COPYRIGHT: 2002, University of Queensland
+# DESCRIPTION: Motif Cluster Alignment Search Tool
+#
+
+$PGM = $0;                      # name of program
+$PGM =~ s#.*/##;                # remove part up to last slash
+#@args = @ARGV;			# arguments to program
+$| = 1;                         # flush after all prints
+$SIG{'INT'} = 'cleanup(1, "")';	# interrupt handler
+# Note: so that interrupts work, always use for system calls:
+#       if ($status = system($command)) {&cleanup($status)}
+
+# requires
+push(@INC, split(":", $ENV{'PATH'}));   # look in entire path
+
+# defaults
+$pthresh = 0.0005;
+$maxgap = 200;
+$egcost = 1;
+$b = 4;
+$ethresh = 100;
+$mhmmscan_args = "-pseudo-weight 0 -allow-weak-motifs";
+$mhmm_args = "";
+$transfac2meme_args = "";
+
+$usage = <<USAGE;               # usage message
+  USAGE:
+        $PGM -q <query> -db <database> [options]
+	
+	-q <query>		name of file of motif(s) in TRANSFAC format
+	-db <database or "-">	name of FASTA file of sequences 
+				(or "-" for standard input)
+	[-p <pthresh>] 		p-value threshold for motif "hits"; 
+				default: <p-thresh> = $pthresh
+	[-g <maxgap>]		maximum allowed distance between adjacent hits
+				default: <maxgap> = $maxgap
+ 	[-e <Ethresh>]		print matches with E-values less than E; 
+				default: <E-thresh> = $ethresh
+	[-b <b>]		add b * background frequency to each count in query;
+				default: b = $b 
+	[-bg <file>]		file containing n-order Markov background model
+	[-allow-weak-motifs]	allow motifs in query that cannot have hits
+				default: stop if <motifs> contains weak motifs
+	[-lowcomp <threshold>]	remove low complexity motifs from query;
+				default: include all motifs in query
+	[-synth]		use synthetic scores for distribution
+	[-fancy]		print alignments in output; default: no alignments
+	[-text]  		output plain text; default: output HTML
+
+	MCAST: Motif Cluster Alignment Search Tool
+
+ 	Search a sequence database for statistically significant clusters of 
+	non-overlapping "hits" to the motifs in a query.
+
+  	INPUT:  
+
+	  1) A set of motifs in TRANSFAC format, and
+	  2) a database in FASTA format.
+
+  	OUTPUT: 
+
+	  1) A list of matches (clusters of motif hits)
+	     sorted in order of statistical significance.
+	  2) Alignments of the matching sequence regions
+	     with the motifs.
+	  3) "Motif diagrams", showing the order and
+	     spacing of motif hits in each match.
+
+	This script provides a wrapper for the necessary 
+	MetaMEME operations:
+		1) convert motifs to metameme model
+		2) run mhmmscan using p-value scoring
+
+	Writes to standard output.
+
+        Copyright
+        (2003) University of Queensland
+        All Rights Reserved.
+        Author: Timothy L. Bailey
+
+USAGE
+
+$nargs = 4;                     # number of required args
+if ($#ARGV+1 < $nargs) { &print_usage("$usage", 1); }
+
+# get input arguments
+while ($#ARGV >= 0) {
+  $_ = shift;
+  if ($_ eq "-h") {                             # help
+    &print_usage("$usage", 0);
+  } elsif ($_ eq "-q") {
+    $_ = shift; $query = $_;
+  } elsif ($_ eq "-db") {
+    $_ = shift; $mhmmscan_args .= " -seq $_";
+  } elsif ($_ eq "-p") {
+    $pthresh = shift;
+  } elsif ($_ eq "-g") {
+    $maxgap = shift;
+  } elsif ($_ eq "-e") {
+    $ethresh = shift;
+  } elsif ($_ eq "-b") {
+    $_ = shift; $b = $_;
+  } elsif ($_ eq "-bg") {
+    $_ = shift; $mhmmscan_args .= " -bg $_";
+    $transfac2meme_args .= " -bg $_";
+  } elsif ($_ eq "-allow-weak-motifs") {
+    $mhmmscan_args .= " $_";
+  } elsif ($_ eq "-text") {
+    $mhmmscan_args .= " $_";
+  } elsif ($_ eq "-fancy") {
+    $mhmmscan_args .= " $_";
+  } elsif ($_ eq "-lowcomp") {
+    $mhmm_args .= $_;
+  } elsif ($_ eq "-synth") {
+    $mhmmscan_args .= " $_";
+  } else {
+    &print_usage("$usage", 1);
+  }
+}
+
+#
+# convert motifs to MEME format
+#
+printf STDERR "Converting query to MEME format...\n";
+$memefile = "$PGM.$$.meme.tmp";
+$command = "transfac2meme $transfac2meme_args -b $b $query > $memefile";
+if ($status = system("$command")) { cleanup($status, ""); }
+
+#
+# convert MEME file to star mhmm
+#
+printf STDERR "Converting query to MHMM format...\n";
+$mhmmfile = "$PGM.$$.mhmm.tmp";
+$command = "mhmm -meme $memefile -type star > $mhmmfile";
+if ($status = system("$command")) { cleanup($status, ""); }
+
+#
+# run mhmmscan
+#
+printf STDERR "Running mhmmscan...\n";
+$command = "mhmmscan -hmm $mhmmfile";
+$command .= " -p-thresh $pthresh -max-gap $maxgap -thresh $ethresh -egcost $egcost $mhmmscan_args";
+if ($status = system("$command")) { cleanup($status, ""); }
+
+#
+# cleanup temporary files
+#
+cleanup(0, "");
+
+################################################################################
+#                       Subroutines                                            #
+################################################################################
+
+################################################################################
+#
+#       print_usage
+#
+#       Print the usage message and exit.
+#
+################################################################################
+sub print_usage {
+  my($usage, $status) = @_;
+
+  if (-c STDOUT) {                      # standard output is a terminal
+    open(C, "| more");
+    print C $usage;
+    close C;
+  } else {                              # standard output not a terminal
+    print STDERR $usage;
+  }
+
+  exit $status;
+}
+
+################################################################################
+#       cleanup
+#
+#       cleanup stuff
+#
+################################################################################
+sub cleanup {
+  my($status, $msg) = @_;
+  if ($status && "$msg") {print STDERR "$msg: $status\n";}
+  system("rm $PGM.$$.*.tmp");			# Remove temporary files.
+  exit($status);
+}

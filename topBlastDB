@@ -1,0 +1,105 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'apisdb'
+require 'bio'
+require 'date'
+opt = OpenStruct.new
+
+opt.annotate = false
+opt.maxHits = 500
+opt.maxTree = 50
+opt.local = false
+opt.evalue = 1e-10
+opt.coverage = 0.50
+opt.minOrf = 50
+opt.project = nil
+opt.erase = false
+opt.exclude = nil
+opt.gridSize = 50
+opt.queue = "medium"
+opt.database = "combodb"
+opt.storage = "gosii_io_apis"
+opt.clear = false
+
+$VERBOSE = nil
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-a", "--annotate", 
+          "annotate peptides phylogenomically") {|t| opt.annotate = t}
+  opts.on("-c", "--clear", "remove old output") {|t| opt.clear = t}
+  opts.on("-d ", "--database ", String, 
+          "query database (default #{opt.database})") {|t| opt.database = t}
+  opts.on("-e ", "--evalue ", Float, 
+          "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
+  opts.on("-f ", "--coverage ", Float, 
+          "set min fraction of coverage (default #{opt.coverage})") {|t| opt.coverage = t}
+  opts.on("-l", "--local", "run BLASTP locally") {|t| opt.local = t}
+  opts.on("-o ", "--orfSize ", Integer, 
+          "minimum aa length for DNA ORFs (default #{opt.minOrf})") {|t| opt.minOrf = t}
+  opts.on("-p ", "--project ", Integer, 
+	  "JCVI project number for grid blast") {|t| opt.project = t}
+  opts.on("-m ", "--maxHits ", Integer, 
+          "max number of BLASTP hits (default #{opt.maxHits})") {|t| opt.maxHits = t}
+  opts.on("-q ", "--queue ", String, 
+	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
+  opts.on("-s ", "--storage ", String, 
+          "storage database (default #{opt.storage})") {|t| opt.storage = t}
+  opts.on("-t ", "--maxTree ", Integer, 
+          "max number of seqs in tree (default #{opt.maxTree})") {|t| opt.maxTree = t}
+  opts.on("-y ", "--exclude ", String,
+	  "exclude given contigs from run") {|t| opt.exclude = t}
+  opts.on("-z ", "--size ", Integer,  
+	  "number of sequences per each grid job (default #{opt.gridSize})") {|t| opt.gridSize = t} 
+  opts.on(nil, "--erase", "erase input when done (internal use by grid jobs)") {|t| opt.erase = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, rest = ARGV
+dataset, ext = File.basename(prot).split(".")
+
+db = MySQL.new("mysql-lan-pro.jcvi.org", opt.database,
+                 "jbadger", "plankton")
+db.tax
+db.blastdb
+
+storage = MySQL.new("mysql-lan-val.jcvi.org", opt.storage,
+                     "jbadger", "plankton")
+storage.deleteDataset("dataset = '#{dataset}'", true) if opt.clear
+storage.createDataset(dataset, ENV["USER"], Date.today.to_s)
+storage.loadPeptides(prot, dataset)
+
+if (!File.exist?(prot))
+  STDERR.puts("File #{prot} not found!")
+  exit(1)
+else
+  prot = asProt(prot, opt.minOrf)
+end
+
+if (opt.local)
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(prot)).each {|seq|
+    processPep(db, storage, seq, dataset, opt.maxHits, 
+               opt.maxTree, opt.evalue, opt.coverage, opt.exclude, opt.annotate)
+  }
+else
+  runGridApis(db, storage, dataset, opt.maxHits, 
+              opt.maxTree, opt.evalue, opt.coverage, opt.exclude, 
+              opt.annotate, opt.project, opt.gridSize, opt.database, 
+              opt.storage, opt.queue)
+end
+
+if (opt.erase)
+  File.unlink(prot)
+end

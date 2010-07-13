@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s tree-file\n",$0)
+  exit(1)
+end
+
+treeFile = ARGV.shift
+
+species = Hash.new
+File.new("/home/jbadger/comboDB/contig.att").each {|line|
+  name, tid, spname, blah, blah, taxlist = line.split("\t")
+  taxlist = taxlist.split("; ") if !taxlist.nil?
+  species[name] = taxlist[2].split(" ")[0] if !taxlist[2].nil?
+}
+
+
+tree = ""
+File.new(treeFile).each {|line|
+  tree += line
+}
+
+
+pos = 0
+while(!pos.nil?)
+  pos = tree.index(/([A-Z|a-z][^[,\)\:\']*)/, pos)
+  if (!pos.nil?)
+    taxon = $1
+    pos += taxon.length
+    orf, contigName = taxon.split("-")
+    if (!species[contigName].nil?)
+      tree.gsub!(taxon, species[contigName] + "_" + orf)
+    end
+  end
+end
+
+print tree

@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+$VERBOSE = nil
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " recip-file all.fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+recip, prot = ARGV
+
+seqs = Hash.new
+STDERR.printf("Loading all.pep...\n")
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  seqs[seq.entry_id] = seq
+}
+
+File.new(recip).each {|line|
+  orf1, orf2, p1, p2, sig = line.split(" ")
+  if (sig == "yes")
+    out = File.new(orf1 + ".pep", "w")
+    out.print seqs[orf1]
+    out.print seqs[orf2]
+    out.close
+    system("muscle -in #{orf1}.pep")
+    File.unlink(orf1 + ".pep")
+  end
+}

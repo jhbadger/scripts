@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'apis'
+
+@all = false
+@host = "mysql-lan-pro.jcvi.org"
+@contig = nil
+@taxfilter = nil
+@notree = false
+@user = "apis"
+@password = "apis_user"
+@sql = false
+
+storage = MySQL.new(@host, "gosi_apis", @user, @password)
+
+dataset = Hash.new
+storage.query("select dataset from dataset").each {|row|
+  dataset[row[0]] = true
+}
+
+out = File.new("transporter.txt", "w")
+File.new("t.txt").each {|line|
+  num, id, sample, lib = line.chomp.split("\t")
+  if (dataset[lib])
+    out.print line
+  end
+}

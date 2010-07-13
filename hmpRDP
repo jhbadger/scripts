@@ -1,0 +1,64 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " csv rdplist.txt"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, list = ARGV
+
+
+matches = Hash.new
+
+release = []
+STDERR.printf("Loading release....\n")
+File.new(list).each {|line|
+  release.push(line.chomp.tr(">[]/()",""))
+}
+
+STDERR.printf("Processing...\n")
+File.new(csv).each {|line|
+  next if line=~/^Genus/
+  line.tr!("[]/()","")
+  genus, species, strain = line.chomp.split(",")
+  species = "" if species == "sp."
+  strain = "" if strain.nil?
+  spLine = genus + "_" + species + "_" + strain
+  g = release.grep(/#{genus.strip}/)
+  if (g.size == 0)
+    STDERR.printf("Genus %s not found\n", genus)
+  else
+    matches[spLine] = g.first
+  end
+  g = g.grep(/#{species.strip}/)
+  if (g.size == 0)
+    STDERR.printf("Species %s not found\n", genus + " " + species)
+  else
+    matches[spLine] = g.first
+  end
+  g = g.grep(/#{strain.strip}/)
+  if (g.size == 0)
+    STDERR.printf("Strain %s not found\n", genus + " " + species + " " + strain)
+  else
+    matches[spLine] = g.first
+  end
+}
+
+matches.keys.sort.each {|key|
+  printf("%s\t%s\n", matches[key].split(" ").first, key)
+}

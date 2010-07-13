@@ -1,0 +1,172 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'Phylogeny'
+require 'ostruct'
+require 'fpdf'
+
+$VERBOSE = nil
+
+opt = OpenStruct.new
+opt.algorithm = "nj"
+opt.estimate = false
+opt.gamma = false
+opt.noboot = false
+opt.numboot = 100
+opt.outgroup = nil
+opt.pam = false
+opt.trim = false
+opt.project = nil
+
+pflag = ARGV.index("-p")
+pflag = ARGV.index("--project") if (pflag.nil?)
+
+if (pflag)
+  opt.project = ARGV[pflag + 1]
+  ARGV[pflag] = ""
+  ARGV[pflag + 1] = ""
+  cmd = $0
+  ARGV.each {|arg|
+    cmd += (" " + arg.to_s) if (arg != "")
+  }
+  qsub = "qsub -P #{opt.project} -e stderr -cwd -o stdout "
+  system("#{qsub} \"#{cmd}\"")
+  exit(0)
+end
+
+def cleanup(dir)
+  system("rm -rf #{dir}")
+end
+
+ARGV.options {|opts|
+  opts.banner << " fasta [fasta..]"
+  opts.on("-b", "--noboot", 
+          "don't bootstrap (default #{opt.noboot})") {opt.noboot = true} 
+  opts.on("-n ", "--numboot ", Integer, 
+        "number of bootstrap reps  (default #{opt.numboot})") {|num| opt.numboot = num}
+  opts.on("-e", "--estimate", 
+        "estimate branch lengths (default #{opt.estimate})") {opt.estimate = true}
+  opts.on("-g", "--gamma", 
+          "use gamma distrib. rates (default #{opt.gamma})") {opt.gamma = true}
+  opts.on("-m ", "--method ", String, 
+          "method (default #{opt.algorithm} -  nj, pars, ml valid)") {|alg| opt.algorithm = alg}
+  opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
+  opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}  
+  opts.on(nil, "--pam", "use PAM model (default #{opt.pam})") {opt.pam = true}
+  opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+if (opt.algorithm != "pars" && opt.algorithm != "nj" && opt.algorithm != "ml")
+  STDERR.printf("only pars, nj and ml are supported\n")
+  exit(1)
+end
+
+ARGV.each {|fasta|
+  name = File.basename(fasta).split(".").first
+tmpdir = ENV["HOME"] + "/.tmp"
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tname = tmpdir + "/" + name
+  dna = isDNA?(fasta)
+  aliHash = aliasFasta(fasta, nil, tname, opt.outgroup, opt.trim)
+  fasta2Phylip(tname, "#{tname}.phy")
+  File.unlink("#{tmpdir}/infile") if (File.exists?("#{tmpdir}/infile"))
+  File.unlink("#{tmpdir}/outfile") if (File.exists?("#{tmpdir}/outfile"))
+  File.unlink("#{tmpdir}/outtree") if (File.exists?("#{tmpdir}/outtree"))
+  File.rename("#{tname}.phy", "#{tmpdir}/infile")
+  
+  if (!opt.noboot)
+    odd = (2 * rand(40)) + 1
+    system("cd #{tmpdir};echo -e 'R\n#{opt.numboot}\nY\n#{odd}\n' | seqboot")
+    File.rename("#{tmpdir}/outfile", "#{tmpdir}/infile")
+  end
+  if (opt.algorithm == "pars")
+    if (dna)
+      pars = "dnapars"
+    else
+      pars = "protpars"
+    end
+    if (opt.noboot)
+      system("cd #{tmpdir}; echo -e 'Y\n' | #{pars}") 
+    else
+      odd = (2 * rand(40)) + 1
+      system("cd #{tmpdir}; echo -e 'M\n\D\n#{opt.numboot}\n#{odd}\n2\nY\n' | #{pars}") 
+    end
+  elsif (opt.algorithm == "nj")
+    if (dna)
+      dist = "dnadist"
+    else
+      dist = "protdist"
+    end
+    if (opt.noboot)
+      system("cd #{tmpdir}; echo -e 'Y\n' | #{dist}")
+      neighbor = "echo -e 'Y\n' | neighbor"
+    else
+      system("cd #{tmpdir}; echo -e 'M\nD\n#{opt.numboot}\nY\n' | #{dist}")
+      odd = (2 * rand(40)) + 1
+      neighbor = "echo -e 'M\n#{opt.numboot}\n#{odd}\nY\n' | neighbor"
+    end
+    File.rename("#{tmpdir}/outfile", "#{tmpdir}/infile")
+    system("cd #{tmpdir}; #{neighbor}")
+  elsif (opt.algorithm == "ml")
+    pam = ""
+    after = "Y\n"
+    if (dna)
+      ml = "dnaml"
+    else
+      ml = "proml"
+      pam = "P\nP\n" if (opt.pam)
+      pam += "R\n" if (opt.gamma)
+    end
+    aft = "Y\n"
+    aft += "1.41\n9\n" if (opt.gamma)
+    if (opt.noboot)
+      system("cd #{tmpdir}; echo -e '#{pam}#{aft}' | #{ml}") 
+    else
+      odd = (2 * rand(40)) + 1
+      system("cd #{tmpdir};echo -e 'M\n\D\n#{opt.numboot}\n#{odd}\n2\n#{pam}#{aft}'|#{ml}") 
+    end
+  end
+ 
+  if (!opt.noboot)
+    File.rename("#{tmpdir}/outtree", "#{tmpdir}/intree")
+    File.unlink("#{tmpdir}/outfile")
+    system("cd #{tmpdir}; echo -e 'Y\n' | consense")
+  end
+  File.rename("#{tmpdir}/outtree", "#{tname}.tree")
+  tree = NewickTree.fromFile("#{tname}.tree")
+  tree.fixPhylip
+  tree = estimateMLBranchLengths(tree, tname, tmpdir) if (opt.estimate)
+  tree.unAlias(aliHash)
+  if (opt.outgroup)
+    outNode = tree.findNode(opt.outgroup)
+    if (outNode.nil?)
+      STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
+    else
+      tree = tree.reroot(outNode)
+    end
+  else
+    tree = tree.midpointRoot
+  end
+  if (!opt.gamma)
+    tree.write("#{name}_#{opt.algorithm}.tree")
+    tree.draw("#{name}_#{opt.algorithm}.tree.pdf")
+  else
+    tree.write("#{name}_#{opt.algorithm}_gamma.tree")
+    tree.draw("#{name}_#{opt.algorithm}_gamma.tree.pdf")
+  end
+  cleanup(tmpdir)
+}

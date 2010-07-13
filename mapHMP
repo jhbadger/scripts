@@ -1,0 +1,59 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'csv'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " csv-file fasta"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, fasta = ARGV
+
+ncbi = Hash.new
+center = Hash.new
+under = Hash.new
+need = Hash.new
+
+
+CSV.foreach(csv) {|fields|
+  hmp, org, c1, c2, taxid, cent = fields
+  next if hmp == "HMP"
+  ncbi[org] = taxid
+  center[org] = cent
+  under[org.gsub(" ","_")] = org
+  need[org] = true
+}
+
+unMapped = File.new("unmapped_input.fa", "w")
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  name = seq.entry_id
+  if (under[name])
+    seq.definition = under[name].gsub(" ","_") + " NCBI:" + ncbi[under[name]] + " " + center[under[name]]
+    need[under[name]] = false
+    print seq
+  else
+    unMapped.print seq
+  end
+}
+unMapped.close
+
+need.keys.sort.each {|key|
+  if need[key]
+    STDERR.printf("%s\t%s", key, center[key])
+    STDERR.printf("\n")
+  end
+}

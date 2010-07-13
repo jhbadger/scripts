@@ -1,0 +1,115 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+#require 'scruffy'
+require 'rubygems'
+require'bio'
+require 'MySQL'
+opt = OpenStruct.new
+
+opt.level = 2
+opt.misc = 1
+
+ARGV.options {|opts|
+  opts.banner << " fasta [..fasta..]"
+  opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+  opts.on("-m ", "--misc ", Float,
+          "Percent below where data thrown in Misc. (default #{opt.misc})") {|t| opt.misc = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+tax = MySQL.new.loadTax
+
+counts = Hash.new
+subtotals = Hash.new
+speciesTax = Hash.new
+data = Hash.new
+
+
+tax.keys.each {|contig|
+  taxonomy =  tax[contig]["taxonomy"]
+  speciesTax[tax[contig]["species"]] = taxonomy.split("; ")[opt.level] if taxonomy.index("Bacteria")
+}
+counts["MySQL"] = Hash.new
+subtotals["MySQL"] = 0
+speciesTax.keys.each {|org|
+  taxon = speciesTax[org]
+  counts["MySQL"][taxon] = 0 if (counts["ComboDB"][taxon].nil?)
+  counts["MySQL"][taxon] += 1
+  subtotals["MySQL"] += 1
+}
+
+ARGV.each {|pep|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each {|seq|
+    name = File.basename(pep, ".pep")
+    id, contig = seq.entry_id.split("-")
+    if (counts[name].nil?)
+      counts[name] = Hash.new
+      subtotals[name] = 0
+    end
+    taxon = tax[contig]["taxonomy"].split("; ")[opt.level]
+    counts[name][taxon] = 0 if counts[name][taxon].nil?
+    counts[name][taxon] += 1
+    subtotals[name] += 1
+  }
+}
+
+
+taxa = counts["MySQL"].keys.sort!{|x,y| counts["ComboDB"][y] <=> counts["ComboDB"][x]}
+counts.keys.each {|name|
+  data[name] = Hash.new
+  taxa.each {|taxon|
+    counts[name][taxon] = 0 if (counts[name][taxon].nil?)
+    percent = counts[name][taxon]/(subtotals[name]/100.0)
+    data[name][taxon] = percent
+  }
+}
+
+
+miscItems = []
+
+taxa.each {|taxon|
+  allLow = true
+  counts.keys.each {|name|
+    allLow = false if data[name][taxon] > opt.misc
+  }
+  miscItems.push(taxon) if allLow
+}
+
+counts.keys.each {|name|
+  data[name]["Misc"] = 0
+  miscItems.each {|taxon|
+    data[name]["Misc"] += data[name][taxon]
+    data[name].delete(taxon)
+    taxa.delete(taxon) if taxa.include?(taxon)
+  }
+  
+}
+
+taxa.push("Misc")
+
+counts.keys.each {|name|
+  printf(",%s", name)
+}
+printf("\n")
+taxa.each {|taxon|
+  printf("%s", taxon)
+  counts.keys.each{|name|
+    data[name][taxon] = 0 if data[name][taxon].nil?
+    printf(",%5.2f",data[name][taxon]) 
+  }
+  printf("\n")
+}

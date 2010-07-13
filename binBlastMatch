@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+opt.evalue = 1e-9
+ARGV.options {|opts|
+  opts.banner << " blast-file query-file match-string"
+   opts.on("-e", "--evalue ", Float, 
+          "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+blast, queries, match = ARGV
+
+matches = Hash.new
+count = 1
+Bio::Blast::Default::Report.open(blast, "r").each {|query|
+  STDERR.printf("Processing Query %d...\n", count) if (count % 10000 == 0) # progress report
+  name = query.query_def.split(" ").first # first word in query string
+  query.each {|hit|
+    next if hit.evalue > opt.evalue # skip hits that are no good
+    if (hit.definition =~/#{match}/) # does it hit a matching thing?
+      matches[name] = true
+      break
+    else
+      matches[name] = false
+    end
+  }
+  count += 1
+}
+
+
+match = File.new(queries + "_match.out", "w")
+nomatch = File.new(queries + "_nomatch.out", "w")
+Bio::FlatFile.new(Bio::FastaFormat, File.new(queries)).each {|seq|
+  if (matches[seq.entry_id])
+    match.print seq
+  else
+    nomatch.print seq
+  end
+}
+match.close
+nomatch.close

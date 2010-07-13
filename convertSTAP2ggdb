@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " stap.res"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+res, rest = ARGV
+
+File.new(res).each {|line|
+  fields = line.chomp.tr("'","").split("\t")
+  fields.pop
+  greenid = fields.first.gsub(/_$/,"")
+  tax = fields.last.split("|")
+  tax.shift
+  species = tax.pop.capitalize
+  taxString = ""
+  tax.each {|taxon|
+    taxString +=  taxon.capitalize + "; "
+  }
+  taxString.chop!
+  taxString.chop!
+  printf("INSERT INTO greentax VALUES('#{greenid}', '', '#{species}', '#{taxString}', '#{taxString}', '#{taxString}', '#{taxString}', '#{taxString}', '#{taxString}');\n")
+}

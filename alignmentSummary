@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'optparse'
+require 'ZFile'
+
+ARGV.options {|opts|
+  opts.banner << " aln"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size  != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+aln, rest = ARGV
+
+minGaps = 1e8
+maxGaps = 0
+totGaps = 0
+count = 0
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(aln)).each {|seq|
+  gaps =  seq.seq.count(".-")
+  minGaps = gaps if gaps < minGaps
+  maxGaps = gaps if gaps > maxGaps
+  totGaps += gaps
+  count += 1
+}
+
+printf("Min Gaps: %6d\n", minGaps)
+printf("Max Gaps: %6d\n", maxGaps)
+printf("Avg Gaps: %6d\n", totGaps / count)
+

@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'Btab'
+
+if (ARGV.size != 1 && ARGV.size != 2)
+  STDERR.printf("usage: %s scaffolds.btab [exclude]\n", $0)
+  exit(1)
+end
+
+btab, exclude = ARGV
+
+hits = Hash.new
+seen = Hash.new
+btab = Btab.new(btab)
+btab.each {|query|
+  query.matches.each {|match|
+    if ((exclude.nil? || match.desc !~ /#{exclude}/) && match.desc != "-" )
+      hits[query.name] = match
+      seen[match.name] = [] if (seen[match.name].nil?)
+      seen[match.name].push(query.name)
+      break
+    end
+  }
+}
+
+linked = Hash.new
+seen.keys.each {|name|
+  if (seen[name].size > 1)
+    desc = "" 
+    seen[name].each {|key|
+      inconsistent = 0.0
+      s, e = hits[key].srange.first, hits[key].srange.last
+      printf("%s\t%s\t%s\t%s\t", key, hits[key].evalue, s, e)
+      desc = hits[key].desc
+    }
+    printf("%s\t%s\n", name, desc)
+  end
+}

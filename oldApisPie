@@ -1,0 +1,89 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'gchart'
+opt = OpenStruct.new
+
+opt.level = 2
+
+ARGV.options {|opts|
+  opts.banner << " apis-dir [..apis-dir..]"
+  opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+out = File.new("chart.html", "w") 
+ARGV.each {|dir|
+  counts = Hash.new
+  pepTax = Hash.new
+  total = 0
+  ranks =  ["kingdom","phylum","class","order","family","genus","species"]
+  Dir.glob(dir + "/*" + ranks[opt.level] + ".html").each {|html|
+    tax = nil
+    if (html =~/is_unresolved/)
+      tax = "Mixed"
+    elsif (html =~/(Contained_within[_]*|Outgroup_of[_]*)(.*)_#{ranks[opt.level]}/)
+      tax = $2.gsub(",","")
+    else
+      STDERR.printf("Error: %s cannot be parsed at %s\n", html, ranks[opt.level])
+      exit(1)
+    end
+    File.new(html).each {|line|
+      if (line =~/\"blast\/(.*).blastp/)
+        id = $1
+        pepTax[id] = tax
+      end
+    }
+  }
+  
+  pepTax.keys.each {|id|
+    taxon = pepTax[id]
+    taxon = "Mixed" if taxon.nil?
+    counts[taxon] = 0 if (counts[taxon].nil?)
+    counts[taxon] += 1 
+    total += 0.01
+  }
+  
+  percents = Hash.new
+  counts["Misc"] = 0
+  percents["Misc"] = 0
+  
+  counts.keys.each {|key|
+    percents[key] = counts[key]/total if total > 0
+  }
+  
+  printf("\nCategory in #{dir}, Counts, Percent\n")
+  percents.keys.sort {|x,y| percents[y] <=> percents[x]}.each {|key|
+    printf("%s,%d,%5.2f\n", key, counts[key], percents[key]) if (percents[key]> 0.0)
+  }
+  
+  counts.keys.each {|key|
+    if (percents[key] < 2 && key != "Misc")
+      percents["Misc"] += percents[key]
+      counts.delete(key)
+      percents.delete(key)
+    end
+  }
+  
+  
+  url = Gchart.pie(:data => percents.values, :legend => percents.keys, :width=>500, 
+                   :title => dir)
+  
+  out.printf("<img src=\"%s&chco=90b8c0,988ca0,ff9999,99ff99\"/>\n\n", url)
+  
+}
+out.close

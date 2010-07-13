@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+
+ARGV.options {|opts|
+  opts.banner << " contig-name species-name taxonomy tax-id"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 4)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+name, size, species, strain, taxon_id, taxonomy, form, 
+    proteins, rrnas, trnas,  gc = nil
+
+name, species, taxonomy, taxon_id = ARGV
+
+form = "Chromosome"
+att = File.new(name + ".att", "w")
+
+[name, size, species, strain, taxon_id, taxonomy, form, 
+ proteins, rrnas, trnas,  gc].each {|field|
+  att.printf("%s\t", field)
+}
+att.printf("\n")
+att.close

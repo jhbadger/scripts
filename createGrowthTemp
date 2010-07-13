@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s pep.tax alltaxid.txt\n", $0)
+  exit(1)
+end
+
+tax, id = ARGV
+
+seen = Hash.new
+
+
+File.new(tax).each {|line|
+  sp, ncbi = line.split("\t")
+  genus, sp1 = sp.split(/\ |_/)
+  seen[genus + " " + sp1] = sp if (ncbi.index("Bacteria") || ncbi.index("Archaea"))
+}
+
+tHash = Hash.new
+
+File.new(id).each {|line|
+  fields = line.split("\t")
+  next if (fields[0] == "recordid")
+  species = fields[16]
+  category = fields[32]
+  gtemp = fields[36]
+  ogt = fields[40]
+  gtemp =~ /([0-9]*)[^0-9]*([0-9]*)/
+  gtemp, gtop = $1.to_i, $2.to_i
+  ogt =~ /([0-9]*)[^0-9]*([0-9]*)/
+  ogt, otop = $1.to_i, $2.to_i
+  gtemp = (gtemp + gtop) / 2 if (gtemp > 0 && gtop > 0)
+  ogt = (ogt + otop) / 2 if (ogt > 0 && otop > 0)
+  finaltemp = ogt
+  finaltemp = gtemp if (finaltemp == 0)
+  next if (finaltemp == 0)
+  genus, sp = species.split(" ");
+  if (!sp.nil?)
+    org = genus + " " + sp
+    tHash[org] = finaltemp if (seen[org])
+  end
+}
+
+tHash.keys.sort.each {|org|
+  printf("%s\t%d\n", seen[org], tHash[org])
+}
+
+seen.keys.sort.each {|org|
+  printf("%s\t-\n", org) if (tHash[org].nil?)
+}

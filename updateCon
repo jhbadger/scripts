@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'apis'
+require 'bio'
+
+@host = "mysql-lan-pro.jcvi.org"
+
+ARGV.options {|opts|
+  opts.banner << " database con.fasta"
+  opts.on("-h ", "--host ", String, "database host (default #{@host})")
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+database, fasta = ARGV
+
+db = MySQL.new(@host, database, "jbadger", "plankton")
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  name = nil
+  if (db.count("contigs WHERE name = '#{seq.entry_id}'") == 0)
+    db.query("SELECT name FROM contigs WHERE name LIKE '#{seq.entry_id}.%'").each {|row|
+      name = row[0]
+      STDERR.printf("Mapping %s to %s...\n", seq.entry_id, name)
+      break
+    }
+  else
+    name = seq.entry_id
+  end
+  if (name.nil?)
+    STDERR.printf("ERROR: Can't find %s\n", seq.entry_id)
+  else
+    chrom = seq.seq.downcase
+    db.query("UPDATE contigs SET seq='#{chrom}' WHERE name = '#{name}'")
+  end
+}

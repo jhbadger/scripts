@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 1)
+  STDERR << "usage: fasta-file\n" 
+  exit(1)
+end
+
+fasta, rest = ARGV
+
+oldSpecies = "fred"
+out = nil
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  if (seq.definition =~/\{([^\}]*)\}/)
+    species = $1.tr('()[]: ",', "_")
+  end
+  species = "Arabidopsis thaliana" if (seq.definition =~ /^ARATH/)
+  species = "Tetrahymena thermophila" if (seq.definition =~ /^TETRAHYMENA/)
+
+  if (species != oldSpecies && !species.nil?)
+    out.close if (!out.nil?)
+    fileName = species.tr(" /;'","_") + ".fasta".tr("/;'","")
+    if (File.exists?(fileName))
+      STDERR.printf("%s already exists. Appending\n", fileName)
+    end
+    out = File.new(fileName, "a+")
+  end
+  out.print seq
+  if (species.nil?)
+    STDERR.printf("unlabled sequence: %s\n", seq.definition)
+  end
+  oldSpecies = species if (species != nil)
+}
+out.close

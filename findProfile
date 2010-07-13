@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'tk'
+
+@org = nil 
+@max = 1
+
+ARGV.options {|opts|
+  opts.banner << " pgp-file"
+  
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    #exit(1)
+  end
+}
+
+pgp, rest = ARGV
+
+
+def loadPgp(pgp)
+  headers = []
+  profile = []
+  desc = []
+  genes = []
+  
+  count = 0
+  File.new(pgp).each {|line|
+    if (headers.empty?)
+      headers = line.chomp.split("\t")
+      headers.shift # gene 
+      headers.shift # name
+    else
+      fields = line.chomp.split("\t")
+      gene = fields.shift
+      name = fields.shift
+      profile[count] = fields.to_s
+      desc[count] = name
+      genes[count] = gene
+      count += 1
+    end
+  }
+  return headers, profile, desc, genes
+end
+
+root = TkRoot.new() { title "Phylogenetic Profile Tool" }
+
+button = TkButton.new(root) { text "First, rightmost" }
+button.pack("side"=>"right", "fill"=>"y")
+canvas = TkCanvas.new(root)
+Rect = TkcRectangle.new(canvas,10,10,20,20)
+
+canvas.pack
+
+Tk.mainloop()
+

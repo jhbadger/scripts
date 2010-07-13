@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'FastaDB'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dna, rest = ARGV
+
+seqs = []
+FastaDB.new(dna).each {|seq|
+  seqs.push(seq)
+}
+
+ident = 0
+tot = 0
+0.upto(seqs.first.length - 1) {|i|
+  1.upto(seqs.length - 1) {|j|
+    a = seqs[j - 1].seq[i].chr
+    b = seqs[j].seq[i].chr
+    if (a != "-" && b != "-")
+      tot += 1
+      if (a == b)
+        ident += 1.0
+      end
+    end
+  }
+}
+
+printf("%8.3f%% identical\n", ident*100/tot)

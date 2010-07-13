@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+$VERBOSE=nil
+
+require 'MySQL'
+
+if (ARGV.size !=4)
+  STDERR.printf("Usage: hmmRunSingle name hmm fasta cutoff\n")
+  exit(1)
+end
+
+
+name, hmm, pep, cutoff = ARGV
+
+
+start = false
+db = nil
+
+outPep = File.new(name + ".pep", "w")
+outCSV =File.new(name + ".csv", "w")
+`hmmsearch #{hmm}.HMM #{pep} -T #{cutoff}`.split("\n").each{|line|
+  next if (line =~ /^---/ || line == "")
+  start = false if (line =~/Parsed for domains/)
+  if (start)
+    next if (line =~/no hits above threshold/)
+    fields = line.split(" ")
+    evalue = fields[-2]
+    outCSV.printf("%s,%s,%s,%s\n", File.basename(hmm, ".HMM"), 
+                  name, fields[0], evalue)
+    outPep.print db.fetchProtID(fields[0])
+  end
+  if (line =~ /Sequence/ && line =~/Description/)
+    start = true 
+    db = MySQL.new
+  end
+}
+outPep.close
+outCSV.close

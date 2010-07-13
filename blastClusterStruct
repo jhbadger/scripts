@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+
+@clusterDir = "."
+@blastDB = "./pdb_seqres.txt"
+
+ARGV.options {|opts|
+  opts.banner << " csv"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rest = ARGV
+
+out = File.new("clust.fasta", "w")
+File.new(csv).each {|row|
+  clusterNum = row.split(",").first
+  next if (clusterNum == 0)
+  file = Dir.glob("#{clusterNum}*_prot.aln").first
+  next if (file.nil?)
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+    out.print Bio::Sequence::AA.new(seq.seq).to_fasta(clusterNum.to_s, 60)
+    break
+  }
+}
+out.close

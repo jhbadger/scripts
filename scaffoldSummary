@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s \"*.blastn|p|etc\"\n", $0)
+  exit(1)
+end
+
+seenQuery = false
+seenHit = Hash.new
+query = ""
+hit = ""
+inHit = false
+hits = Hash.new
+
+Dir.glob(ARGV[0]) {|file|
+  File.new(file).each {|line|
+    if (line =~/^Query=/)
+      seenQuery = false
+      seenHit = Hash.new
+      query = line.chomp.split("_")[0].split(" ").last
+      hits[query] = [] if (hits[query].nil?)
+    elsif (line =~/^>/)
+      hit = line.chomp[1..line.length]
+      inHit = true
+    elsif (line =~/Length =/)
+      inHit = false
+    elsif inHit
+      hit += " " + line.chomp
+    elsif (line =~/Score =/)
+      if (hit.index("}"))
+        hit = hit.split("}").first + "}"
+      end
+      p = line.split("=").last.to_f
+      if (p < 1e-4)
+	hits[query].push(hit.gsub("  ","%").gsub(/%+/,"\t") + "\t" + p.to_s) if !seenHit[hit]
+        seenHit[hit] = true
+      end
+    end
+  }
+}
+hits.keys.sort.each {|key|
+  out = File.new(key + ".txt", "w")
+  hits[key].each {|hit|
+    out.printf("%s\n", hit)
+  }
+  out.close
+}

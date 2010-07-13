@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s fasta-file [fasta-file...]\n", $0)
+  exit(1)
+end
+
+names = Hash.new
+
+ARGV.each {|file|
+  FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+    names[seq.seq] = Array.new if names[seq.seq].nil?
+    names[seq.seq].push(seq.entry_id)
+  }
+}
+
+tot = 0
+
+names.keys.each {|seq|
+  names[seq].sort! {|x, y| x.length <=> y.length}
+  name = names[seq].last + "_[#{names[seq].size}]"
+  tot += names[seq].size
+  print seq.to_fasta(name, 60)
+}
+
+STDERR.printf("%d seqs in %d groups\n", tot, names.keys.size)

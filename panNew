@@ -1,0 +1,37 @@
+#!/usr/bin/perl
+
+unless (@ARGV > 1) {
+    print "Usage:\n$0 'Genus species' pangenome.table.txt\n";
+    exit();
+}
+
+my $title = shift @ARGV;
+my $r_script = "/home/jbadger/lib/power_law_regression.R_script.new_genes.color.txt";
+my $data_file = shift @ARGV;
+
+open (IN, "$r_script") || die "Couldn't open R script '$r_script': $!";
+
+if (-e 'pangenome.R') {
+    unlink('pangenome.R') || die "Couldn't unlink old temporary R script file: $!";
+}
+open (OUT, ">pangenome.R");
+while (<IN>) {
+    s/###TITLE###/$title/;
+    s/###INPUT_FILE###/$data_file/;
+    print OUT;
+}
+close OUT;
+close IN;
+
+if (-e 'Rplots.ps') {
+    print STDERR "Default output file 'Rplots.ps' already exists, moved to 'Rplots.ps.bak'\n";
+    system("mv Rplots.ps Rplots.ps.bak");
+}
+
+print STDERR "Running R...";
+system("R CMD BATCH pangenome.R");
+unlink('pangenome.R') || die "Couldn't unlink old R script file";
+print STDERR "done.\n";
+print STDERR "Default output file name is 'Rplots.ps'.\n";
+
+exit();

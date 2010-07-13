@@ -1,0 +1,121 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'apis'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.database = "/usr/local/projects/EVOL/jbadger/combo.pep"
+opt.verbose = false
+
+ARGV.options {|opts|
+  opts.banner << " genus species fasta"
+  opts.on("-d ", "--database ", String, 
+          "use given database (default #{opt.database})") {|t| opt.database = t}
+  opts.on("-v", "--verbose","provide status info to STDERR"){|t| opt.verbose = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+tax = loadTax(opt.database + ".att")
+
+genus, species, fasta = ARGV
+
+funcs = Hash.new
+STDERR.printf("Loading sequence...\n") if opt.verbose
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  seq.definition.gsub!("|","_")
+  name = seq.entry_id.split("-").first
+  funcs[name] = seq.definition.split(" ", 2).last.split(" {").first
+}
+
+def addDups(dups, name, orfName)
+  STDERR.printf("Adding Duplicate %s...\n", orfName) if opt.verbose
+  if (!dups[name].nil? && dups[orfName].nil?)
+    dups[name].push(orfName)
+  elsif (dups[name].nil? && !dups[orfName].nil?)
+    dups[orfName].push(name)
+  elsif (dups[orfName] != dups[name])
+    dups[orfName].each {|member|
+      dups[name].push(member) if (!dups[name].include?(member))
+    }
+    dups[orfName] = dups[name]
+  else
+    newCluster = [name, orfName]
+    dups[name] = newCluster
+    dups[orfName] = newCluster
+  end
+end
+
+def link(array)
+  link = "search.rhtml?searchdata="
+  array.each {|member|
+    link += member
+    link += "|" if (member != array.last)
+  }
+  return link
+end
+
+dups = Hash.new
+
+STDERR.printf("Loading kingdom...\n") if opt.verbose
+data = ""
+Dir.glob("*kingdom.html").each {|file|
+  data += File.new(file).read
+}
+
+Dir.glob("neighbors/*.nei").each {|nei|
+  STDERR.printf("Loading %s...\n", nei) if opt.verbose
+  nFile = File.new(nei, "r")
+  firstLine = nFile.gets
+  nFile.close
+  if (firstLine =~/#{genus}/)
+    name = File.basename(nei, ".nei")
+    tree = NewickTree.fromFile("trees/" + name + ".tree")
+    relatives = tree.relatives(name)
+    next if (relatives.nil?)
+    consensus = tree.consensusTax(name, tax)
+    name, rest = name.split("-")
+    consensus.size.times {|i|
+      conGen = consensus[i].pop
+      if (conGen =~ /#{genus}/)
+	relatives[i].each {|relative|
+	  orf, rest = relative.split(/__|-/, 2)
+	  addDups(dups, name, orf) if (rest =~/#{species}/)
+	}
+      else
+	break
+      end
+    }
+  end
+}
+
+
+num = 1
+dups.values.sort.uniq.each {|group|
+  group = group.sort.uniq
+  next if (group.size == 1)
+  printf("<h4><a href=\"#{link(group)}\">Duplication Cluster #%d</a></h4>\n", 
+	 num)
+  group.each {|member|
+    if (data.index(member))
+      printf("<a href=\"#{link([member])}\">%10s %s</a><br>\n", 
+	     member, funcs[member])
+    else
+       printf("%10s %s<br>\n", member, funcs[member])
+    end
+
+  }
+  printf("<p>\n")
+  num += 1
+}
+

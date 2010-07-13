@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.memory = 2.0
+opt.queue = "default"
+
+o = OptionParser.new
+o.banner << " \"command\""
+o.on("-m ", "--memory ", Float, "Memory in gigs") {|m| opt.memory = m}
+o.on("-p ", "--project ", Integer, "JCVI project number") {|p| opt.project = p}
+o.on("-q ", "--queue ", String, "grid queue to use") {|q| opt.queue = q}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+if (opt.project.nil?)
+  STDERR << "A JCVI project number is needed for grid jobs\n"
+  exit(1)
+end
+
+cmd = ARGV.shift
+ecmd = cmd.tr(" ()&;/", "_")
+qsub = "qsub -P #{opt.project} -o #{ecmd}.out -e #{ecmd}.err -cwd "
+if (opt.queue != "default")
+  qsub += "-l \"#{opt.queue},memory=#{opt.memory}G\" "
+else
+  qsub += "-l \"memory=#{opt.memory}G\" "
+end
+qsub += " \"#{cmd}\""
+system(qsub)
+

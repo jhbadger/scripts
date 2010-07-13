@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'   
+require 'optparse'
+require 'DBwrapper'
+$VERBOSE = nil
+
+
+@spec = nil
+
+ARGV.options {|opts|
+  opts.banner << " fasta [fasta...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+spec = Hash.new
+db = MySQL.new("mysql-lan-pro", "phylodb", "apis", "apis_user")
+
+ARGV.each {|fasta|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+    name, contig = seq.entry_id.split("-")
+    if (!spec[contig])
+      db.query("SELECT species FROM contigs where name = '#{contig}'").each {|row|
+        spec[contig] = row[0]
+      }
+      if (spec[contig].nil?)
+        STDERR.printf("%s not in db\n", contig)
+        exit(1)
+      end
+    end
+    header = seq.definition.split(" {").first
+    header += " {" + spec[contig] + "}"
+    print seq.seq.to_fasta(header, 60)
+  }
+}

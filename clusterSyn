@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'MySQL'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " genomes.csv pos.csv seen.csv"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+g, p, s = ARGV
+
+db = MySQL.new
+
+seen = Hash.new
+pos = Hash.new
+
+File.new(s).each {|line|
+  fields = line.chomp.split(",", 2)
+  gen = fields.shift
+  seen[gen] = fields
+}
+
+File.new(p).each {|line|
+  orf, posl = line.chomp.split(",", 2)
+  name, contig = orf.split("-")
+  pos[contig] = Hash.new if pos[contig].nil?
+  pos[contig][posl.to_i] = orf
+}
+
+File.new(g).each {|line|
+  fields = line.chomp.split(",")
+  contig = fields.shift
+  oldNum = -500
+  printed = Hash.new
+  fields.each {|num|
+    num = num.to_i
+    if (num - oldNum < 5)
+      if (!printed[oldNum])
+        func = db.fetchProtID(pos[contig][oldNum]).split("\n").first.tr(">","").tr(",","")
+        printf("%s,%d,%s\n", func, oldNum, seen[pos[contig][oldNum]])
+        printed[oldNum] = true
+      end
+      if (!printed[num])
+        func = db.fetchProtID(pos[contig][num]).split("\n").first.tr(">","").tr(",","")
+        printf("%s,%d,%s\n", func, num, seen[pos[contig][num]])
+        printed[num] = true
+      end
+    end
+    oldNum = num
+  }
+  printf("\n\n") if (!printed.keys.empty?)
+}

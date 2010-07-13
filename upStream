@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+ 
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s genome-fasta cds\n", $0)
+  exit(1)
+end
+
+fasta, cds = ARGV
+
+seq = nil
+FlatFile.new(FastaFormat, File.new(fasta)).each {|s|
+  seq = s
+}
+
+upLen = 200
+File.new(cds).each {|line|
+  n, s, e, desc = line.chomp.split(" ",4)
+  s = s.to_i
+  e = e.to_i
+  header = sprintf("%s %s", n, desc)
+  if (s < e)
+    next if (s - upLen < 0)
+    upStream = seq.naseq.subseq(s - upLen, s - 1).upcase
+  else
+    next if (s + upLen > seq.length)
+    upStream = seq.naseq.subseq(s + 1, s + upLen)
+    upStream = upStream.complement.upcase
+  end
+  print Sequence.new(upStream).to_fasta(header, 60)
+}

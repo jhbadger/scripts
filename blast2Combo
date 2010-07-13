@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+require 'MySQL'
+
+ARGV.options {|opts|
+  opts.banner << " blast [...blast...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+db = MySQL.new
+ARGV.each {|file|
+  Bio::Blast::WU::Report.open(file, "r").each {|query|
+    query.each {|hit|
+      id = hit.definition.split(" ").first
+      if (hit.evalue.to_f < 1e-9)
+	print db.fetchProtID(id)
+      end 
+    }
+  }
+}
+

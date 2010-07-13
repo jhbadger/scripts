@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s prot.fasta\n", $0)
+  exit(1)
+end
+
+prot = ARGV.shift
+
+ec = Hash.new
+
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  ec[$1] = seq.definition if (seq.definition =~/\[([\d|\.|-]*)\]/)
+}
+
+ec.keys.sort.each {|num|
+  printf("%s\t%s\n", num, ec[num])
+}

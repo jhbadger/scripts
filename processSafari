@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " (run in directory with files)"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 0)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+Dir.mkdir("images") if (!File.exist?("images"))
+Dir.glob("images/*").each {|file|
+  File.unlink(file)
+}
+show = false
+img = "img0000"
+
+`ls -r -t *.html`.each {|file|
+  file.chomp!
+  File.new(file).each {|line|
+    show = false if (line =~/onmouseover=\'setRightBg/)
+    if (show)
+      line.gsub!("Ã¢ÂÂ","-")
+      if (line=~/src=\"([^\"]*)\"/)
+        imgName = $1
+        begin
+          suffix = imgName[imgName.rindex("."),4]
+          img.succ!
+          newName = "images/" + img + suffix
+          line.gsub!(imgName, newName)
+          File.link(imgName, newName)
+        rescue
+          STDERR.printf("Error in this line:%s\n", line)
+        end
+      end
+      print line
+    end
+    show = true if (line =~/SectionContent_Div/)
+  }
+}

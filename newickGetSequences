@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Newick'
+require 'FastaDB'
+opt = OpenStruct.new
+
+opt.database = "/usr/local/projects/EVOL/jbadger/combo.pep"
+ARGV.options {|opts|
+  opts.banner << " newick [newick...]"
+  opts.on("-d ", "--database ", String, 
+          "use given database (default #{opt.database})") {|t| opt.database = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+opt.database = FastaDB.new(opt.database, "name")
+
+ARGV.each {|file|
+  tree = NewickTree.fromFile(file)
+  outPep = File.new(File.basename(file, ".tree") + ".fa", "w")
+  tree.taxa.each {|taxon|
+    name, rest = taxon.split("__")
+    opt.database.find(name).each {|hseq|
+        outPep.print hseq
+      }
+  }
+  outPep.close
+}

@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+require 'Blast'
+
+if (ARGV.size != 4 && ARGV.size != 5)
+  STDERR.printf("usage: %s con.fasta rrna.fasta trna.fasta seq.fasta [window]\n", $0)
+  exit(1)
+end
+
+dna, rrna, trna, seqs, window = ARGV
+window = 100 if (window.nil?)
+window = window.to_i
+
+gcseq = File.new("highgc.seq", "w")
+FlatFile.new(FastaFormat, File.new(dna)).each {|seq|
+  totGC = (100 * seq.seq.count("GC")) / seq.length
+  window.step(seq.length, window) {|i|
+    win = seq.seq[i - window..i - 1].upcase
+    gc = (100 * win.count("GC")) / window
+    if (gc > totGC + 20)
+      subSeq = Sequence.new(win).to_fasta(seq.definition + "_" + i.to_s + 
+					  "_" + gc.to_s , 60)
+      gcseq.print subSeq
+    end
+  }
+}
+gcseq.close
+
+$VERBOSE = false
+system("cat #{rrna} #{trna} > rna_all.seq")
+system("pressdb rna_all.seq >/dev/null 2>/dev/null")
+system("pressdb #{seqs} >/dev/null 2>/dev/null")
+
+system("blastn rna_all.seq highgc.seq -E1e-4> rna.blast 2>/dev/null")
+system("blastn #{seqs} highgc.seq -E1e-4> seqs.blast 2>/dev/null")
+$VERBOSE = true
+
+rnaHits = []
+seqHits = []
+
+Blast.new("rna.blast").each {|query|
+  rnaHits.push(query.name.chomp) if query.firstHit
+}
+
+Blast.new("seqs.blast").each {|query|
+  seqHits.push(query.name.chomp) if query.firstHit
+}
+
+rnaOut = File.new("rnaMatches.seq", "w")
+seqOut = File.new("seqMatches.seq", "w")
+novOut = File.new("novel.seq", "w")
+
+FlatFile.new(FastaFormat, File.new("highgc.seq")).each {|seq|
+  if (rnaHits.include?(seq.definition))
+    rnaOut.print seq
+  elsif (seqHits.include?(seq.definition))
+    seqOut.print seq
+  else
+    novOut.print seq
+  end
+}
+rnaOut.close
+seqOut.close
+novOut.close

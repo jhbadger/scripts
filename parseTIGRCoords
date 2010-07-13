@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby
+
+# converts TIGR coords file to one that PyPhy, etc. can use
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s coord-file\n", $0)
+  exit(1)
+end
+
+file = ARGV.shift
+
+orf = "00001"
+File.new(file).each {|line|
+  start, stop = line.split(" ")
+  printf("%10s %6s %6s\n", "ORF" + orf, start, stop)
+  orf = orf.succ
+}

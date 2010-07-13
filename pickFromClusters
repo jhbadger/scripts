@@ -1,0 +1,68 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " out recip ann.pep"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+out, recip, annpep = ARGV
+
+STDERR.printf("Loading recips...\n")
+orth = Hash.new
+File.new(recip).each {|line|
+  sybil, real, x, y, o = line.split(" ")
+  orth[sybil] = real if (o == "yes")
+}
+
+
+peps = Hash.new
+
+STDERR.printf("Loading peps....\n")
+Bio::FlatFile.new(Bio::FastaFormat, File.new(annpep)).each {|seq|
+  peps[seq.entry_id] = seq
+}
+
+STDERR.printf("Writing clusters...\n")
+cn = nil
+seq = Hash.new
+sn = ""
+oldcn = nil
+File.new(out).each {|line|
+  if (line =~/^cluster_id/)
+    h, cn = line.chomp.split(" ")
+    if (oldcn != cn)
+      if (seq.keys.size < 7 && seq.keys.size > 0) 
+        pick = seq.keys.sort.first
+        print seq[pick]
+      end
+      seq = Hash.new
+    end
+    oldcn = cn
+    elsif (line =~/^protein_name/)
+      h, sn = line.chomp.split(" ")
+      if (sn =~/(ggs|ntgb01|ntgf01|ntgl02|ntgm01|ntgu01|ntpp02)/i)
+        sp = $1.downcase
+        if (orth[sn])
+          seq[sp] = peps[orth[sn]]
+        end
+      end
+  end
+}

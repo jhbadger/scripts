@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dna = ARGV.shift
+
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(dna)).each do |seq|
+  next if seq.length < 90
+  [1, 2, 3, -1, -2, -3].each do |frame|
+    orfName = seq.entry_id + "_" + frame.to_s
+    prot = seq.naseq.translate(frame, 11)
+	  print Bio::Sequence::AA.new(prot).to_fasta(orfName, 60)
+  end
+end

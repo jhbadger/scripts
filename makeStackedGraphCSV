@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " transcript_alias.txt"
+#o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+counts = Hash.new
+totals = Hash.new
+File.new(ARGV.first).each do |line|
+  read, hit = line.chomp.split("\t")
+  lib = read.split("_").first
+  counts[lib] = Hash.new if counts[lib].nil?
+  totals[hit] = 0 if totals[hit].nil?
+  counts[lib][hit] = 0 if counts[lib][hit].nil?
+  counts[lib][hit] += 1
+  totals[hit] += 1
+end
+
+totals.keys.sort {|x, y| totals[y] <=> totals[x]}.each do |group|
+  STDOUT << "," << group
+end
+STDOUT << "\n"
+
+counts.keys.sort.each do |lib|
+  STDOUT << lib 
+  totals.keys.sort {|x, y| totals[y] <=> totals[x]}.each do |group|
+    STDOUT << "," << counts[lib][group]
+  end
+  STDOUT << "\n"
+end

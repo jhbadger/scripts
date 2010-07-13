@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'Phylogeny'
+
+opt = OpenStruct.new
+opt.min = 0
+opt.max = 100
+o = OptionParser.new
+o.banner << " afa afa [...afa...]"
+o.on("-m ", "--min ", Integer, "minimum identity to count (#{opt.min})") {|m| opt.min = m}
+o.on("-x ", "--max ", Integer, "maximum identity to count (#{opt.max})") {|x| opt.max = x}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+ARGV.each do |afa|
+  ident = calcPercentIdent(afa)
+  if (ident.between?(opt.min, opt.max))
+    printf("%s\n", afa)
+  end
+end

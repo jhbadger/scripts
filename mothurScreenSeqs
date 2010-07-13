@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+opt.start = nil
+opt.end = nil
+opt.min = nil
+opt.max = nil
+
+o.banner << " aligned.fasta"
+o.on("-s ", "--start ", Integer, 
+  "remove sequences that start before position") {|s| opt.start = s}
+o.on("-e ", "--end ", Integer, 
+    "remove sequences that end before position") {|e| opt.end = e}
+o.on("-m ", "--min ", Integer, 
+    "remove sequences shorter than value") {|m| opt.min = m}
+o.on("-x ", "--max ", Integer, 
+    "remove sequences longer than value") {|x| opt.max = x}   
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+def cleanup(dir)
+  system("rm -rf #{dir}")	
+end
+
+fasta = ARGV.shift
+
+name = File.basename(fasta).split(".").first
+tmpdir = ENV["HOME"] + "/.tmp"
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+
+File.link(fasta, tmpdir + "/seq.align")
+batch = File.new(tmpdir + "/batch", "w")
+batch.printf("screen.seqs(fasta=seq.align")
+batch.printf(",start=%d", opt.start) if (opt.start)
+batch.printf(",end=%d", opt.end) if (opt.end)
+batch.printf(",minlength=%d", opt.min) if (opt.min)
+batch.printf(",maxlength=%d", opt.max) if (opt.max)
+batch.printf(")")
+batch.close
+system("cd #{tmpdir};mothur batch >/dev/null")
+File.new("#{tmpdir}/seq.good.align").each do |line|
+  print line
+end
+cleanup(tmpdir)

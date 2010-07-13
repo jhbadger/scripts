@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " ent1 ent2"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+ent1, ent2 = ARGV
+
+map = Hash.new
+File.new(ent1).each {|line|
+  name, contig, start, stop = line.split("\t")
+  map[contig] = [] if map[contig].nil?
+  start = start.to_i
+  stop = stop.to_i
+  if (start < stop)
+    start.upto(stop) {|i|
+      map[contig][i] = name
+    }
+  else
+    stop.upto(start) {|i|
+      map[contig][i] = name
+    }
+  end
+}
+
+File.new(ent2).each {|line|
+  name, contig, start, stop = line.split("\t")
+  map[contig] = [] if map[contig].nil?
+  start = start.to_i
+  stop = stop.to_i
+  if (start < stop)
+    start.upto(stop) {|i|
+      if (!map[contig][i].nil?)
+        printf("%s overlaps with %s\n", name, map[contig][i])
+        break
+      end
+    }
+  else
+    stop.upto(start) {|i|
+      if (!map[contig][i].nil?)
+        printf("%s overlaps with %s\n", name, map[contig][i])
+        break
+      end
+    }
+  end
+}

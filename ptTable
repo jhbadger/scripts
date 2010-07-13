@@ -1,0 +1,213 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Newick'
+opt = OpenStruct.new
+
+opt.target = "Bacteria|Archaea"
+opt.ingroup = "stramen"
+$VERBOSE = nil
+
+ARGV.options {|opts|
+  opts.banner << " spreadsheet.csv swiss.csv categories.txt"
+  opts.on("-i ", "--ingroup ", String, "ingroup taxa") {|t| opt.ingroup = t}
+  opts.on("-t ", "--target ", String, "target taxon") {|t| opt.target = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts #!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+sheet, sw, cats = ARGV
+
+dir = File.dirname(sheet)
+taxName = Hash.new
+taxSp = Hash.new
+
+File.new(dir + "/contig.att").each {|line|
+  name, size, species, strain, id, tax = line.split("\t")
+  taxName[name] = tax
+  taxSp[species] = tax
+}
+
+swiss = Hash.new
+File.new(sw).each {|line|
+  id,ann = line.chomp.split(",")
+  swiss[id] = ann
+}
+
+categories = []
+File.new(cats).each {|line|
+  categories.push(line.chomp)
+}
+
+
+blastonly = []
+total = 0
+
+Dir.mkdir(dir + "/bact/") if (!File.exists?(dir + "/bact"))
+printf("Protein,Annotation");
+categories.each {|cat|
+  printf(",%s", cat)
+}
+printf(",137<50,50-75,75-90,>90\n")
+File.new(sheet).each {|line|
+  orf, t, category  = line.chomp.split(",")
+  badb = ""
+  lowb = ""
+  midb = ""
+  highb = ""
+  tree = dir + "/trees/" + orf + ".tree"
+  if (File.exists?(tree))
+    tree = NewickTree.fromFile(tree)
+    outside = false
+    found = false
+    query = tree.findNode(orf)
+    while (query != tree.root)
+      query.taxa.each {|taxon|
+        tname = taxon.split(/-|__/)[1]
+        tax = taxName[tname]
+        if (tax =~/#{opt.target}/)
+          found = true
+          break
+        end
+        if (tax !~/#{opt.target}/ && tax !~/#{opt.ingroup}/)
+          outside = true
+          break
+        end
+      }
+      break if found || outside
+      query = query.parent
+    end
+    hits = Hash.new
+    if (found && !outside)
+      query.taxa.each {|taxon|
+        tname = taxon.split(/-|__/)[1]
+        tax = taxName[tname]
+        marked = false
+        categories.each {|cat|
+          if (tax =~/#{cat}/)
+            hits[cat] = "X" 
+            marked = true
+          end
+        }
+        hits["Other"] = "X" if (!marked && tax =~/Bacteria|Archaea/) 
+      }
+    end
+    next if query == "Protein"
+    query = tree.findNode(orf)
+    if (!query.nil?)
+      found = false
+      ingroup = true
+      only = true
+      boot = ""
+      count = 0
+      while (!found && count < 5)
+        while (query != tree.root)
+          query.taxa.each {|taxon|
+            tname = taxon.split(/-|__/)[1]
+            ingroup = false if (opt.ingroup && taxName[tname] !~/#{opt.ingroup}/)
+            if (taxName[tname] =~/#{opt.target}/ && query.name != "")
+              found = true
+              boot = query.name.to_i
+            elsif (taxName[tname] !~/#{opt.ingroup}/)
+              only = false
+            end
+          }
+          break if (found && only)
+          query = query.parent
+        end
+        if (found)
+          out = File.new(dir + "/bact/" + orf + ".tree", "w")
+          out.print tree.to_s
+          out.close
+          badb = "X" if (boot<50)
+          lowb = "X"  if (boot>49 && boot < 75)
+          midb = "X"  if (boot>74 && boot < 90)
+          highb = "X" if (boot>90)
+          total += 1
+          ann = ""
+          if (orf =~/([0-9]+)/)
+            ann = swiss[$1]
+            ann = "" if (ann.nil? || ann.length < 3)
+          end
+          printf("%s,%s", orf, ann)
+          categories.each {|cat|
+            if (hits[cat])
+              printf(",X")
+            else
+              printf(",")
+            end
+          }
+          printf(",%s,%s,%s,%s\n",badb,lowb,midb,highb)
+        else
+          x = tree.taxa[rand(tree.taxa.size)]
+          r = tree.findNode(x)
+          if (r.nil?)
+            STDERR.printf("Can't find %s in %s\n", x, orf)
+            exit(1)
+          end
+          tree = tree.reroot(r)
+          query = tree.findNode(orf)
+          count += 1
+          blastonly.push(line) if (count > 4)
+        end
+      end
+    end
+  else
+    blastonly.push(line) if (orf != "Protein")
+  end
+}
+
+STDERR.printf("%d trees; %d only with blast\n", total, blastonly.size)
+
+printf("\nNo Trees; only blast\n")
+printf("Protein,Annotation");
+categories.each {|cat|
+  printf(",%s", cat)
+}
+printf(",best bact p-value\n")
+blastonly.each {|line|
+  orf, rest = line.chomp.split(",")
+  p = ""
+  cp = ""
+  hits = Hash.new
+  blastp = dir + "/blast/" + orf + ".blastp.gz"
+  `gzcat #{blastp}`.split("\n").each {|line|
+    if (line.index("{") && !line.index(">") && !line.index("Query="))
+      hit = line.split(" ").first
+      cp = line.split(" ")[-2]
+      tname = hit.split(/-|__/)[1]
+      if (taxName[tname] =~/#{opt.target}/)
+        p = cp if (p == "")
+      end
+      hits = Hash.new
+      tax = taxName[tname]
+      categories.each {|cat|
+        hits[cat] = "X" if (tax =~/#{cat}/)
+      }
+    end
+  }
+  if (orf =~/([0-9]+)/)
+    ann = swiss[$1]
+    ann = "" if (ann.nil? || ann.length < 3)
+  end
+  next if p == ""
+  printf("%s,%s", orf, ann)
+  categories.each {|cat|
+    if (hits[cat])
+      printf(",X")
+    else
+      printf(",")
+    end
+  }
+  printf(",%s\n",p)
+}

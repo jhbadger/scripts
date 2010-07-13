@@ -1,0 +1,84 @@
+#!/usr/bin/env ruby
+
+
+if (ARGV.size != 2 && ARGV.size != 3)
+  STDERR.printf("usage: %s [-v] [-csv] EC.out pathway-file\n", $0)
+  exit(1)
+end
+
+verbose = false
+csv = false
+
+ARGV.each {|arg|
+  if (arg == '-v')
+    ARGV.delete(arg)
+    verbose = true
+  elsif (arg == '-csv')
+    ARGV.delete(arg)
+    csv = true
+    printf("ID,DESC,FOUND,NOT FOUND,PERCENT\n")
+  end
+}
+
+ecList, pathway = ARGV
+
+
+paths = Hash.new
+funcs = Hash.new
+ids = Hash.new
+
+File.new(pathway).each {|line|
+  id, func, ec, path, pathId = line.chomp.split("\t")
+  path, rest = path.split(" - ")
+  ids[path] = pathId
+  paths[path] = [] if (paths[path].nil?)
+  ec.split(" ").each {|ec|
+    funcs[ec] = func
+    paths[path].push(ec)
+  }
+  paths[path].uniq!
+}
+
+seen = []
+identified = Hash.new
+
+File.new(ecList).each {|line|
+  orf, ec, func = line.chomp.split("\t")
+  seen.push(ec)
+  identified[ec] = func
+}
+
+paths.keys.sort.each {|path|
+  hits = []
+  misses = []
+  if (csv)
+    printf("%s,%s,", ids[path], path.tr(","," "))
+  else
+    printf("\n=== %s %s ===\n", ids[path], path)
+  end 
+  paths[path].each {|ec|
+    if (seen.include?(ec))
+      hits.push(ec)
+      identified[ec] = "identified"
+    else
+      misses.push(ec)
+    end
+  }
+  num = hits.size
+  dem = paths[path].size
+  percent = num * 100.0 / dem
+  if (csv)
+    printf("%d,%d,%f\n", num, dem, percent)
+  else
+    printf("%d out of %d enzymes found (%d%%)\n", num, dem, percent)
+  end
+  misses.sort.each {|miss|
+    printf("MISSING: %s %s\n", miss, funcs[miss]) if (verbose)
+  }
+}
+
+printf("\n=== Additional Enzymes ===\n") if (verbose)
+identified.keys.sort.each {|ec|
+  next if identified[ec] == "identified"
+  printf("ADDITIONAL: %s %s\n", ec, identified[ec]) if (verbose)
+}

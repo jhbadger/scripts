@@ -1,0 +1,136 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.winSize = 100
+opt.at = false
+opt.plot = false
+opt.box = "TTATCCACA"
+opt.showbox = false
+
+ARGV.options {|opts|
+  opts.banner << " chromosome-file"
+  opts.on("-a", "--AT", "use AT, not GC Skew (#{opt.at})") {|t| opt.at = t}
+  opts.on("-b ", "--box ", String, "set dnaA box (#{opt.box})") {|t| opt.box = t}
+  opts.on("-w ", "--winSize ", Integer, 
+          "set window size (#{opt.winSize})") {|t| opt.winSize = t}
+  opts.on("-p", "--plot", "plot results with gnuplot (#{opt.plot})") {|t| opt.plot = t}    
+  opts.on("-s", "--showbox", "show box positions (#{opt.showbox})") {|t| opt.showbox = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dna, rest = ARGV
+if (opt.at)
+  plus = "A"
+  minus = "T"
+else
+  plus = "G"
+  minus = "C"
+end
+
+expr = ""
+expr += opt.box
+0.upto(opt.box.length - 1) {|i|
+  mer = opt.box.dup
+  mer[i] = "."
+  expr += "|" + mer
+}
+
+skew = Hash.new
+box = Hash.new
+total = 0
+maxSkew = -1e6
+maxSkewPos = 0
+maxBox = -1e6
+maxBoxPos = 0
+
+if (dna.index(".gb"))
+  format = GenBank
+else
+  format = FastaFormat
+end
+
+FlatFile.new(format, File.new(dna)).each {|seq|
+  seq = seq.seq.upcase
+  opt.winSize.step(seq.length, opt.winSize) {|i|
+    midpoint = i + (opt.winSize/2)
+    skew[midpoint] = 0
+    (i - opt.winSize).upto(i) {|j|
+      nuc = seq[j].chr
+      if (nuc == plus)
+        total += 1
+      elsif (nuc == minus)
+        total -= 1
+      end
+    }
+    skew[midpoint] = total
+    if (total > maxSkew)
+      maxSkew = total
+      maxSkewPos = midpoint
+    end
+  }
+  pos = -1
+  oldPos = -1
+  oldD = 0
+  oldOldPos = 0
+  while(!pos.nil?)
+    pos = seq.index(/(#{expr})/, pos + 1)
+    if (!pos.nil?)
+      if (opt.showbox)
+	printf("%s at %7d\n", $1, pos + 1)
+      end
+      d = (oldD + (1.0/(pos - oldPos)))/2
+      midPos = (oldPos + oldOldPos + pos) / 3
+      box[midPos] = d
+      if (d > maxBox)
+        maxBox = d
+        maxBoxPos = midPos
+      end
+      oldOldPos = oldPos
+      oldPos = pos
+      oldD = d
+    end
+  end
+  seq = ""
+}
+
+
+outSkewName = dna[0..dna.index(".") - 1]+".skew"
+outSkew = File.new(outSkewName, "w")
+
+skew.keys.sort.each {|pos|
+  outSkew.printf("%7d\t%f\n", pos, 1.0*skew[pos]/maxSkew)
+}
+outSkew.close
+
+outBoxName = dna[0..dna.index(".") - 1]+".box"
+outBox = File.new(outBoxName, "w")
+
+box.keys.sort.each {|pos|
+  outBox.printf("%7d %7f %s\n", pos, box[pos]/maxBox , $1) 
+}
+outBox.close
+
+printf("maximum Skew is at %d\n", maxSkewPos)
+printf("maximum Box at %d\n", maxBoxPos)
+
+
+if (opt.plot)
+  command = "plot \"#{outSkewName}\",\"#{outBoxName}\" with lines"
+  system("echo '#{command}'|gnuplot -persist") 
+end

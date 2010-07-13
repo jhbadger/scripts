@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.size = 3000
+opt.paml = false
+
+ARGV.options {|opts|
+  opts.banner << " fasta-alignment"
+  opts.on("-s ", "--size ", Integer, 
+	  "max size of each piece (#{opt.size})") {|t| opt.size = t}    
+  opts.on("-p", "--paml", "PAML output (false)") {|t| opt.paml = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, rest = ARGV
+
+seqs = []
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  seqs.push(seq)
+}
+
+out = nil
+pos = 1
+list = File.new("list.txt", "w") if (opt.paml)
+while (pos < seqs.first.length - 1)
+  start = pos
+  count = 0
+  while (count < opt.size - 1   && pos < seqs.first.length - 1)
+    pos += 1
+    count += 1
+  end 
+  outName = File.basename(fasta).split(".").first 
+  outName += "_" + start.to_s + "_" + pos.to_s  
+  if (opt.paml)
+    out = File.new(outName + ".PAMLseq", "w")
+    out.printf(" %d %d\n", seqs.size, count + 1)
+    list.printf("%s.PAMLseq\n", outName)
+  else
+    out = File.new(outName + ".afa", "w")
+  end
+  seqs.each {|seq|
+    header = seq.entry_id + "_" + start.to_s + "_" + pos.to_s
+    out.print Sequence.new(seq.seq[start - 1..pos - 1]).to_fasta(header, 60)
+  }
+  out.close
+  pos += 1
+end
+list.close if (opt.paml)

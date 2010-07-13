@@ -1,0 +1,207 @@
+#!/usr/bin/env ruby
+
+require 'Newick'
+require 'optparse'
+require 'rubygems'
+require 'DBwrapper'
+require 'csv'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.target = false
+opt.contig = false
+opt.ingroup = false
+opt.only = false
+opt.file = nil
+opt.name = false
+opt.exclude = false
+opt.must = false
+opt.host = "mysql-lan-pro"
+opt.database = "combodb"
+opt.storage = "misc_apis"
+opt.verbose = false
+
+o = OptionParser.new
+o.banner << " dataset (if not using file)"
+o.on("-c", "--contig", "don't show contig (false)") {opt.contig = true}
+o.on("-d ", "--database ", String, 
+     "query database (default #{opt.database})") {|d| opt.database = d}
+o.on("-e ", "--exclude ", String, "exclude from target") {|e| opt.exclude = e}
+o.on("-f ", "--file ", String, 
+     "file of trees to use instead of database") {|f| opt.file = f}
+o.on("-h ", "--host ", String, 
+     "database host (default #{opt.host})") {|h| opt.host = h}
+o.on("-i ", "--ingroup ", String, "ingroup taxa") {|i| opt.ingroup = i}
+o.on("-m ", "--must ", String, 
+     "taxon that must come before target") {|m| opt.must = m}
+o.on("-n", "--name", "Use name not taxonomy (#{opt.name})") {opt.name = true}
+o.on("-o", "--only", "target clade only has target") {opt.only  = true}
+o.on("-t ", "--target ", String, "target taxon") {|t| opt.target = t}
+o.on("-s ", "--storage ", String, 
+     "storage database (default #{opt.storage})") {|s| opt.storage = s}
+o.on("-v", "--verbose", "be verbose") {opt.verbose  = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1 && !opt.file)
+  STDERR << o
+  exit(1)
+end
+
+if (!opt.target)
+  STDERR.printf("Must supply query and target!\n")
+  exit(1)
+end
+
+dataset = ARGV.pop
+
+taxName = Hash.new
+taxSp = Hash.new
+
+
+
+db = MySQL.new(opt.host, opt.database, "apis", "apis_user")
+db.tax
+db.close
+
+
+annNum = nil
+annotation = Hash.new
+trees = Hash.new
+if (opt.file)
+  CSV.foreach(opt.file) {|fields|
+    id, tree = fields
+    if (tree == "Tree")
+      annNum = fields.index("Annotation") 
+      next 
+    end
+    trees[id] = tree
+    annotation[id] = fields[annNum] if annNum
+  }
+else
+  storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
+  query = "SELECT seq_name, tree FROM tree WHERE dataset='#{dataset}'"
+  storage.query(query).each {|row|
+    id, tree = row
+    trees[id] = tree
+  }
+end
+
+# convert non-standard groups to standard
+def convertTax(entry)
+  return false if !entry
+  entry.gsub!("prokaryotes", "Bacteria|Archaea")
+  entry.gsub!("stramenopiles", "Bacillariophyta|Bicosoecida|Pelagophyceae|Peronosporales|Phaeophyceae|Synurophyceae")
+  entry.gsub!("diatoms", "Bacillariophyta")
+  return entry
+end
+
+# summarize set of matching taxonomies
+def summarizeTax(consense)
+  num = consense.first.size
+  match = []
+  done = false
+  num.times {|i|
+    match[i] = ""
+    consense.each {|tax|
+      tax = tax.split("; ")
+      if (match[i] == "")
+        match[i] = tax[i]
+      elsif (match[i] != tax[i])
+        done = true
+        break
+      end
+    }
+    break if done
+  }
+  summary = ""
+  match.each {|m|
+    break if m.nil?
+    summary += "; " if summary != ""
+    summary += m
+  }
+  return summary
+end
+
+opt.target = convertTax(opt.target) 
+opt.ingroup = convertTax(opt.ingroup)
+opt.exclude = convertTax(opt.exclude)
+opt.must = convertTax(opt.must)
+
+print ["Id", "Tree", "Target", "Bootstrap", "Annotation"].to_csv
+count = 0
+trees.keys.sort.each {|name|
+  tree = trees[name]
+  query = NewickTree.new(tree).findNode(name)
+  count += 1
+  STDERR.printf("%4.2f%% done...\n", count*100.0/trees.size) if (count % 1000 == 0)
+  if (!query.nil?)
+    found = false
+    only = true
+    ingroup = true
+    must = false
+    boot = 100
+    while (query != nil)
+      consense = []
+      query.taxa.each {|taxon|
+        next if taxon == name
+        if (!opt.name)
+          nm = taxon.split(/-|__/)[1]
+          begin
+            tname = db.tax[nm]["taxonomy"]
+            if (tname && db.tax[nm]["supergroup"])
+              tname += " supergroup = " + db.tax[nm]["supergroup"]
+            end
+          rescue
+            STDERR.printf("Skipping %s (no taxonomy)\n", tname)
+            next
+          end
+        else
+          tname = taxon
+        end
+        if (!opt.ingroup || tname !~/#{opt.ingroup}/ || tname =~/#{opt.target}/)
+          ingroup = false 
+        end
+        if (opt.must && tname =~/#{opt.must}/)
+          must = true
+          if (opt.verbose)
+            STDERR.printf("Must requirement met by #{tname}\n")
+          end
+        end
+        if (tname =~/#{opt.target}/ && tname !~/#{opt.exclude}/ && !ingroup)
+          if (!found)
+            found = true
+            if (opt.verbose)
+              STDERR.printf("Found target at %s\n", tname)
+            end
+            consense = [tname]
+          else
+            consense.push(tname)
+          end
+          if (query.name.to_i > 0)
+            boot = query.name.to_i
+          end
+        elsif (tname !~/#{opt.ingroup}/ && tname !~/#{opt.exclude}/)
+          only = false
+          if (found && opt.verbose && opt.only)
+            STDERR.printf("%s fails only criteron\n", tname)
+          end
+        end
+      }
+      break if (found && (!opt.only || only))
+      break if (opt.ingroup && !ingroup)
+      query = query.parent
+    end
+    if (found && ((only || !opt.only) || ingroup))
+      if (must || !opt.must)
+        name = name.split("-").first if opt.contig
+        print [name, trees[name].chomp, summarizeTax(consense), boot,
+              annotation[name]].to_csv
+      end
+    end
+  end
+}

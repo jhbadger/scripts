@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Btab'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " list btab [...btab...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+list = ARGV.shift
+
+seen = Hash.new
+hits = Hash.new
+genera = Hash.new
+
+File.new(list).each do |line|
+  name = line.chomp
+  seen[name] = true
+  hits[name.split("_").first] = Hash.new if (hits[name.split("_").first].nil?)
+end
+
+ARGV.each do |btab|
+  Btab.new(btab).each do |query|
+    query.each do |match|
+      if (seen[query.name])
+        hit = hits[query.name.split("_").first]
+        if (match.desc =~/\{([^\}]*)\}/)
+          sp = $1
+          g = sp.split(" ").first
+          hit[g] = 0 if hit[g].nil?
+          hit[g] += 1
+          genera[g] = 0 if genera[g].nil?
+          genera[g] += 1
+        end
+      end
+    end
+  end
+end
+
+gkeys = genera.keys.sort {|x, y| genera[y] <=> genera[x]}
+
+print (["Library"] + gkeys).to_csv
+hits.keys.sort.each {|key|
+  row = [key]
+  gkeys.each {|genus|
+    row.push(hits[key][genus])
+  }
+  print row.to_csv
+}

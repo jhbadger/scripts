@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.config = "hybrid.conf"
+
+o = OptionParser.new
+o.banner << " prefix"
+o.on("-s ", "--conf ", String,
+	 "config (default #{opt.config})") {|t| opt.config = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+prefix, rest = ARGV
+system("runCA -d . -p #{prefix} -s #{opt.conf} vectorIntersect=clv.txt *.frg *.sff > asm.out 2>&1 &")

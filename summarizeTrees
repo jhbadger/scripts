@@ -1,0 +1,89 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Newick'
+opt = OpenStruct.new
+
+opt.verb = false
+
+ARGV.options {|opts|
+  opts.banner << " spreadsheet"
+  opts.on("-v", "--verbose", "show genes") {|t| opt.verb = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+sheet, rest = ARGV
+
+taxName = Hash.new
+taxSp = Hash.new
+counts = Hash.new
+orfs = Hash.new
+ptax = Hash.new
+
+File.new("contig.att").each {|line|
+  name, size, species, strain, id, tax = line.split("\t")
+  taxName[name] = tax
+  taxSp[name] = species
+}
+
+File.new(sheet).each {|line|
+  name = line.split(",").first
+  tree = "trees/" + name + ".tree"
+  if (File.exists?(tree))
+    tree = NewickTree.fromFile(tree)
+    query = tree.findNode(name)
+    if (!query.nil?)
+      found = false
+      only = true
+      ingroup = true
+      while (query != nil)
+        proks = []
+        query.taxa.each {|taxon|
+          tname = taxon.split(/-|__/)[1]
+          ingroup = false if (taxName[tname] !~/stramenopiles/)
+          if (taxName[tname] =~/Bacteria|Archaea/)
+            proks.push(taxSp[tname])
+            ptax[taxSp[tname]] = taxName[tname] 
+            found = true
+          elsif (taxName[tname] !~/stramenopiles/)
+            only = false
+          end
+        }
+        break if (found && only)
+        break if (!ingroup)
+        query = query.parent
+      end
+      if (found && (only || ingroup))
+        proks.each {|prok|
+          counts[prok] = 0 if counts[prok].nil?
+          counts[prok] += 1
+          orfs[prok] = [] if orfs[prok].nil?
+          orfs[prok].push(name)
+        }
+      else
+        STDERR.printf("Rejecting %s\n", name)
+      end
+    end
+  end
+}
+
+counts.keys.sort{|x,y| counts[y] <=> counts[x]}.each {|key|
+  printf("%d,%s,%s", counts[key], key, ptax[key])
+  if (opt.verb)
+    orfs[key].sort.each {|orf|
+      printf(",%s",orf)
+    }
+  end
+  printf("\n")
+}

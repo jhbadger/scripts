@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("Usage: %s blast-file\n", File.basename($0))
+  exit(1)
+end
+
+
+blastFile = ARGV.first
+
+lines = ""
+File.new(blastFile).each {|line|
+  if (line =~/^BLAST/)
+    if (lines != "")
+      if lines !~ /\*\*\* NONE/
+	print lines
+      end
+      lines = ""
+    end
+  end
+  lines += line
+}
+if lines !~ /\*\*\* NONE/
+  print lines
+end

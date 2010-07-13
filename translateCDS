@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'ZFile'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " cds.txt fasta [...fasta...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+
+starts = Hash.new
+stops = Hash.new
+
+cds = ARGV.shift
+File.new(cds).each do |line|
+  name, start, stop = line.chomp.split(" ")
+  starts[name] = start.to_i
+  stops[name] = stop.to_i
+end
+
+ARGV.each do |fasta|
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+    if (starts[seq.entry_id])
+      start, stop = starts[seq.entry_id], stops[seq.entry_id]
+      if (start < stop)
+        subseq = seq.naseq.subseq(start, stop)
+      else
+        subseq = seq.naseq.subseq(stop, start).complement
+      end
+      print subseq.translate(1).to_fasta(seq.entry_id, 60)
+    end
+  end
+end

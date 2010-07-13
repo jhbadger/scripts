@@ -1,0 +1,97 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'FastaDB'
+require 'Btab'
+opt = OpenStruct.new
+
+$VERBOSE = nil
+
+opt.code = 11
+opt.exclude = nil
+
+ARGV.options {|opts|
+  opts.banner << " contig-file predict-file predict-file"
+  opts.on("-c ", "--code ", Integer,
+          "set NCBI genetic code (default #{opt.code})")  {|t| opt.code = t}    
+  opts.on("-e ", "--exclude ", String,
+          "exclude results from a certain genome")  {|t| opt.exclude = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+gdiff = "/home/adelcher/Glimmer3/scripts/glim-diff.awk"
+contig, p1, p2 = ARGV
+p1Prot = File.basename(p1, ".predict") + "_diffStarts.pep"
+p2Prot = File.basename(p2, ".predict") + "_diffStarts.pep"
+cds = Hash.new
+curContig = nil
+
+if (!File.exist?(p1Prot) || !File.exist?(p2Prot))
+  STDERR.printf("Creating protein files...\n")
+  p1out = File.new(p1Prot, "w")
+  p2out = File.new(p2Prot, "w")
+  `#{gdiff} #{p1} #{p2}`.each {|line|
+    if (line =~/^>/)
+      curContig = line.split(" ").first.tr(">","")
+      cds[curContig] = []
+    else
+      p1ID, p1Start, p1Stop, diff, p2ID, p2Start, p2Stop = line.split(" ")
+      if (diff == "|")
+        cds[curContig].push([p1ID, p1out, p1Start.to_i, p1Stop.to_i])
+        cds[curContig].push([p2ID, p2out, p2Start.to_i, p2Stop.to_i])
+      end
+    end
+  }
+  FastaDB.new(contig).each {|seq|
+    cds[seq.name].each {|orf|
+      id, file, start, stop = orf
+      if (start < stop)
+        subseq = seq.naseq.subseq(start, stop)
+      else
+        subseq = seq.naseq.subseq(stop, start).complement
+      end
+      header = id + "_" + seq.name + " " + start.to_s + " " + stop.to_s
+      file.print subseq.translate(1, opt.code).to_fasta(header, 60)
+    }
+  } 
+  p1out.close
+  p2out.close
+end
+
+p1Blast = File.basename(p1Prot) + "_vs_combo.pep.blast"
+p2Blast = File.basename(p2Prot) + "_vs_combo.pep.blast"
+comboDB = "/home/jbadger/EVOL/jbadger/combo.pep"
+
+if (!File.exist?(p1Blast) || !File.exist?(p2Blast))
+  STDERR.printf("Blasting...\n")
+  system("pblast #{comboDB} #{p1Prot} -m 10 -w -e 1e-9")
+  system("pblast #{comboDB} #{p2Prot} -m 10 -w -e 1e-9")
+end
+
+[p1Blast, p2Blast].each {|blast|
+  error = 0
+  errorCount = 0
+  Btab.new(blast).each {|query|
+    query.matches.each {|hit|
+      next if (opt.exclude && hit.name.include?(opt.exclude))
+      qstart = hit.qrange.first
+      sstart = hit.srange.first
+      error += (qstart - sstart).abs
+      errorCount += 1.0
+      break
+    }
+  }
+  printf("Average error start positions in disputed ORFS in %5s %8.3f\n", 
+         blast.split("_").first, error / errorCount)
+}

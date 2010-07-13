@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+require 'ZFile'
+require 'rubygems'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " goldtable.csv arb.txt"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+gold, arb = ARGV
+
+name = Hash.new
+nm = "" 
+STDERR.printf("Loading arb...\n")
+ZFile.new(arb).each do |line|
+  tag, value = line.gsub('"',"").chomp.split(" ", 2)
+  if (tag == "name")
+    nm = value.split(" ", 2).last
+  elsif (tag == "tax_xref_embl")
+    name[value] = nm
+  end
+end
+
+seq = File.new("genomes.txt", "w")
+hmp = File.new("hmp.txt", "w")
+STDERR.printf("Processing Spreadsheet...\n")
+CSV.foreach(gold, headers: true) do |row|
+  hid = row["HMP ID"]
+  taxid = row ["NCBI TAXON ID"]
+  if (name[taxid])
+    seq.print name[taxid] + "\n"
+    hmp.print name[taxid] + "\n" if (hid)
+  end
+end
+
+seq.close
+hmp.close

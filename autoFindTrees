@@ -1,0 +1,74 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.boot = false
+opt.local = false
+
+ARGV.options {|opts|
+  opts.on("-b", "--boot", "include bootstrap of target (#{opt.boot})") {|t| opt.boot = t}
+  opts.on("-l", "--local", "Use ./contig.att (#{opt.local})") {|t| opt.local = t}
+  opts.banner << " conf-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+conf = ARGV.shift
+
+l = "-l" if opt.local
+b = "-b" if opt.boot
+
+
+if (!opt.boot)
+  printf("Category, Trees\n")
+else
+  printf("Category, Trees, Bootstrap > 50, Bootstrap <= 50\n")
+end
+File.new(conf).each {|line|
+  fields = line.chomp.split(" ")
+  ingroup = fields.shift
+  dir = fields.shift
+  file = fields.shift
+  next if fields.empty?
+  trees = File.new(file).read.split("\n").size
+  list = File.basename(file, ".txt")
+  printf("%s,%d\n", list, trees)
+  fields.each {|group|
+    name = list + "_" + group.gsub("/","-").gsub("|","+")
+    STDERR.printf("Creating %s...\n", name)
+    ops = "#{l} #{b} -f #{file} -i \"#{ingroup}\" -o -t \"#{group}\" #{dir}"
+    results = `findTrees #{ops}`
+    out = File.new(name + "-find.txt", "w")
+    out.print results
+    num = results.split("\n").size
+    bootlow = 0
+    boothigh = 0
+    results.split("\n").each {|line|
+      orf, boot = line.chomp.split(" ")
+      boot = boot.to_i
+      if boot > 50
+        boothigh += 1
+      else
+        bootlow += 1
+      end
+    }
+    out.close
+    if (opt.boot)
+      printf("%s,%d,%d,%d\n", name, num, boothigh, bootlow)
+    else
+      printf("%s,%d\n", name, num)
+    end
+  }
+  printf("\n")
+}

@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fastafile"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, rest = ARGV
+
+codons = ["CGA","CGC","CGG","CGT","AGA","AGG","CTA","CTC","CTG","CTT","TTA","TTG",
+"TCA","TCC","TCG","TCT","AGC","AGT","ACA","ACC","ACG","ACT","CCA","CCC","CCG",
+"CCT","GCA","GCC","GCG","GCT","GGA","GGC","GGG","GGT","GTA","GTC","GTG","GTT",
+"AAA","AAG","AAC","AAT","CAA","CAG","CAC","CAT","GAA","GAG","GAC","GAT","TAC",
+"TAT","TGC","TGT","TTC","TTT","ATA","ATC","ATT","ATG","TGG","TAA","TAG","TGA"]
+
+counts = [0]*64
+
+seqs = 0
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  seq.seq.scan(/.../).each {|codon|
+    num = codons.index(codon.upcase)
+    counts[num] += 1 if (!num.nil?)
+  }
+  seqs += 1
+}
+printf("0:%s: %d\n", fasta, seqs)
+64.times {|i|
+  printf("%d ", counts[i])
+}
+printf("\n")

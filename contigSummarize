@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s seq.fasta\n", $0)
+  exit(1)
+end
+
+file = ARGV.shift
+
+counts = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+  id, contig = seq.entry_id.split("-", 2)
+  counts[contig] = 0 if (counts[contig].nil?)
+  counts[contig] += 1
+}
+
+counts.keys.sort.each {|key|
+  printf("%20s\t%9d\n", key, counts[key])
+}

@@ -1,0 +1,68 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " genome-contig genome-code genome-asmid"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+out = File.new("config.file", "w")
+out.printf("ORF\t1\tFORWARD\tISLAND\n")
+out.printf("ORF\t2\tREVERSE\tISLAND\n\n")
+out.printf("LOC_GC\t5\tBOTH\tISLAND\tORANGE\n\n")
+out.printf("rRNA\t6\tBOTH\tISLAND\tRED\n")
+out.printf("sRNA\t6\tBOTH\tISLAND\tBLUE\n")
+out.printf("tRNA\t6\tBOTH\tISLAND\tGREEN\n")
+out.close
+
+contig, code, asmid = ARGV
+con = contig.split(".").first
+
+system("selfsim #{contig} > #{con}.selfsim")
+system("gcskew #{contig} > #{con}.gc")
+min = 1e100
+max = -1e100
+File.new("#{con}.selfsim").each {|line|
+  next if (line !~/^[0-9]/)
+  pos, x, y = line.chomp.split(" ")
+  min = x.to_i if (x.to_i < min)
+  max = x.to_i if (x.to_i > max)
+}
+out = File.new("#{con}.chi2", "w")
+
+File.new("#{con}.selfsim").each {|line|
+  next if (line !~/^[0-9]/)
+  pos, x, y = line.chomp.split(" ")
+  value = 3*(x.to_f - min)/(max - min)
+  out.printf("%d %f 6\tBLACK\n", pos, value)
+  
+}
+out.close
+
+out = File.new("#{con}.gcskew", "w")
+File.new("#{con}.gc").each {|line|
+  pos, value = line.chomp.split(" ")
+  value = value.to_f
+  if (value < 0)
+    out.printf("%d %f 4 \tDKGREEN\n", pos, value*3)
+  else
+    out.printf("%d %f 4 \tMAGENTA\n", pos, value*3)
+  end
+}
+out.close
+
+system("db2circle.spl -u jbadger -p jbadger9 -d #{code} -a #{asmid} -c config.file -f #{con}.chi2 -A #{con}.gcskew > #{con}.fig")
+
+File.unlink("#{con}.selfsim", "#{con}.chi2", "#{con}.gc", "#{con}.gcskew")
+File.unlink("config.file")

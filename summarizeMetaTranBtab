@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Btab'
+require 'rubygems'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " hits.fa btab [...btab...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+hits = ARGV.shift
+seen = Hash.new
+
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(hits)).each do |seq|
+  seen[seq.entry_id] = true
+end
+
+ARGV.each do |btab|
+  Btab.new(btab).each do |query|
+    if (seen[query.name])
+      query.each do |match|
+        if match.desc =~/\{([^\}]*)\}/
+          STDOUT << query.name << "\t" << $1 << "\n"
+        else
+          STDERR << "no sp in " << match.desc << "\n"
+        end
+      end
+    end
+  end
+end

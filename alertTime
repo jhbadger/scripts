@@ -1,0 +1,11 @@
+#!/usr/bin/env ruby
+
+x = Time.now.to_i
+diff = 1618033989 - x
+hours = diff / 3600
+
+min = diff - hours*3600
+secs = diff - 60*min
+
+printf("Currently %d. %d hours %d minutes, %d seconds to target\n", x, hours, min, secs)
+

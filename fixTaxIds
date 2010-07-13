@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'DBwrapper'
+
+opt = OpenStruct.new
+opt.database = "combodb"
+opt.host = "mysql-lan-pro"
+
+o = OptionParser.new
+o.banner << " species-list.txt"
+o.on("-d ", "--database ", String, 
+     "database (default #{opt.database})") {|d| opt.database = d}
+o.on("-h ", "--host ", String, 
+     "database host (default #{opt.host})") {|h| opt.host = h}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+db = MySQL.new(opt.host, opt.database, "apis", "apis_user")
+
+File.new(ARGV.pop).each {|line|
+  sp = line.chomp.split("\t").first
+  tax_id = 0
+  db.query("SELECT tax_id FROM combodb.taxonomy WHERE name = '#{sp}'").each {|row|
+    tax_id = row[0].to_i
+  }
+  if (tax_id > 0)
+    db.query("UPDATE contigs SET taxon_id = #{tax_id} WHERE species = '#{sp}'")
+  end
+}

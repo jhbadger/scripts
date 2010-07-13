@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " aligned-fasta aligned-fasta [...aligned-fasta]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+seqs = Hash.new
+first = ARGV.shift
+FlatFile.new(FastaFormat, File.new(first)).each {|seq|
+  seqs[seq.entry_id] = seq.seq
+}
+
+
+ARGV.each {|fasta|
+  FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+    id = seq.entry_id
+    if (seqs[id].nil?)
+      STDERR.printf("Error: %s not in all alignments. Aborting\n", id)
+      exit(1)
+    else
+      seqs[id] += seq.seq
+    end
+  }
+}
+
+seqs.keys.sort.each {|id|
+  print Sequence::AA.new(seqs[id]).to_fasta(id, 60)
+}

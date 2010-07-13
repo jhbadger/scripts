@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio    
+opt = OpenStruct.new
+
+opt.keep = false
+opt.org = nil
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-k", "--keep", "keep definition string") {|t| opt.keep = t}    
+  opts.on("-o ", "--org ", String, "set organism string") {|t| opt.org = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+prot = ARGV.shift
+  
+orfNum = "00001"
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  prefix, number, start, stop = seq.definition.split("_")
+  name =  "ORF" + orfNum
+  name += "-#{opt.org}" if (opt.org)
+  if (opt.keep)
+    seq.definition = name + " " + seq.definition.gsub(/\|/,"_")
+  else
+    seq.definition = name
+  end
+  orfNum = orfNum.succ
+  print seq
+}

@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt.btab = false
+opt.evalue = 1e-9
+opt.maxHits = 50
+opt.project = 215011
+opt.queue = "medium"
+$VERBOSE = nil
+opt.blast = "blastp"
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta [fasta...fasta...]"
+  begin
+    opts.on("-b ", "--blast ", String, 
+    "blast to use (default #{opt.blast})") {|t| opt.blast = t}
+    opts.on("-e", "--evalue ", Float, 
+            "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
+    opts.on("-m ", "--maxHits ", Integer, 
+          "max number of BLAST hits (default #{opt.maxHits})") {|t| opt.maxHits = t}
+    opts.on("-p", "--project ", String,  "JCVI project number") {|t| opt.project = t}
+    opts.on("-q ", "--queue ", String, 
+	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
+    opts.on("-x", "--btab", "run btab (default #{opt.btab})") {|t| opt.btab = t}
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|pep1|
+  ARGV.each {|pep2|
+    if (pep1 != pep2)
+      if (opt.project.nil?)
+               else
+        if (Dir.glob("#{pep2}_vs_#{pep1}*").empty?)
+          system("pblastNCBI -b #{opt.blast} -e #{opt.evalue} -m #{opt.maxHits} -q #{opt.queue} -p #{opt.project} #{pep1} #{pep2}")
+          system("btab #{pep2}_vs_#{pep1}.blastp") if opt.btab
+        else
+          STDERR.printf("Skipping #{pep1}_vs_#{pep2} due to existing results...\n")
+        end
+      end
+    end
+  }
+}

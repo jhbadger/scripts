@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s html-file\n", $0)
+  exit(1)
+end
+
+file = ARGV.pop
+
+saveLine = ""
+
+piednotoj = "\n\nPIEDNOTOJ\n\n"
+File.new(file).each {|line|
+  line.chomp!
+  next if (line =~/^eLIBRO/ || line =~/^INKO/ ||  line =~/^I N K O/ ||
+	   line =~/^ISBN/ || line =~/^http/)
+  line.gsub!(/ç/, "cx")
+  line.gsub!(/Ç/, "Cx")
+  line.gsub!(/¸/, "gx")
+  line.gsub!(/¯/, "Gx")
+  line.gsub!(/î/, "jx")
+  line.gsub!(/Î/, "Jx")
+  line.gsub!(/û/, "ux")
+  line.gsub!(/Û/, "Ux")
+  line.gsub!(/ÿ/, "sx")
+  line.gsub!(/Y/, "Sx")
+  line.gsub!(/&amp;/, "&")
+  line.gsub!(/«/, "\"")
+  line.gsub!(/»/, "\"")
+
+  line.gsub!(/-<br>\n/,"")
+  line.gsub!(/-<br>/,"")
+  line.gsub!(/<br>/, " ")
+  line.gsub!(/ ­ /, "-")
+
+  if (line =~/^[0-9]+/)
+    saveLine = line
+    next
+  end
+  
+  if (saveLine != "")
+    if (line !~/^<hr>/)
+      piednotoj += sprintf("%s%s\n\n", saveLine, line)
+    end
+    saveLine = ""
+    next
+  end
+
+  next if (line =~/^\</)
+  printf ("\n\n") if (line =~/^[I|X|V]+\./ || line =~/^Cxapitro/i || 
+		      line =~/^Cx a p i t/i ||
+		      line =~/^Antauxparolo/i || line =~/^Antauxvorto/i)
+  print line
+  lastChar = line[line.length - 1].chr
+  lastChar = line[line.length - 2].chr if (lastChar == " ")
+  print "\n\n" if (lastChar == "." || lastChar == "?" || lastChar == "." \
+		   || lastChar == "!" || lastChar == "-" || lastChar == "'")
+  printf ("\n\n") if (line =~/^[I|X|V]+\./ || line =~/^Cxapitro/i ||
+		      line =~/^Cx a p i t/i ||
+		      line =~/^Antauxparolo/i || line =~/^Antauxvorto/i)
+}
+
+print piednotoj

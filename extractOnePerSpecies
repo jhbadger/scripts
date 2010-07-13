@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+headers = false
+if (ARGV.first == "-h")
+  ARGV.shift
+  headers = true
+end
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s [-h] blast-file fasta-file\n", $0)
+  exit(1)
+end
+
+blast, fasta = ARGV
+
+best = Hash.new
+
+Blast::Default::Report.open(blast, "r").each {|query|
+  query.each {|hit|
+    id, rest = hit.definition.split(" ", 2)
+    rest =~/\{([^\}]*)\}/
+    sp = $1
+    best[sp] = id if (best[sp].nil?)
+  }
+}
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  id, rest = seq.definition.split(" ", 2)
+  rest =~/\{([^\}]*)\}/
+  sp = $1
+  seq.definition = $1.tr(" ", "_") if (!headers)
+  print seq if (best[sp] == id) 
+}
+
+
+

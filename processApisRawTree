@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'Newick'
+require 'DBwrapper'
+require 'csv'
+
+opt = OpenStruct.new
+opt.annotate = false
+opt.rulemaj = false
+opt.exclude = nil
+
+o = OptionParser.new
+o.banner << " rawtree.tsv sequence.db"
+o.on("-a", "--annotate", "annotate peptides") {|t| opt.annotate = t}
+o.on("-r", "--ruleMajority", "use majority classification") {|t| opt.ruleMaj = t}
+o.on("-y ", "--exclude ", String,
+     "exclude taxonomy matching regexp from run") {|t| opt.exclude = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+tsv, dbname = ARGV
+
+begin
+  db = SQLite.new(dbname)
+rescue
+  STDERR << "Cannot open database " << dbname << "\n"
+  exit(1)
+end
+
+classOut = File.new("classification.tsv", "w")
+annOut = File.new("annotation.tsv", "w") if opt.annotate
+treeOut = File.new("tree.tsv", "w")
+
+File.new(tsv).each {|line|
+  seq_name, dataset, tree = line.chomp.split("\t")
+  begin
+    tree = NewickTree.new(tree).midpointRoot
+    classification = db.createClassification(tree, seq_name, dataset, 
+                                             opt.exclude, opt.ruleMaj)
+    classOut << classification.to_csv(:col_sep => "\t")
+    if (opt.annotate)
+      annotation = db.createAnnotation(tree, seq_name, dataset)
+      annOut << annotation.to_csv(:col_sep => "\t") if annotation
+    end
+    treeOut << [seq_name, dataset, 
+                db.SpeciesTree(tree).to_s].to_csv(:col_sep => "\t") 
+  rescue
+    STDERR << "Skipping #{seq_name} for error. Continuing...\n"
+  end
+}
+
+classOut.close
+annOut.close if opt.annotate
+treeOut.close
+db.close

@@ -1,0 +1,87 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+require 'apis'
+require 'GOS'
+
+opt = OpenStruct.new
+opt.host = "mysql-lan-pro"
+opt.subfamily = false
+o = OptionParser.new
+o.banner << " database [database...]"
+o.on("-h ", "--host ", String, 
+     "database host (default #{opt.host})") {|h| opt.host = h}
+o.on("-s", "--subfamilycollapse", "collapse subfamily"){|t| opt.subfamily = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+
+query =  "SELECT mtProject, mtLibrary, mtFID, mtSubfamily, mtSubstrate, "
+query += "count(*) FROM transporters WHERE mtName IN (SELECT seq_name FROM "
+query += "classification WHERE kingdom='Bacteria')  GROUP BY mtProject, "
+query += "mtFID, mtSubfamily, mtSubstrate" 
+
+counts = Hash.new
+seen = Hash.new
+
+ARGV.each {|database|
+  db = MySQL.new(opt.host, database, "apis", "apis_user")
+  db.query(query).each {|row|
+    site, lib, family, subfamily, substrate, count = row
+    if opt.subfamily
+      subfamily = "" 
+      substrate = ""
+    end
+    filter = classifySample(lib)
+    name = site + "_" + filter.to_s
+    counts[family] = Hash.new if counts[family].nil?
+    counts[family][subfamily] = Hash.new if counts[family][subfamily].nil?
+    counts[family][subfamily][substrate] = Hash.new if counts[family][subfamily][substrate].nil?
+    counts[family][subfamily][substrate][name] = 0 if counts[family][subfamily][substrate][name].nil?
+    counts[family][subfamily][substrate][name] += count.to_i
+    seen[name] = true
+  }
+  db.close
+}
+
+db = MySQL.new(opt.host, ARGV.first, "apis", "apis_user")
+genomes = Hash.new
+
+query =  "SELECT dataset, filter, genomes FROM gosi_apis.metadata"
+db.query(query).each {|row|
+  site, filter, gen = row
+  filter = "3.0" if filter == "3"
+  filter = "VIR" if filter == "0"
+  name = site + "_" + filter
+  genomes[name] = gen.to_f if (seen[name])
+}
+db.close
+print ([""] + genomes.keys.sort).to_csv
+
+counts.keys.sort.each {|family|
+  counts[family].keys.sort.each {|subfamily|
+    counts[family][subfamily].keys.sort.each {|substrate|
+      key = family + " " + subfamily + " " + substrate
+      next if key.length < 5
+      row = [key]
+      genomes.keys.sort.each {|site|
+        count = counts[family][subfamily][substrate][site]
+        count = 0 if count.nil?
+        row.push(count/genomes[site])
+      }
+      print row.to_csv
+    }
+  }
+}

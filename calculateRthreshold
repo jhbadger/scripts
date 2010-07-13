@@ -1,0 +1,72 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'GeneExpression'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.num = nil
+
+o.banner << " expression-csv"
+o.on("-n", "--number ", Integer, "pick n random lines per simulation") {|t| opt.num = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+
+
+STDERR << "Loading Spreadsheet...\n"
+table = CSV.read(ARGV.first, headers: true, converters: :numeric)
+
+STDERR << "Simulating results...\n"
+total = Hash.new
+allTot = 0
+table.headers.each do |col|
+  next if (col == "Contigs" || col == "Isogroup" || col == "Gene")
+  break if (col == "Sum")
+  total[col] = table[col].last
+  allTot += total[col]
+end
+
+
+rvalues = []
+1000.times do |i|
+  STDERR << "Simulation " << i << "...\n"
+  rownum = 0
+  picked = Hash.new
+  if (opt.num)
+    opt.num.times do |i|
+      picked[rand(table.size)] = true
+    end
+  end  
+  table.each do |row|
+    next if row.first.last.nil? # skip totals line
+    next if opt.num && !picked[rownum]
+    counts = Hash.new
+    total.keys.each do |lib|
+      expected = ((row["Sum"] / allTot.to_f) * total[lib]).to_i
+      counts[lib] = poisson(expected)
+    end
+    rvalues.push(rvalue(total, counts))
+    rownum += 1
+  end
+end
+rvalues.sort!
+pos95 = (rvalues.size*0.95).to_i
+pos98 = (rvalues.size*0.98).to_i
+pos99 = (rvalues.size*0.99).to_i
+
+STDOUT << "Average Simulated R-value: " << (rvalues.reduce(:+)/rvalues.size*100).to_i/100.0 << "\n"
+STDOUT << "95% Threshold: " << (rvalues[pos95]*100).to_i/100.0 << "\n"
+STDOUT << "98% Threshold: " << (rvalues[pos98]*100).to_i/100.0 << "\n"
+STDOUT << "99% Threshold: " << (rvalues[pos99]*100).to_i/100.0 << "\n"

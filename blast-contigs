@@ -1,0 +1,63 @@
+#!/usr/bin/perl -w
+# Script to run BLASTN on a FASTA files containing split contigs, 
+# creating the sequence fragments to be BLASTed if needed
+
+use Critica;
+
+$scriptname=getScriptName();
+
+@files=realArguments(@ARGV);
+(@files==1) || die ("$scriptname [-db=] fasta-file\n");
+$filename=pop(@files);
+
+$blastn="blastn";
+if (defined($x = $ENV{"CRITICA_BLASTN"}))  { 
+  $blastn = $x;
+}
+$parameters="-warnings -nogaps E=1e-4 E2=1e-4 ";
+if (defined($x = $ENV{"CRITICA_BLASTPARM"}))  { 
+  $parameters = $x;
+}
+$db="gb";
+if (defined($x = $ENV{"CRITICA_BLASTDB"}))  { 
+  $db = $x;
+}
+
+
+@flags=flagArguments(@ARGV);
+foreach $flag (@flags) {
+  if (index($flag,"-db=")>-1) {
+    (undef,$db)=split("=",$flag);
+  }
+  else {
+    die("$scriptname: flag $flag not understood.\n");
+  }
+}
+
+
+$dirname=getPrefixName($filename)."dir";
+
+if (!-e("$dirname")) {  
+ createBlastFragments($dirname,$filename, 3000, 100);
+}
+
+opendir(DIR,$dirname) || die("Can't find $dirname! Aborting\n");
+@files=readdir(DIR);
+closedir(DIR);
+
+shift(@files);shift(@files);
+foreach $file (@files) 
+{
+  $f=$dirname."/".$file;
+  $fq=quotemeta($f);
+  $n="$blastn $db $fq $parameters";
+  print $n;
+  exit(1);
+  @output = `$n`;
+  foreach $line (@output)
+  {
+      print $line;
+  }
+  unlink $f;
+}
+rmdir($dirname);

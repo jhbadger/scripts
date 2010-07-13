@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s align.phy\n", $0)
+  exit(1)
+end
+
+align = ARGV.shift
+
+tax = nil
+len = nil
+inWeights = false
+inAlign = true
+weights = []
+lineCount = 0
+labels = []
+seqs = Hash.new
+
+File.new(align).each {|line|
+  line.chomp!
+  if (len.nil?)
+    tax, len, w = line.split(" ")
+    tax = tax.to_i
+    len = len.to_i
+    if (w != "W")
+      STDERR.printf("This is not a weighted PHYLIP alignment. Aborting\n")
+      exit(1)
+    end
+  elsif (line.length > 10)
+    label, data = line[0..10].split(" ").first, line[12..line.length]
+    if (label == "Weights")
+      inWeights = true
+    elsif (!label.nil?)
+      inAlign = true
+      inWeights = false
+      lineCount = 0
+      if (weights.size != len)
+	STDERR.printf("Inconsistency between weights and alignment.\n")
+	exit(1)
+      end
+    end
+    if (inWeights)
+      data.size.times {|i|
+	if (data[i].chr == "0" || data[i].chr == "1")
+	  weights.push(data[i].chr.to_i)
+	end
+      }
+    elsif (inAlign)
+      if (label.nil?)
+	label = labels[lineCount % tax]
+	lineCount += 1
+      else
+	labels.push(label)
+	seqs[label] = ""
+      end
+      seqs[label] += data.tr(" ", "")
+    end
+  end
+}
+
+seqs.keys.sort.each {|label|
+  if (seqs[label].length != len)
+    STDERR.printf("Error: %s has length %d and not %d. Aborting\n", label,
+		  seqs[label].length, len)
+    exit(1)
+  end
+  seqTrim = ""
+  seqs[label].size.times {|i|
+    seqTrim += seqs[label][i].chr if (weights[i] == 1)
+  }
+  print Sequence::NA.new(seqTrim).to_fasta(label, 60)
+}

@@ -1,0 +1,58 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " results-file cluster-file"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+results, cluster = ARGV
+
+tax = Hash.new
+File.new(results).each {|line|
+  name, rest = line.chomp.split(" ", 2)
+  tax[name] = rest
+}
+
+
+def processCluster(seqs, tax)
+  fullTax = nil
+  seqs.each {|seq|
+    if (tax[seq])
+      fullTax = tax[seq]
+      break
+    end
+  }
+  if (fullTax)
+    seqs.each {|seq|
+      printf("%s\t%s\n", seq, fullTax)
+    }
+  end
+end
+
+seqs = []
+File.new(cluster).each {|line|
+  if (line =~/>Cluster/)
+    processCluster(seqs, tax) if (!seqs.empty?)
+    seqs = []
+  else
+    n, len, seq = line.split(" ")
+    seq = seq.gsub(".","").gsub(">","")
+    seqs.push(seq)
+  end
+}
+processCluster(seqs, tax)

@@ -1,0 +1,196 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'http-access2'
+require 'Stats'
+opt = OpenStruct.new
+
+opt.tax = false
+ARGV.options {|opts|
+  opts.banner << " jump-sheet goldtable.txt"
+  opts.on("-t", "--tax", "query NCBI for taxonomic info") {|t| opt.tax = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+sheet, gold, rest = ARGV
+
+count = Hash.new
+tsize = Hash.new
+
+goldFields = []
+goldData = Hash.new
+
+File.new(gold).each {|line|
+  if (line =~/^SUP/)
+    goldFields = line.chomp.split("\t")
+    next
+  end
+  fields = line.chomp.split("\t")
+  key = fields[8] + " " + fields[9]
+  goldData[key] = Hash.new
+  0.upto(fields.size) {|i|
+    goldData[key][goldFields[i]] = fields[i]
+  }
+}
+
+def getTax(species)
+  link = "http://www.ncbi.nlm.nih.gov"
+  link += "/sites/entrez?db=Taxonomy&cmd=search&term="
+  clnt = HTTPAccess2::Client.new
+  species = species.gsub(" ","%20")
+  num = nil
+  clnt.get(link + species).body.content.split("\n").each {|line|
+    if (line =~/wwwtax.cgi\?id=([0-9]*)/)
+      num = $1
+    end
+  }
+  phy = ""
+  cl = ""
+  ord = ""
+  fam = ""
+  if (!num.nil?)
+    link = "http://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi\?id="
+    clnt.get(link + num).body.content.split("\n").each {|line|
+      if (line =~/ALT=\"phylum\">([^\<]*)<\/A>/)
+	phy = $1
+      end
+      if (line =~/ALT=\"class\">([^\<]*)<\/A>/)
+	cl = $1
+      end
+      if (line =~/ALT=\"order\">([^\<]*)<\/A>/)
+	ord = $1
+      end
+      if (line =~/ALT=\"family\">([^\<]*)<\/A>/)
+	fam = $1
+      end
+    }
+  end
+  return phy + "; " + cl + "; " + ord + "; " + fam
+  sleep 0.2
+end
+
+
+
+categories = []
+num = 0
+data = Hash.new
+seen = Hash.new
+File.new(sheet).each {|line|
+  fields = line.tr("\"","").chomp.split(",")
+  if (categories.empty?)
+    categories = fields 
+  else
+    data[num] = Hash.new
+    categories.each {|cat|
+      data[num][cat] = fields.shift
+    }
+    sp = data[num]["Strain"].split(" ")    
+    sp = sp.first if !sp.nil?
+    seen[sp] = 0 if seen[sp].nil?
+    seen[sp] += 1
+    currentTax = data[num]["Taxonomy"]
+    if (opt.tax &&  (currentTax.nil? || currentTax == ""))
+      tax = getTax(sp)
+      data[num]["Taxonomy"] = getTax(sp)
+    end
+  end 
+  num += 1
+}
+
+def updateGold(row, goldData)
+  sp, gen  = row["Strain"].split(" ")
+  sharedSp = 0
+  sharedPhy = 0
+  sharedFam = 0
+  sharedCla = 0
+  gSize = []
+  paired = []
+  goldData.keys.each {|key|
+    next if (goldData[key]["TYPE"] != "Genome")
+    org = goldData[key]["Organism"]
+    gSp, gGen = org.split(" ")
+    row["Taxonomy"].split("; ").each {|field|
+      if (goldData[key]["PHYLUM"] == field)
+	sharedPhy += 1 
+      elsif (goldData[key]["FAMILY"] == field)
+	sharedFam += 1
+      elsif (goldData[key]["CLASS"] == field)
+	sharedCla += 1
+      end
+    }
+    if (gSp == sp && gen != gGen && !paired.include?(org))
+      sharedSp += 1
+      tSize = goldData[key]["SIZE(kb)"].to_i
+      gSize.push(tSize / 1000.0) if (tSize > 200)
+      paired.push(org)
+    end
+  }
+  row["Sequenced Genomes in Genus"] = sharedSp
+  row["Sequenced Genomes in Phylum"] = sharedPhy
+  row["Sequenced Genomes in Family"] = sharedFam
+  row["Sequenced Genomes in Class"] = sharedCla
+  row["Average Size (Mbp)"] = sprintf("%3.1f",gSize.average) if (!gSize.empty?)
+  if (!paired.empty?)
+    row["Paired Genomes"] = ""
+    paired.sort.each {|p|
+      g, sp = p.split(" ")
+      g = g[0].chr
+      row["Paired Genomes"] += g + ". " + sp + "; "
+    }
+  end
+end
+
+if (!categories.include?("Taxonomy"))
+  categories.push("Taxonomy")
+end
+if (!categories.include?("Average Size (Mbp)"))
+  categories.push("Average Size (Mbp)")
+end
+if (!categories.include?("Sequenced Genomes in Phylum"))
+  categories.push("Sequenced Genomes in Phylum")
+end
+if (!categories.include?("Sequenced Genomes in Class"))
+  categories.push("Sequenced Genomes in Class")
+end
+if (!categories.include?("Sequenced Genomes in Family"))
+  categories.push("Sequenced Genomes in Family")
+end
+if (!categories.include?("Sequenced Genomes in Genus"))
+  categories.push("Sequenced Genomes in Genus")
+end
+if (!categories.include?("Paired Genomes"))
+  categories.push("Paired Genomes")
+end
+
+
+
+
+categories.each {|cat|
+  print cat + ","
+}
+print "\n"
+
+
+data.keys.sort.each {|key|
+  data[key]["Taxonomy"].gsub!("(class)","")
+  sp = data[key]["Strain"].split(" ").first
+  updateGold(data[key], goldData)
+  categories.each {|cat|
+    print data[key][cat] if (!data[key][cat].nil?)
+    print ","
+  }
+  print "\n"
+}
+
+

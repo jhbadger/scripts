@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+
+opt.f = false
+opt.v = false
+opt.fn = "DEFINITION"
+
+ARGV.options {|opts|
+  opts.banner << " expression gb-file [gb-file..]"
+  opts.on("-n ", "--fieldname ", String, "field name to search") {|t| opt.fn = t}
+  opts.on("-f ", "--file ", String, 
+          "read list of ids to search from file") {|t| opt.f = t}    
+  opts.on("-v", "--inverse", "return lines not matching expression") {|t| opt.v = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+express = ""
+if (opt.f)
+  File.new(opt.f).each {|line|
+    express += (line.chomp + "|") 
+  }
+  express.chop!
+else
+  express = ARGV.shift
+end
+
+$/="\n//"; # each "line" is a genbank record
+
+ARGV.each {|gb|
+  compress = false
+  if (gb.index(".gz"))
+    system("PATH=/usr/bin;zcat #{gb} > #{gb}.tmp")
+    gb = gb + ".tmp"
+    compress = true
+  end
+  File.new(gb).each {|record|
+    field = record.split("\n").grep(/^#{opt.fn}/).first
+    if (!opt.v)
+      print record if (field =~/#{express}/i)
+    else
+      print record if (field !~/#{express}/i)
+    end
+  }
+  File.unlink(gb) if compress
+}

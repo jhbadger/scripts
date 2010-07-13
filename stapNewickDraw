@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'Newick'
+require 'optparse'
+
+label = false
+dir = "/usr/local/projects/PLANKTON/NEW_STAP/db_dir/"
+
+ARGV.options {|opts|
+  opts.banner << " tree-file [..tree-file]"
+  opts.on("-d ", "--dir ", String, 
+          "directory with STAP xml (default #{dir})") {|dir|}
+  opts.on("-l ", "--label ", "add label to tree pdf") {|label|}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+names = Hash.new
+File.new(dir + "/all.headers").each {|line|
+  id_full, id_short, name = line.chomp.gsub(">","").split(" ", 3)
+  names[id_full] = "\"#{name.downcase}\""
+}
+ARGV.each {|arg|
+  tree = NewickTree.fromFile(arg)
+  tree.unAlias(names)
+  tree.draw(arg + ".pdf", "width")
+}

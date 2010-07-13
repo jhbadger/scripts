@@ -1,0 +1,59 @@
+#!/usr/bin/env ruby
+
+require 'uri'
+require 'net/http'
+require 'net/ftp'
+require 'MySQL'
+
+def getVersion(ftp)
+  version = nil
+  versions = ftp.nlst("*")
+  versions.each {|v|
+    if (v == "Final")
+      version = "Final"
+      break
+    elsif (v =~/^v[0-9]/)
+      version = v
+    end
+  }
+  return version
+end
+
+
+ftp = Net::FTP.new("ftp.jgi-psf.org")
+ftp.login
+root = "/pub/JGI_data/"
+ftp.chdir(root)
+STDERR.printf("Fetching ftp list...\n")
+dirs = ftp.nlst("*_*")
+STDERR.printf("Processing ftp list...\n")
+dirs.each {|dir|
+  next if dir =~/Test|BioRad|Phaeodac/
+  ftp.chdir(dir)
+  version = getVersion(ftp)
+  if (version.nil?)
+    ftp.chdir("annotation") if !ftp.nlst("annotation").empty?
+    ftp.chdir("assembly") if !ftp.nlst("assembly").empty?
+    version = getVersion(ftp)
+  end
+  if (!version.nil?)
+    ftp.chdir(version)
+    files = ftp.nlst("*")
+    if (files.grep(/Frozen*_aa/))
+      files.grep(/Frozen/).each {|file|
+        if (file.index(/\.aa|\.na/) && !File.exists?(dir + "_" + file))
+          STDERR.printf("Downloading %s...\n", dir + "_" + file)
+          ftp.getbinaryfile(file, dir + "_" + file)
+        end
+      }
+    elsif (files.grep(/FM*_aa/))
+      files.grep(/FM/).each {|file|
+        if (file.index(/\.aa|\.na/) && !File.exists?(dir + "_" + file))
+          STDERR.printf("Downloading %s...\n", dir + "_" + file)
+          ftp.getbinaryfile(file, dir + "_" + file)
+        end
+      }
+    end
+  end
+  ftp.chdir(root)
+}  

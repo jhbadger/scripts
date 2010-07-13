@@ -1,0 +1,68 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " peps.fa genome.fa [genome.fa...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+search = ARGV.shift
+transcripts = File.new("transcripts.fa", "w")
+peps = File.new("peps.fa", "w")
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(search)).each {|seq|
+  out = File.new("pep.fa", "w")
+  out.print seq
+  out.close
+  ARGV.each {|genome|
+    name = File.basename(genome).split(".").first
+    STDERR.printf("Running blast on %s vs %s...\n", seq.entry_id, name)
+    `blastall -p tblastn -m 8 -b 1 -e 1e-9 -i pep.fa -d #{genome}`.split("\n").each {|line|
+      fields = line.chomp.split("\t")
+      scaffold = fields[1]
+      start = fields[8].to_i
+      stop = fields[9].to_i
+      if (start < stop)
+        start -= 10000
+        stop += 10000
+        start = 1 if start < 1
+      else
+        start += 10000
+        stop -= 10000
+        stop = 1 if stop < 1
+      end
+      system("lookat #{genome} #{scaffold} #{start} #{stop} > match.fa")
+      STDERR.printf("Running genewise on %s vs %s...\n", seq.entry_id, name)
+      gw = `genewise -silent -cdna pep.fa match.fa`.split("\n")
+      print = false
+      gw.each {|line|
+        print = false if line =~/^\/\//
+        transcripts.print line + "\n" if print
+        if line =~/^>/
+          print = true
+          transcripts.printf(">#{name}_#{seq.definition.gsub(" ","_")} #{scaffold}\n")
+        end
+      }
+    }
+  }
+}
+transcripts.close
+Bio::FlatFile.new(Bio::FastaFormat, File.new("transcripts.fa")).each {|seq|
+  dna = Bio::Sequence::NA.new(seq.seq)
+  peps.print dna.translate(1, 11).to_fasta(seq.definition, 60)
+}
+File.unlink("pep.fa", "match.fa")
+peps.close

@@ -1,0 +1,97 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+require 'gchart'
+
+opt = OpenStruct.new
+opt.scripps = false
+opt.euk = false
+
+sNames = {"GS265" => "mesos", "GS266" => "mesom",
+  "GS271" => "coasts", "GS272" => "coastm", 
+  "GS267" => "oceans", "GS268" => "oceanm"}
+
+
+ARGV.options {|opts|
+  opts.banner << " csv"
+  opts.on("-e", "--euk", "process scripps euks") {opt.euk = true}
+  opts.on("-s", "--scripps", "process scripps") {opt.scripps = true}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+header = true
+sites = []
+data = Hash.new
+legend = Hash.new
+CSV.foreach(ARGV.first) {|row|
+  if (header)
+    sites = row[1..row.size - 1]
+    sites.each {|site|
+      data[site] = []
+      legend[site] = []
+    }
+    header = false
+  else
+    name = row.shift
+    row.size.times {|i|
+      value = row[i].to_f
+      data[sites[i]].push(value)
+      legend[sites[i]].push(name + " " + sprintf("%3.1f", value) + "%")
+    }
+  end
+}
+
+colors = ["#90B8C0","#988CA0","#FF9999","#99FF99","#CE0000",
+          "#000063","#5A79A5","#DEE7EF","#84596B",
+          "#B58AA5","#CECFCE","#005B9A","#0191C8","#74C2E1",
+          "#8C8984","#E8D0A9","#B7AFA3","#727B84","#DF9496",
+          "#00008B", "#0000CD", "#0000FF", "#006400", "#008000",
+          "#008000", "#008080", "#008B8B", "#00BFFF", "#00CED1",
+          "#F5FFFA", "#F8F8FF", "#FA8072" "#FAEBD7", "#FAF0E6",
+          "#FAFAD2", "#000063","#5A79A5","#9CAAC6","#DEE7EF","#84596B"]
+
+colors *= 5 # provide duplicates of colors to stop running out
+
+filter = nil
+name = nil
+
+out = File.new("chart.html", "w")
+sites.each {|site|
+  if (opt.scripps)
+    if (site=~/SM/)
+      filter = "8"
+    elsif (site=~/LG/)
+      filter = "3"
+    else
+      filter = "1"
+    end
+    name = sNames[site.split(" ").first.gsub("SM","").gsub("LG","")]
+    name = "e" + name if (opt.euk)
+  end
+  url = Gchart.pie(:data => data[site], :legend => legend[site], :width=>530, 
+                   :title => site)
+  col = ""
+  legend.size.times {|i|
+    col += colors[i].downcase.gsub("#","") + ","
+  }
+  col.chop!
+  url += "&chco="+col
+  out.printf("<img src=\"%s\"/>\n\n", url, col)
+  if (opt.scripps)
+    system("wget -O #{filter+name}.png \"#{url}\"")  
+  end
+}
+out.close

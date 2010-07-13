@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " command [arg arg...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+command = ARGV.shift
+
+hosts = []
+File.new(ENV["HOME"] + "/.fasthosts").each {|line|
+  hosts.push(line.chomp)
+}
+
+pwd = ENV["PWD"] + "/"
+
+out = pwd + "log.out"
+hNum = 0
+ARGV.each {|arg|
+  if (arg == File.basename(arg))
+    arg = pwd + arg
+  end
+  host = hosts[hNum%hosts.size]
+  system("ssh #{host} 'cd #{pwd};#{command} >>#{out} 2>>#{out}' #{arg} &")
+  STDERR.printf("Submitting #{command} #{arg} to #{host}\n")
+  hNum +=1
+}

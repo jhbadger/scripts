@@ -1,0 +1,80 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'MySQL'
+require 'rubygems'
+require'bio'
+include Bio
+
+$VERBOSE = false
+
+ARGV.options {|opts|
+  opts.banner << " blast-file nasB.ex"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+blast, nasB = ARGV
+
+db = MySQL.new
+
+def match?(query, target)
+  return false if query.nil?
+  tmpSeq = ">#{query.name} #{query.annotation}\n#{query.seq}"
+  tmp = File.new("tmp.seq", "w")
+  tmp.print tmpSeq
+  tmp.close
+  blast = `blastp #{target} tmp.seq -E1e-9 2>/dev/null`
+  if (blast =~ /\* NONE/)
+    return -1
+  elsif (blast =~/Expect = ([0-9|\.|e|-]*)/)
+    return $1.to_f
+  else
+    print blast
+    exit(1)
+  end
+end
+
+good = File.new("good.txt", "w")
+bad = File.new("bad.txt", "w")
+gpep = File.new("good.pep", "w")
+bpep = File.new("bad.pep", "w")
+apep = File.new("all.pep", "w")
+
+
+Blast::WU::Report.open(blast, "r").each {|query|
+  query.each {|hit|
+    if (hit.evalue.to_f < 1e-4)
+      entry, rest = hit.definition.split(" ", 2)
+      prev = db.prevGene(entry)
+      nx = db.nextGene(entry)
+      next if (prev.nil? || nx.nil?)
+      pMatch = match?(prev, nasB)
+      nMatch = match?(nx, nasB)
+      if (pMatch > 0 || nMatch > 0)
+      	good.printf("%s\t%s\t%s\t%s\t%8.3f\t%8.3f\n", entry, rest, 
+		    prev.annotation, nx.annotation, pMatch, nMatch)
+	gpep.print db.fetchProtID(entry)
+      else
+	bad.printf("%s\t%s\t%s\t%s\t%8.3f\t%8.3f\n", entry, rest, 
+		   prev.annotation, nx.annotation, pMatch, nMatch)
+	bpep.print db.fetchProtID(entry)
+      end
+      apep.print db.fetchProtID(entry)
+    end
+  }
+}
+good.close
+bad.close
+gpep.close
+bpep.close
+apep.close

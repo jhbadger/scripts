@@ -1,0 +1,58 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'optparse'
+require 'ostruct'
+require 'ZFile'   
+
+opt = OpenStruct.new
+opt.file = nil
+opt.inverse = nil
+
+
+o = OptionParser.new
+o.banner << " expression fasta [...fasta...]"
+o.on("-f ", "--file ", String, 
+        "read list of ids to search from file") {|f| opt.file = f}    
+o.on("-v", "--inverse", "return lines not matching expression") {opt.inverse = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2 && opt.file.nil?)
+  STDERR << o
+  exit(1)
+end
+
+seen = Hash.new
+if (opt.file)
+  express = false
+  File.new(opt.file).each do |line|
+    seen[line.chomp] = true
+  end
+else
+  express = ARGV.shift
+end
+
+
+ARGV.each do |fasta|
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+    if (express)
+      if (!opt.inverse)
+        print seq if (seq.definition =~/#{express}/)
+      else
+        print seq if (seq.definition !~/#{express}/)
+      end
+    else
+      if (!opt.inverse)
+        print seq if (seen[seq.entry_id])
+      else
+        print seq if (!seen[seq.entry_id])
+      end
+    end
+  end
+end

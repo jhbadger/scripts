@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'optparse'
+require 'ostruct'
+require 'bio'
+
+opt = OpenStruct.new
+opt.evalue = 1e-5
+
+o = OptionParser.new
+o.banner << " seq1.pep seq2.pep"
+o.on("-e ", "--evalue ", Float, 
+     "blast evalue (#{opt.evalue})") {|e| opt.evalue = e}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+pep1, pep2 = ARGV
+
+system ("formatdb -pT -i #{pep1}") if (!File.exists?(pep1 + ".phr"))
+system ("formatdb -pT -i #{pep2}") if (!File.exists?(pep2 + ".phr"))
+
+blast = "#{pep1}_#{pep2}.blastp"
+if (!File.exists?(blast))
+  blastp = "blastall -e #{opt.evalue} -p blastp -b 1" 
+  system("#{blastp} -d #{pep2} -i #{pep1} > #{blast}")
+end
+
+
+seen = Hash.new
+
+File.new(blast).each {|line|
+  seen[line.split(" ").first.tr(">", "")] = true if (line =~/^>/)
+}
+
+
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(pep1)).each {|seq|
+  print seq
+}
+Bio::FlatFile.new(Bio::FastaFormat, File.new(pep2)).each {|seq|
+  print seq if !seen[seq.entry_id]
+}

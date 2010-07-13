@@ -1,0 +1,12 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+FlatFile.new(GenBank, ARGF).each {|seq|
+  definition = seq.definition.tr(",;.", "")
+  definition.gsub!(" sp ", " sp_")
+  genus, species, rest = definition.split(" ", 3)
+  print seq.seq.to_fasta("#{genus}_#{species} #{rest}", 60)
+}

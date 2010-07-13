@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'apis'
+
+all = false
+storage = "misc_apis"
+host = "mysql-lan-pro"
+
+
+o = OptionParser.new
+o.banner << " [dataset... dataset...]"
+o.on("-a", "--all", "dump all datasets in database") {all = true}
+o.on("-s ", "--storage ", String, "storage database (default #{storage})") {|s| storage = s}
+o.on("-h ", "--host ", String, "database host (default #{host})") {|h| host = h}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1 && all != true)
+  STDERR << o
+  exit(1)
+end
+
+if (File.exist?("alignment.tsv"))
+  STDERR << "I don't want to overwrite your existing tsv files! Move them somewhere else or delete them. Exiting\n"
+  exit(1)
+end
+
+files = {"alignment" => File.new("alignment.tsv", "w"), "annotation" => File.new("annotation.tsv", "w"),
+  "blast" => File.new("blast.tsv", "w"), "classification" => File.new("classification.tsv", "w"),
+  "dataset" => File.new("dataset.tsv", "w"),"sequence" => File.new("sequence.tsv", "w"),
+  "tree" => File.new("tree.tsv", "w")}
+
+db = MySQL.new(host, storage, "apis", "apis_user")
+
+if (all)
+  db.query("select dataset from dataset").each {|dataset|
+    ARGV.push(dataset[0])
+  }
+end
+
+
+ARGV.each {|dataset|
+  found = db.count("dataset WHERE dataset = '#{dataset}'")
+  if (found == 0)
+    STDERR << "Dataset " << dataset << " not found!\n"
+    next
+  else
+    STDERR << "Writing files for " << dataset << "...\n"
+    files.keys.each {|table|
+      db.query("SELECT * FROM #{table} WHERE dataset = '#{dataset}'").each {|row|
+        files[table].print row.shift
+        row.each {|field|
+          files[table].print "\t" + field
+        }
+        files[table].printf("\n")
+      }
+    }
+  end
+}
+
+files.keys.each {|table|
+  files[table].close
+}

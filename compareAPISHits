@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Newick'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " trees1-dir trees2-dir"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+trees1, trees2 = ARGV
+
+t1 = []
+Dir.glob("#{trees1}/*.tree").each{|t|
+  t1.push(File.basename(t))
+}
+
+t2 = []
+Dir.glob("#{trees2}/*.tree").each{|t|
+  t2.push(File.basename(t))
+}
+
+
+STDERR.printf("trees1: %d\n", t1.size)
+STDERR.printf("trees2: %d\n", t2.size)
+
+if (t2.size > t1.size)
+  diff = t2 - t1
+  dir = trees2
+  STDERR.printf("Subtracting trees1 from trees2\n")
+else
+  diff = t1 - t2
+  dir = trees1
+  STDERR.printf("Subtracting trees2 from trees1\n")
+end
+
+counts = Hash.new
+species = Hash.new
+total = 0
+diff.each {|t|
+  if (total % 100 == 99)
+    STDERR.printf("%8.3f%% done\n", total*100.0/diff.size)
+  end
+  total += 1
+  begin
+    tree = NewickTree.fromFile("#{dir}/#{t}")
+    tree.taxa.each {|taxon|
+      if taxon.index("__")
+        orf, sp = taxon.split("__")
+        orf, contig = orf.split("-",2)
+        counts[contig] = 0 if counts[contig].nil?
+        counts[contig] += 1
+        species[contig] = sp
+      end
+    }
+    rescue
+  end
+}
+
+counts.keys.sort {|x, y| counts[y] <=> counts[x]}.each {|contig|
+  break if counts[contig] < 5
+  printf("%7d\t%10s\t%s\n", counts[contig], contig, species[contig])
+} 

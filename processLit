@@ -1,0 +1,70 @@
+#!/usr/bin/env ruby
+
+require 'nqxml/streamingparser'
+include NQXML
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s lit-file [...lit-file]\n", $0)
+  exit(1)
+end
+
+zipList = ""
+ARGV.each {|file|
+  system("clit #{file} temp-dir/")
+  opf = Dir.glob("temp-dir/*.opf")[0]
+  parser = StreamingParser.new(File.new(opf))
+  name = nil
+  data = Hash.new
+  parser.each {|entity|
+    if (entity.class == NQXML::Tag)
+      name = entity.name
+      data[name] = [] if data[name].nil?
+      if (!entity.attrs.nil?)
+	entity.attrs.keys.each {|key|
+	  value = entity.attrs[key].split("#").shift
+	  if (key == "href")
+	    data[name].push(value) if (!data[name].include?(value))
+	  end
+	}
+      end
+    elsif (entity.class == NQXML::Text)
+      data[name].push(entity.text) if (entity.text != "\n" && !name.nil?)
+    end
+  }
+  author = data["dc:Creator"][0].split(" ").pop
+  title = data["dc:Title"][0].tr(" ","")
+  cover = nil
+  toc = nil
+  data["item"].each {|item|
+    if (item =~ /\.png/)
+      name = File.basename(item,".png")
+      system("convert temp-dir/#{item} temp-dir/#{name}.jpg")
+      item = "#{name}.jpg"
+    end
+    if (item.downcase =~ /\.jpg|\.gif/)
+      next if (item.downcase =~ /thumb|spine/)
+      if (item.downcase =~/~cov|cover|cvr|510x680/)
+	next if (!cover.nil?)
+	system("cp temp-dir/#{item} temp-dir/Cover.jpg")
+	cover = true
+	item = "Cover.jpg"	
+      end
+    elsif (item.downcase =~/\.htm/)
+      outFile = File.new("temp-dir/temp.html", "w")
+      File.new("temp-dir/#{item}").each {|line|
+	line.gsub!(".png", ".jpg")
+	outFile.print line
+      }
+      outFile.close
+      system("mv temp-dir/temp.html temp-dir/#{item}")
+      if (item.downcase =~/contents|toc/ && toc.nil?)
+	system("cp temp-dir/#{item} temp-dir/00index.html")
+	toc = true
+	zipList = "00index.html " + zipList
+      end
+    end
+    zipList += item + " "
+  }
+  system("cd temp-dir;zip ../#{author}-#{title}.zip #{zipList};cd ..")
+  system("rm -r temp-dir")
+}

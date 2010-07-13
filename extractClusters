@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " list.txt FinalCluster.gz"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+list, cluster = ARGV
+
+File.new(list).each {|line|
+  name = line.split(" ").first
+  out = File.new(name + ".csv", "w")
+  `zgrep #{name}  #{cluster}`.each {|line|
+    fields = line.split("\t")
+    out.print line if fields[1] == name
+  }
+  out.close
+}

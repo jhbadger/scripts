@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " tab-file"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rest = ARGV
+
+sumTax = [Hash.new, Hash.new, Hash.new, Hash.new, Hash.new, Hash.new]
+lvTax = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
+
+total = 0
+File.new(csv).each {|line|
+  fields = line.chomp.split("\t")
+  if (fields[3] =~/TREE2/)
+    tax = fields[3]
+  else
+    tax = fields[2]
+  end
+  levels = tax.split("|")
+  0.upto(4) {|i|
+    tax = levels[i + 1]
+    tax = "Unclassified" if tax.nil?
+    sumTax[i][tax] = 0 if sumTax[i][tax].nil?
+    sumTax[i][tax] += 1
+  }
+  total += 1
+}
+
+0.upto(4) {|i|
+  printf("%s:\n", lvTax[i])
+  sumTax[i].keys.sort {|x, y| sumTax[i][y] <=> sumTax[i][x]}.each {|key|
+    printf("%5.1f%% %s\n", sumTax[i][key]*100.0/total, key)
+  }
+  printf("\n")
+}

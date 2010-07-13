@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+
+
+ARGV.options {|opts|
+  opts.banner << " fasta"  
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, rest = ARGV
+
+bins = Hash.new
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  name, rest = seq.entry_id.split("\.", 2)
+  bins[rest] = [] if bins[rest].nil?
+  seq.definition = seq.entry_id
+  lastCodon = seq.seq[-3,3].upcase
+  if (lastCodon == "TGA" || lastCodon == "TAA" || lastCodon == "TAG")
+    seq = Sequence::NA.new(seq.seq[0..-4]).to_fasta(seq.entry_id, 60)
+  end
+  bins[rest].push(seq)
+}
+
+list = File.new("list.txt", "w")
+bins.keys.each {|name|
+  out = File.new(name + ".tmp", "w")
+  bins[name].each {|seq|
+    out.print seq
+  }
+  out.close
+  system("muscle -in #{name}.tmp -out #{name}.aln")
+  File.unlink(name + ".tmp")
+  count = 0
+  length = 0
+  FlatFile.new(FastaFormat, File.new(name + ".aln")).each {|seq|
+    count += 1
+    length = seq.length
+  }
+  out = File.new(name + ".PAMLseq", "w")
+  out.printf(" %d %d\n", count, length)
+  File.new(name + ".aln").each {|line|
+    out.print line
+  }
+  out.close
+  list.printf("%s.PAMLseq\n", name)
+}
+
+list.close

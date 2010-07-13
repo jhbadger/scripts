@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'FastaDB'
+opt = OpenStruct.new
+
+opt.downLen = 800
+ARGV.options {|opts|
+  opts.banner << " fasta gff-file"
+  opts.on("-l ", "--length ", Integer, 
+          "downstream length (default #{opt.downLen})") {|t| opt.downLen = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, gff = ARGV
+
+finalEx = Hash.new
+coding = Hash.new
+File.new(gff).each {|line|
+  contig, method, feature, start, stop, gc, strand = line.split(" ")
+  coding[contig] = Hash.new if (coding[contig].nil?)
+  start = start.to_i
+  stop = stop.to_i
+  start.upto(stop).each {|i|
+    coding[contig] = true
+  }
+  next if (feature !~ /final-exon|single-exon/)
+  finalEx[contig] = [] if (finalEx[contig].nil?)
+  finalEx[contig].push([start, stop, feature, strand])
+}
+
+FastaDB.new(fasta).each {|seq|
+  if (finalEx[seq.name])
+    finalEx[seq.name].each {|exon|
+      start, stop, feature, strand = exon
+      if (strand == "+")
+        next if (stop + opt.downLen > seq.length)
+        (stop + 1).upto(stop + 1 + opt.downLen) {|i|
+          next if (coding[seq.name][i])
+        }
+        downSeq = seq.naseq.seq[stop + 1, opt.downLen].upcase
+      else
+        next if (start - opt.downLen < 0)
+        downSeq = seq.naseq[start - (opt.downLen + 1), opt.downLen].complement.upcase
+      end
+      print Sequence.new(downSeq).to_fasta(seq.name + "_" + start.to_s, 60)
+    }
+  end
+}

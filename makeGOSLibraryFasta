@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " pep.gz"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, rest = ARGV
+files = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, IO.popen("gzcat #{prot}", "r")).each {|seq|
+  if (seq.definition =~/library_id=([^\ ]*)\ /)
+    lib = $1
+    lib.gsub!("JCVI_LIB_","")
+    files[lib] = File.new(lib+".pep", "w") if (files[lib].nil?)
+    seq.definition = seq.entry_id
+    files[lib].print seq
+  else
+    STDERR.printf("Skipping %s\n", seq.entry_id)
+  end
+}
+files.keys.each {|lib|
+  files[lib].close
+}

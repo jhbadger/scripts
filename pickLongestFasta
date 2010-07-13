@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " fasta [...fasta]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+storeSeq = Hash.new
+ARGV.each {|seqs|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(seqs)).each {|seq|
+    if (storeSeq[seq.definition].nil? || storeSeq[seq.definition].length < seq.length)
+      storeSeq[seq.definition] = seq
+    end
+  }
+}
+
+storeSeq.keys.sort.each {|key|
+  print storeSeq[key]
+}

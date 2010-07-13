@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.percent = 0.9
+opt.min = 1200
+o = OptionParser.new
+o.banner << " list.tax bodysites.afa"
+o.on("-m ", "--min", Float, "minimum seq length (#{opt.min})") {|m| opt.min = m}
+o.on("-p ", "--percent", Float, "minimum phylum percent (#{opt.percent})") {|p| opt.percent = p}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+taxf, aln = ARGV
+
+name = ""
+tax = ""
+ids = Hash.new
+
+File.new(taxf).each {|line|
+  if (line =~/>/)
+    name = line.split("|")[0].split(" ").first.gsub(">","")
+  else
+    fields = line.chomp.gsub("\"","").split("; ")
+    phy, p = fields[4], fields[5]
+    p = p.to_f
+    if (p >= opt.percent)
+      tax = ""
+      fields.size.times {|i|
+        tax += fields[2 + i*2].gsub(" ","_") + ";" if !fields[2 + i*2].nil?
+      } 
+      tax.chop!
+      ids[name] = tax.split(";").last + "_" + name + " " + tax
+    end
+  end
+}
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(aln)).each {|seq|
+  if (ids[seq.entry_id] && seq.seq.count("AGCTUagctu") >= opt.min)
+    print seq.seq.gsub(".","-").to_fasta(ids[seq.entry_id], 60)
+  end
+}

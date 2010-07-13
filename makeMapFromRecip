@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " recip fasta1 fasta2"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+recip, fasta1, fasta2 = ARGV
+
+function1 = Hash.new
+function2 = Hash.new
+
+FlatFile.new(FastaFormat, File.new(fasta1)).each {|seq|
+  id = seq.entry_id
+  function1[id] = seq.definition[1+id.length..seq.definition.size]
+}
+
+FlatFile.new(FastaFormat, File.new(fasta2)).each {|seq|
+  id = seq.entry_id
+  function2[id] = seq.definition[1+id.length..seq.definition.size]
+}
+
+
+name1 = File.basename(fasta1).split(".").first
+name2 = File.basename(fasta2).split(".").first
+
+printf("%s\t%s\t%s\t%s\n", name1, name2, name1 + " annotation",
+       name2 + " annotation")
+
+File.new(recip).each {|line|
+  orf1, orf2, p1, p2, orth = line.chomp.split("\t")
+  o1 = orf1.split("-").first
+  o2 = orf2.split("-").first
+  if (orth == "yes")
+    printf("%s\t%s\t%s\t%s\n", o1, o2, function1[orf1], function2[orf2])
+  else
+    printf("%s\t%s\t%s\t%s\n", o1, "xxx", function1[orf1], "xxx")
+  end
+}

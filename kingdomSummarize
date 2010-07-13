@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+
+ARGV.options {|opts|
+  opts.banner << " \"glob\""
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+glob, rest = ARGV
+
+Dir.glob(glob).each {|dir|
+  #STDERR.printf("Processing %s...\n", dir)
+  ann = dir + "/ann.pep"
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(ann)).each {|seq|
+    nei = dir + "/neighbors/" + seq.entry_id + ".nei"
+    if (File.exists?(nei))
+      begin
+        kingdom = File.new(nei).gets.split("\t").first
+        printf("%s\t%s\n", seq.entry_id, kingdom)
+      rescue
+      end
+    end
+  }
+}

@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " rna-csv"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+csv, rest = ARGV
+
+seqs = Hash.new
+CSV.foreach(csv) do |row|
+  id, ann, sp, tax, seq = row
+  next if sp == "species"
+  gs = sp.split(" ")[0] + sp.split(" ")[1]
+  seq = Bio::Sequence::NA.new(seq)
+  if (seqs[sp].nil? || seqs[sp].length < seq.length)
+    seqs[sp] = seq.to_fasta(sp.gsub(" ", "_") + " " + tax.gsub("; ",";"), 60)
+  end
+end
+
+seqs.keys.sort.each do |key|
+  print seqs[key]
+end

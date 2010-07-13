@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'Btab'
+
+ARGV.options {|opts|
+  opts.banner << " btab-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+btab, rest = ARGV
+
+bins = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+tot = 0
+Btab.new(btab).each {|query|
+  hit = query.bestOrth(0.8)
+  next if (hit.nil?)
+  bins[hit.percentId/10] += 1
+  tot += 0.01
+}
+
+10.times {|i|
+  printf("%3d-%3d%%:\t%8.1f%%\n", i * 10, (i + 1) * 10, bins[i] /  tot)
+}

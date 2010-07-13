@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+
+ARGV.options {|opts|
+  opts.banner << " name pep-file [pep-file...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+name = ARGV.shift
+out = File.new(name + "_list.textile", "w")
+
+ARGV.each {|pep|
+  FlatFile.new(FastaFormat, File.new(pep)).each {|seq|
+    name, function = seq.definition.split(" ", 2)
+    out.printf("* [[%s]] %s\n", name, function)
+    subOut = File.new(name + ".textile","w")
+    subOut.print seq
+    subOut.close
+  }
+}
+out.close

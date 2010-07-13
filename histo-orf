@@ -1,0 +1,41 @@
+#!/usr/bin/perl -w
+
+(@ARGV==2) || die ("Usage: histo-orf bin-size cds-file\n");
+$length_width=shift(@ARGV);
+$name="";
+
+while(<>) {
+    ($name,$start,$end)=split(" ",$_);
+    $length=(abs($end-$start)+1)/3;
+    $length_hist[hist_classify($length,$length_width)]++;
+    $total++;
+}
+hist_print($length_width,$total,@length_hist);
+
+
+sub hist_classify {
+  my ($value,$width)=@_;
+  my $i=1;		
+  for(;;) {
+    if ($value<$i*$width) {
+      return $i;
+    }
+    else {
+      $i++;
+    }
+  }  
+}
+
+sub hist_print {
+  my ($width,$tot,@hist)=@_;
+  my $bin;my $i=1;my $ctot=0;
+  shift(@hist); # get rid of zero value
+  while(@hist>0) {
+    $bin=shift(@hist);
+    if (!defined($bin)) {$bin=0;}
+    $ctot+=$bin;
+    printf("%6d %6d %3d%% %3d%%\n",$i*$width,$bin,$bin*100/$tot,
+                                   $ctot*100/$tot);
+    $i++;
+  }
+}

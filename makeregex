@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+
+module MakeRegex
+  def join_re(all, force_group = false)
+    len_is_1 = !all.detect{ |i| i.length > 1 }
+    join_char = len_is_1 ? '' : '|'
+    join = all * join_char
+
+    if join.length == 1 or (all.size == 1 and !force_group)
+      join
+    elsif len_is_1
+      "[#{join}]"
+    else
+      "(?:#{join})"
+    end
+  end
+
+  def re_with_prefix(p, list)
+    return "#{p}#{list}" if list.size == 1
+
+    hash = {}
+    for word in list do
+      prefix_len = word[0] == ?\\ ? 2 : 1
+      prefix = word[0, prefix_len]
+      suffix = word[prefix_len .. -1]
+      hash[prefix] ||= []
+      hash[prefix] << suffix || ''
+    end
+
+    all = []
+    for key in hash.keys.sort do
+      all << re_with_prefix(key, hash[key])
+    end
+
+    paren = if all.size == 1
+              all.to_s
+            else
+              mark = all.delete('') ? '?' : ''
+              join_re(all, !mark.empty?) + mark
+            end
+
+    "#{p}#{paren}"
+  end
+
+  def make(list, re_options = '')
+    re_options ||= ''
+    if re_options =~ /i/ and re_options !~ /-i/
+      list.collect!{ |elem| elem.downcase }
+    end
+
+    result = re_with_prefix('', list.
+                            uniq.
+                            delete_if { |word| word =~ /^\s*$/ }.
+                            collect { |word| Regexp.quote(word) })
+
+    if re_options.length > 0
+      "(?#{re_options})#{result}"
+    else
+      result
+    end
+  end
+
+  module_function :make, :join_re, :re_with_prefix
+  private :re_with_prefix
+end
+
+class Regexp
+  def Regexp.make(list, re_options = '')
+    MakeRegex.make(list, re_options)
+  end
+end
+
+print Regexp.make(readlines.map{ |i| i.chomp! })

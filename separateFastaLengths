@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+require 'ostruct'
+require 'rubygems'
+require'bio'
+include Bio
+require 'optparse'
+opt = OpenStruct.new
+
+opt.len = 150
+
+ARGV.options {|opts|
+  opts.banner << " fasta [fasta...]"
+  opts.on("-l ", "--length ", Integer, 
+          "length threshold (default #{opt.len})") {|t| opt.len = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+Dir.mkdir("long") if !File.exists?("long")
+Dir.mkdir("short") if !File.exists?("short")
+
+
+ARGV.each {|file|
+  name = file[0..file.rindex(".") - 1]
+  FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+    if (seq.length < opt.len)
+      system("cp #{name + '*.*'} short/")
+    else
+      system("cp #{name + '*.*'} long/")
+    end
+    break
+  }
+}

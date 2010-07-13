@@ -1,0 +1,102 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'FastaDB'
+require 'Phylogeny'
+require 'csv'
+
+#For testing in TextMate:
+#Dir.chdir("/Users/jbadger/vibrio")
+#ARGV.push("master_core_matchtable.txt", "pep_vibrio.seq", "dna_vibrio.seq")
+opt = OpenStruct.new
+opt.min = 0
+opt.max = 100
+
+o = OptionParser.new
+o.banner << " matchtable.txt proteins.pep dna.seq"
+o.on("-m ", "--min ", Integer, "minimum identity to count (#{opt.min})") {|m| opt.min = m}
+o.on("-x ", "--max ", Integer, "maximum identity to count (#{opt.max})") {|x| opt.max = x}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 3)
+  STDERR << o
+  exit(1)
+end
+
+match, peps, seqs = ARGV
+
+STDERR << "Loading Sequences...\n"
+pdb = FastaDB.new(peps)
+ddb = FastaDB.new(seqs)
+
+trees = Hash.new
+STDERR << "Inferring Trees\n"
+File.new(match).each {|line|
+  genomes = line.chomp.split(" ")
+  genomes = [genomes[0]] + genomes[-7..-2]
+  name = genomes.first
+  if (!File.exist?(name + ".tree")) # already made tree
+    pfa =  File.new(name + ".fa", "w")
+    dfa =  File.new(name + ".da", "w")
+    genomes.each {|entry|
+      seq = pdb.getFasta(entry, true)
+      if (seq)
+        pfa.print seq
+      else
+        STDERR << entry << " does not exist\n"
+        exit(1)
+      end
+      seq = ddb.getFasta(entry, true)
+      if (seq)
+        dfa.print seq
+      else
+        STDERR << entry << " does not exist\n"
+        exit(1)
+      end
+    }
+    pfa.close
+    dfa.close
+    system("muscle -stable -in #{name}.fa -out #{name}.afa 2>/dev/null")
+    backAlign(name + ".da", name + ".afa", name + ".dfa") if (!File.exist?(name + ".dfa"))
+    makeNucFastTree(name + ".tree", name + ".dfa", "CMCP6")
+    File.unlink("#{name}.fa", "#{name}.da")
+  end
+  ident = calcPercentIdent(name + ".dfa")
+  if (ident >= opt.min && ident <= opt.max)
+    trees[name] = NewickTree.fromFile(name + ".tree")
+  end
+}
+
+STDERR << "Comparing Topologies...\n"
+topology = Hash.new
+trees.keys.each {|name|
+  sorted = false
+  topology.keys.each {|topo|
+    begin
+      d1, d2 = trees[name].compare(topo)
+    rescue
+      STDOUT << "I can't compare:\n" << trees[name].to_s << "\n" << topo.first.to_s << "\n"
+      next
+    end
+    if (d1.empty? && d2.empty?)
+      topology[topo].push(name)
+      sorted = true
+      break
+    end
+  }
+  if (!sorted)
+    topology[trees[name]] = [name]
+  end
+}
+
+topology.keys.sort{|y, x| topology[x].size <=> topology[y].size}.each {|topo|
+  STDOUT << [topology[topo].size, topo.to_s(showLen = false, bootStrap = false)].to_csv
+}

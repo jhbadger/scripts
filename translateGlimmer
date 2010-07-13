@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.code = 11
+ARGV.options {|opts|
+  opts.banner << " glimmer.predict fasta"
+  opts.on("-c ", "--code ", Integer,
+          "set NCBI genetic code (default #{opt.code})")  {|t| opt.code = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+glim, dna = ARGV
+
+contig = nil
+cds = Hash.new
+File.new(glim).each {|line|
+  if (line =~/^>/)
+    contig = line.chomp.gsub(">","")
+    cds[contig] = []
+  else
+    id, start, stop = line.split(" ")
+    coords = [id, start.to_i, stop.to_i]
+    cds[contig].push(coords)
+  end
+}
+
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(dna)).each {|seq|
+  next if cds[seq.entry_id].nil?
+  cds[seq.entry_id].each {|orf|
+    id, start, stop = orf
+    if (start < stop)
+      subseq = seq.naseq.subseq(start, stop)
+    else
+      subseq = seq.naseq.subseq(stop, start).complement
+    end
+    header = File.basename(glim, ".predict") + "_" + id + "_" + 
+                      seq.entry_id + " " + start.to_s + " " + stop.to_s
+    print subseq.translate(1, opt.code).to_fasta(header, 60)
+  }
+}

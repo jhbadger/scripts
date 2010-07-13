@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s alignment-file\n", $0)
+  exit(1)
+end
+
+prot = ARGV.pop
+
+fasta = File.new("#{prot}.fa", "w")
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  name = seq.definition.split(";").pop.tr(" ","_")
+  data = File.new("/home/jbadger/.gtree/cache/#{name}", "w")
+  data.printf("origin {}\n")
+  fasta.print seq.aaseq.to_fasta(name,60)
+  data.close
+}
+fasta.close

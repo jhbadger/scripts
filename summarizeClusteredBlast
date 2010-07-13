@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " blast cluster-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+blast, cluster = ARGV
+
+ann = Hash.new
+species = Hash.new
+pcounts = Hash.new
+spcounts = Hash.new
+cl = Hash.new
+rep = nil
+num = 0
+
+clust = Hash.new
+File.new(cluster).each{|line|
+  if (line=~/^>Cluster (.*)/)
+    if (rep)
+      clust[rep] = num
+      rep = nil
+      num = 0
+    end
+  elsif (line=~/>(.*)\.\.\./)
+    pep = $1
+    rep = pep if line.index("*")
+    num += 1
+  end
+}
+clust[rep] = num
+
+Bio::Blast::Default::Report.open(blast, "r").each {|query|
+  qname =  query.query_def.split(" ").first
+  query.each {|hit|
+    if (hit.definition =~/([^\ ]*) ([^\{|^\}]*)\{*([^\}]*)/)
+      id, an, sp = $1, $2, $3
+      an.chop!
+      ann[id] = an.gsub(",","").gsub("\"","").gsub("'","")
+      species[id] = sp
+      cl[id] = qname if cl[id].nil?
+      pcounts[id] = 0 if pcounts[id].nil?
+      pcounts[id] += clust[qname]
+      spcounts[sp] = 0 if spcounts[sp].nil?
+      spcounts[sp] += clust[qname]
+    end
+  }
+}
+
+printf("Seq, Hit, Annotation, Species, Hit Count, Species Count\n")
+pcounts.keys.sort {|x,y| pcounts[y]<=>pcounts[x]}.each {|key|
+  printf("%s, %s, %s, %s, %d, %d\n", cl[key], key, ann[key], 
+         species[key], pcounts[key], spcounts[species[key]])
+}

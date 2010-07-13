@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s \"glob\"\n", $0)
+  exit(1)
+end
+
+glob, rest = ARGV
+
+Dir.glob(glob).each {|file|
+  File.new(file).each {|line|
+    print line
+  }
+}

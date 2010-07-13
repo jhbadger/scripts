@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " posmap alias isotigs.fna"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 3)
+  STDERR << o
+  exit(1)
+end
+
+posmap, ali, isotigs = ARGV
+
+
+isogroup = Hash.new
+
+STDERR << "Loading isotigs...\n"
+ZFile.new(isotigs).each do |line|
+  if (line =~/>(.*)  gene=(isogroup[0-9]*)/)
+    isogroup[$1] = $2
+  end
+end
+
+seenContigs = Hash.new
+countReads = Hash.new
+groupReads = Hash.new
+
+STDERR << "Loading posmap...\n"
+ZFile.new(posmap).each do |line|
+  contig, read = line.chomp.split("\t")
+  seenContigs[contig] = true
+  countReads[read] = 0 if !countReads[read]
+  countReads[read] += 1
+  groupReads[read] = Hash.new if !groupReads[read]
+  groupReads[read][isogroup[contig]] = true
+end
+
+seenAli = Hash.new
+STDERR << "Loading alias...\n"
+ZFile.new(ali).each do |line|
+  read, newname = line.chomp.split("\t")
+  seenAli[read] = true
+end
+
+morethan1 = (countReads.keys.select {|key| countReads[key] > 1}).size
+morethan2 = (countReads.keys.select {|key| countReads[key] > 2}).size
+morethan3 = (countReads.keys.select {|key| countReads[key] > 3}).size
+
+printf("%d of %d reads (%3.1f%%) used in more than one contig/isotig\n",
+  morethan1, seenAli.keys.size, morethan1*100.0/seenAli.keys.size)
+printf("%d of %d reads (%3.1f%%) used in more than two contigs/isotigs\n",
+  morethan2, seenAli.keys.size, morethan2*100.0/seenAli.keys.size)
+printf("%d of %d reads (%3.1f%%) used in more than three contigs/isotigs\n\n",
+  morethan3, seenAli.keys.size, morethan3*100.0/seenAli.keys.size)
+
+morethan1 = (groupReads.keys.select {|key| groupReads[key].keys.size > 1}).size
+morethan2 = (groupReads.keys.select {|key| groupReads[key].keys.size > 2}).size
+morethan3 = (groupReads.keys.select {|key| groupReads[key].keys.size > 3}).size
+
+printf("%d of %d reads (%3.1f%%) used in more than one isogroup\n",
+  morethan1, seenAli.keys.size, morethan1*100.0/seenAli.keys.size)
+printf("%d of %d reads (%3.1f%%) used in more than two isogroups\n",
+  morethan2, seenAli.keys.size, morethan2*100.0/seenAli.keys.size)
+
+
+

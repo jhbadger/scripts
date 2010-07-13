@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " name alignment results"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+name, alignment, results = ARGV
+
+printIt = false
+sites = []
+residues = []
+nameLine = ""
+File.new(results).each {|line|
+  if (line =~/^#{name}/)
+    nameLine = line
+    printIt = true
+  elsif(line =~/^\n/)
+    printIt = false
+  end
+  if printIt
+    if (line =~/([0-9]+) ([A-Z])/)
+      sites.push($1.to_i)
+      residues.push($2)
+    end
+  end
+}
+
+print nameLine
+FlatFile.new(FastaFormat, File.new(alignment)).each {|seq|
+  if (seq.entry_id =~/ancestor_/)
+    sites.size.times {|i|
+      countA = 0
+      count = 0
+      while (count < sites[i])
+	c = seq.seq[countA].chr
+	count += 1 if (c != "-")
+	countA += 1
+      end
+      printf("%4d %4d %s\n", count, countA, residues[i])
+    }
+    break
+  end
+}

@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Btab'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+
+def parseName(string)
+  if (string =~/([A-Z|0-9]*)-TG_([a-z|0-9]*)/)
+    return [$1, $2]
+  elsif (string =~/([A-Z|a-z|0-9]*)\:([A-Z|a-z|0-9]*)/)
+    return [$2, $1]
+  else
+    return nil
+  end
+end
+
+
+
+ARGV.options {|opts|
+  opts.banner << " fasta btab"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, btab = ARGV
+
+name = fasta.split(".").first
+
+gene = File.new(name + ".gene", "w")
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  parsed = parseName(seq.entry_id)
+  if (!parsed.nil?)
+    gene.printf("%s %s %d\n", parsed.last, parsed.first, seq.length)
+  else
+    STDERR.printf("Can't parse: %s\n", seq.entry_id)
+  end
+}
+gene.close
+
+hom = File.new(name + ".hom", "w")
+
+seen = Hash.new
+Btab.new(btab).each {|query|
+  qorf, qorg = parseName(query.name)
+  query.matches.each {|match|
+    begin
+      next if (query.name == match.name)
+      morf, morg = parseName(match.name)
+      id1 = qorg + ":" + qorf + " " + match.qrange.first.to_s
+      id2 = morg + ":" + morf + " " + match.srange.first.to_s
+      next if (seen[id1] || seen[id2])
+      seen[id1] = true
+      seen[id2] = true
+      hom.printf("%s:%s %s:%s %d %d %d %d %d %d\n", qorg, qorf, morg, morf,
+		 match.qrange.first, match.qrange.last, match.srange.first,
+		 match.srange.last, 100 - match.percentId, match.score)
+    rescue
+    end
+  }
+}
+hom.close

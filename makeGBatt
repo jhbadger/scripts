@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'http-access2'
+require 'FastaDB'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+link = "http://www.ncbi.nlm.nih.gov/entrez/viewer.fcgi?val="
+clnt = HTTPAccess2::Client.new
+
+fasta, rest = ARGV
+
+FastaDB.new(fasta).each {|seq|
+  if (seq.definition  =~ /(gi[0-9]*)/)
+    num = $1
+    num = seq.name.split("-").last if (seq.name.index("-"))
+    sp = nil
+    inRef = false
+    tax = ""
+    sleep(1)
+    clnt.get(link + num.gsub("gi","")).body.content.split("\n").each {|line|
+      inRef = false if (line =~/^REFERENCE/)
+      if (inRef)
+        tax += " " if (tax != "")
+        tax += line.chomp.lstrip
+      end
+      if (line =~/^  ORGANISM/)
+        sp = line.split(/<|>/)[2]
+        inRef = true
+      end
+    }
+  end
+  tax.chop! if (tax[tax.length - 1].chr == ".")
+  #acc, len, sp, st, id, taxonomy, date, published, format
+  printf("%s\t0\t%s\t\t0\t%s\t\t\t\t", num, sp, tax)
+}
+

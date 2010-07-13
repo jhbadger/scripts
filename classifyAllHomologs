@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s blast-file\n", $0)
+  exit(1)
+end
+
+blast = ARGV[0]
+
+counts = Hash.new
+counts["**None**"] = 0
+total = 0
+
+report = Blast::Default::Report.open(blast, "r").each {|query|
+  query_id = query.query_def
+  total += 0.01
+  hits = query.hits
+  if (hits.empty?)
+    counts["**None**"] += 1
+  else
+    seen = Hash.new
+    hits.each {|hit|
+      genus, species, rest = hit.definition.split(/_|-/)
+      org = genus + "_" + species
+      counts[org] = 0 if (counts[org].nil?)
+      counts[org] += 1 if (!seen[org])
+      seen[org] = true
+    } 
+  end
+}
+
+
+counts.keys.sort {|a, b|  counts[b] <=> counts[a]}.each {|org|
+  printf("%20s %6d (%.1f%%)\n", org, counts[org], counts[org] / total)
+}

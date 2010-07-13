@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+require 'ostruct'
+require 'DBwrapper'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.level = 1
+opt.database = "phylodb"
+opt.host = "mysql-lan-pro.jcvi.org"
+
+o = OptionParser.new
+o.banner << " seq.fasta"
+o.on("-d ", "--database ", String, "database (default #{opt.database})") {|t| opt.database = t}
+o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+o.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+db = MySQL.new(opt.host, opt.database, "access", "access")
+files = Hash.new
+tax = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
+  id, contig = seq.entry_id.split("-")
+  if (!tax[contig])
+    query = "SELECT taxonomy FROM contigs WHERE name = '#{contig}'"
+    db.query(query).each do |row|
+      tax[contig] = row.first.split("; ")[opt.level]
+    end
+  end
+  next if tax[contig].nil?
+  files[tax[contig]] = File.new(tax[contig] + ".fa", "w") if (!files[tax[contig]])
+  files[tax[contig]].print seq
+}
+
+db.close
+files.keys.each do |key|
+  files[key].close
+end

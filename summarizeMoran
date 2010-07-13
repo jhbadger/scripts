@@ -1,0 +1,89 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'MySQL'
+opt = OpenStruct.new
+
+opt.drill = nil
+
+ARGV.options {|opts|
+  opts.banner << " Sp.csv Id.csv"
+  opts.on("-d ", "--drilldown ", String, "Drill down on taxon") {|t| opt.drill = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+db = MySQL.new
+sp, id = ARGV
+
+tax = db.loadTax
+spTax = Hash.new
+tax.keys.each{|contig|
+  spTax[tax[contig]["species"]] = tax[contig]["taxonomy"]
+}
+
+
+catCounts = Hash.new
+drillCounts = Hash.new
+
+categories = ["Opisthokont","Algae","Chromalveolate","Streptophyta", 
+              "Euglenozoa", "Bacteria", "Viruses"]
+
+File.new(sp).each {|line|
+  species, num = line.chomp.split(",")
+  categories.each {|cat|
+    drillCounts[cat] = Hash.new if (opt.drill && drillCounts[cat].nil?)
+    catCounts[cat] = 0 if catCounts[cat].nil?
+    if (spTax[species] =~ /#{db.convertTax(cat)}/)
+      catCounts[cat] += num.to_i
+      seen = true
+      if (cat =~/#{opt.drill}/)
+        drillCounts[cat][species] = num.to_i
+      end
+    end
+  }
+}
+
+uCounts = Hash.new
+drilluCounts = Hash.new
+
+File.new(id).each {|line|
+  tran, rest = line.chomp.split(",")
+  tran =~/\{([^\}]*)/
+  species = $1
+  categories.each {|cat|
+    drilluCounts[cat] = Hash.new if (opt.drill && drilluCounts[cat].nil?)
+    uCounts[cat] = 0 if uCounts[cat].nil?
+    if (spTax[species] =~ /#{db.convertTax(cat)}/)
+      uCounts[cat] += 1
+      seen = true
+      if (cat =~/#{opt.drill}/)
+        drilluCounts[cat][species] = 0 if (drilluCounts[cat][species].nil?)
+        drilluCounts[cat][species] += 1
+      end
+    end
+  }
+}
+
+
+printf("%15s\t%4s\t%s\n","Group","ESTs", "# Unique Transcripts")
+catCounts.keys.sort {|x,y|catCounts[y] <=> catCounts[x]}.each {|key|
+  next if catCounts[key] == 0
+  printf("%15s\t%4d\t%4d\n", key, catCounts[key], uCounts[key])
+  if (key =~ /#{opt.drill}/)
+    drillCounts[key].keys.sort {|x,y|drillCounts[key][y] <=> drillCounts[key][x]}.each {|k2|
+      printf("\t\t%25s\t%4d\t%4d\n", k2, drillCounts[key][k2], 
+             drilluCounts[key][k2])
+    }
+  end
+}

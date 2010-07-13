@@ -1,0 +1,102 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " matrix pattern genome ann.pep recip categories title"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 7)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+matrix, pattern, genome, pep, recip, categories, title = ARGV
+
+STDERR.printf("Loading recips...\n")
+orth = Hash.new
+File.new(recip).each {|line|
+  sybil, real, x, y, o = line.split(" ")
+  orth[sybil.downcase.gsub("tigr_","")] = real if (o == "yes")
+}
+
+peps = Hash.new
+
+STDERR.printf("Loading peps....\n")
+FlatFile.new(FastaFormat, File.new(pep)).each {|seq|
+  peps[seq.entry_id] = seq
+}
+
+cats = Hash.new
+
+STDERR.printf("Loading categories....\n")
+File.new(categories).each {|line|
+  name, category = line.chomp.split("\t")
+  category = category.split(";").first
+  cats[name] = category
+}
+
+
+outPep = File.new(genome + ".peps", "w")
+
+pieCat = Hash.new
+total = 0
+columns = nil
+File.new(matrix).each {|line|
+  if (columns.nil?)
+    columns = line.chomp.split("\t")
+  else
+    fields = line.chomp.split("\t")
+    pat = fields[2..fields.size].to_s
+    if (fields.first == genome && pat == pattern)
+      p = peps[orth[genome.downcase + "_" + fields[1].downcase]]
+      if (!p.nil?)
+	outPep.print p
+	cat = cats[p.entry_id]
+	if (!cat.nil?)
+	  pieCat[cat] = 0 if (pieCat[cat].nil?)
+	  pieCat[cat] += 1
+	  total += 1
+	end
+      end
+    end
+  end
+  
+}
+outPep.close
+
+pieCat.keys.each {|key|
+  pieCat[key]/=(1.0*total)
+}
+
+keys = pieCat.keys
+keys.sort! {|x, y| pieCat[x] <=> pieCat[y]}
+
+pieR = File.new("plotPie.r", "w")
+pieR.printf("pie.cat <- c(")
+keys.each {|key|
+  pieR.printf("%3.2f", pieCat[key])
+  pieR.print "," if (key != keys.last)
+}
+pieR.printf(")\n")
+pieR.printf("names(pie.cat) <- c(")
+keys.each {|key|
+  pieR.printf("\"%s\"", key)
+  pieR.print "," if (key != keys.last)
+}
+pieR.printf(")\n")
+pieR.printf("pie(pie.cat, main = \"#{title}\")")
+pieR.close
+system("R --no-save < plotPie.r;ps2pdf Rplots.ps; rm Rplots.ps")

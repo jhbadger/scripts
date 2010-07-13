@@ -1,0 +1,61 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " n-colors"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+n, rest = ARGV
+
+
+printf('<?xml version="1.0"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+         "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink">\n')
+
+x=0
+y=0
+r = 255 
+g = 0
+b = 0
+
+
+
+n = n.to_i
+
+dist = (255/(n**0.3333)).to_i
+
+
+n.times {|i|
+  STDERR.printf("r=%d g=%d b=%d\n", r, g, b)
+  ry = y - 10
+  color = (256*256)*r + 256*g + b - 1
+  printf("<rect x=\"%d\" y=\"%d\" width=\"100\"  height=\"30\" fill=\"%s\"/>\n", x, ry, 
+         color.to_s(base=16))
+  printf("<text x=\"%d\" y=\"%d\" font-size=\"15\" font-weight=\"bold\"  fill=\"black\">%s</text>\n", x, y, color.to_s(base=16))
+  y += 15
+  if ((i % 3) == 0)
+    r -= dist
+  elsif ((i % 3) == 1)
+    g += dist
+  else
+    b += dist
+  end
+}
+printf("</svg>\n")

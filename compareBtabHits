@@ -1,0 +1,104 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Btab'
+require 'csv'
+require 'ZFile'
+require 'rubygems'
+require 'bio'
+
+opt = OpenStruct.new
+opt.countns = false
+o = OptionParser.new
+o.banner << " btab btab [...btab]"
+o.on("-n", "--countns", "countns using fasta files") {opt.countns = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+seqs = Hash.new
+if (opt.countns)
+  ARGV.each do |btab|
+    seqs[btab] = Hash.new
+    name = btab.split("_").first
+    fa = Dir.glob(name + "[.gz|.bz2]*")
+    if (fa)
+      Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fa[0])).each do |seq|
+        seqs[btab][seq.entry_id] = seq.seq
+      end
+    end
+  end
+end
+
+matches = Hash.new
+ARGV.each do |btab|
+  Btab.new(btab).each do |query|
+    if (query.name =~/([A-Z][0-9]*)_TIGR/)
+      name = $1
+    else
+      name = query.name
+    end
+    matches[name] = Hash.new if (!matches[name])
+    matches[name][btab] = query.bestOrth(0.5, 100)
+  end
+end
+
+
+header = ["Query"]
+ARGV.each do |btab|
+  fname = btab.split(".").first
+  header.push(fname, "Desc", "Id%", "e-value", "length")
+  header.push("% Ns") if (opt.countns)
+end
+print header.to_csv
+
+percents = Hash.new
+lengths = Hash.new
+ncount = Hash.new
+matches.keys.sort.each do |name|
+  line = [name]
+  ARGV.each do |btab|
+    match = matches[name][btab]
+    if (match)
+      nm, desc = match.desc.split(" ", 2)
+      len = match.qrange[1] - match.qrange[0]
+      line.push(nm, desc, match.percentId, match.evalue, len)
+      percents[btab] = [] if percents[btab].nil?
+      lengths[btab] = [] if lengths[btab].nil?
+      percents[btab].push(match.percentId)
+      lengths[btab].push(len)
+      ns = -1
+      if (seqs[btab] && seqs[btab][name])
+        ns = seqs[btab][name][match.qrange[0] - 1 .. match.qrange[1]].count("N")
+        ns = (ns*10000/len)/100.0
+        line.push(ns)
+        ncount[btab] = [] if ncount[btab].nil?
+        ncount[btab].push(ns)
+      else 
+        line.push(0) if (opt.countns)
+      end
+    else
+      line.push("","","", "", "")
+      line.push("") if (opt.countns)
+    end
+  end
+  print line.to_csv
+end
+
+line = [""]
+ARGV.each do |btab|
+  line.push("", "", sprintf("%3.2f", percents[btab].reduce(:+)/percents[btab].size), "")
+  line.push(lengths[btab].reduce(:+)/lengths[btab].size)
+  line.push(ncount[btab].reduce(:+)/ncount[btab].size) if (opt.countns)
+end
+print line.to_csv
+

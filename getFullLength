@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s blast-file fasta-file\n", $0)
+  exit(1)
+end
+
+blastFile, fastaFile = ARGV
+
+get = Hash.new
+
+report = Blast::Default::Report.open(blastFile, "r").each {|query|
+  query.each {|hit|
+    name = hit.definition.split(" ")[0]
+    get[name] = true
+  }
+}
+
+FlatFile.new(FastaFormat, File.new(fastaFile)).each {|seq|
+  get.keys.each {|name|
+    print seq if (seq.definition.index(name))
+  }
+}

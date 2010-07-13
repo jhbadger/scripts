@@ -1,0 +1,125 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+opt.evalue = 1e-9
+opt.blast = "blastp"
+opt.maxHits = 50
+opt.btab = false
+opt.project = nil
+opt.queue = "default"
+opt.gridSize = 150
+$VERBOSE = nil
+
+
+ARGV.options {|opts|
+  opts.banner << " db fasta [fasta...]"
+  opts.on("-b ", "--blast ", String, 
+          "choose BLAST to use (default #{opt.blast})") {|t| opt.blast = t}
+  opts.on("-e", "--evalue ", Float, 
+          "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
+  opts.on("-m ", "--maxHits ", Integer, 
+          "max number of BLAST hits (default #{opt.maxHits})") {|t| opt.maxHits = t}
+  opts.on("-p", "--project ", String,  "JCVI project number") {|t| opt.project = t}
+  opts.on("-q ", "--queue ", String, 
+	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
+  opts.on("-t", "--tab", "use btab format (#{opt.btab})") {|t| opt.btab = t}
+  opts.on("-z ", "--size ", Integer,  
+	  "number of sequences per each grid job (default #{opt.gridSize})") {|t| opt.gridSize = t} 
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+if (opt.project.nil?)
+  STDERR.printf("A project is required\n")
+  exit(1)
+end
+
+db = ARGV.shift
+if (File.basename(db) == db)
+  db = Dir.pwd + "/" + db
+end
+
+if (opt.blast !~ /^blast[n|p|x]/ && opt.blast !~/tblastn/)
+  STDERR.printf("Only blastn, blastp, blastx, and tblastn are valid grid BLAST programs\n")
+  exit(1)
+end
+
+ARGV.each {|file|
+  bout = File.basename(file) + "_vs_" + File.basename(db) + ".#{opt.blast}"
+  sdir = "/usr/local/scratch/#{ENV["USER"]}"
+  Dir.mkdir(sdir) if !File.exists?(sdir)
+  bdir = sdir + "/blastdir/"
+  Dir.mkdir(bdir) if !File.exists?(bdir)
+  File.chmod(0777, bdir)
+  File.chmod(0755, Dir.pwd)	
+  seqName = bdir + bout + "_000001"
+  seqs = []
+  out = nil
+  count = 0
+  if (!File.exists?(file))
+    STDERR.printf("File %s does not exist!\n", file)
+    next
+  end
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+    if (count % opt.gridSize == 0)
+      out.close if (!out.nil?)
+      out = File.new(seqName + ".seq", "w")
+      seqs.push(seqName.dup)
+      seqName.succ!
+    end 
+    out.print seq
+    count += 1
+  }
+  out.close
+  seqs.each {|seq|
+    blast = "blastall -p #{opt.blast} -d #{db} -i #{seq}.seq "
+    blast += "-b#{opt.maxHits} -v#{opt.maxHits} -e#{opt.evalue} "
+    blast += "-o #{seq}.blast;rm #{seq}.seq"
+    if (opt.queue != "default")
+      queue = "-l \"#{queue},memory=4G\""
+    else
+      queue = "-l \"memory=4G\""
+    end
+    qsub = "qsub -P #{opt.project} #{queue} -e blast.err -cwd -o blast.out "
+    qsub += "\"#{blast}\""
+    system(qsub)
+  }
+  STDERR.printf("Waiting until jobs done\n")
+  while (Dir.glob(bdir+bout+"*.seq").size > 0)
+    sleep 30
+  end
+  if (opt.btab)
+    outF=File.new(bout + ".btab","w")
+  else
+    outF=File.new(bout,"w")
+  end
+  seqs.sort.each {|seq|
+    if (opt.btab)
+      system("btab #{seq}.blast")
+      File.new(seq + ".blast.btab").each {|line|
+        outF.print line
+      }
+      File.unlink(seq + ".blast.btab")
+    else
+      File.new(seq + ".blast").each {|line|
+        outF.print line
+      }
+    end
+    File.unlink(seq + ".blast")
+  }
+  outF.close
+}

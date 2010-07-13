@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 1)
+  STDERR.printf("Usage: kitty \"*.file\"\n")
+elsif (ARGV.size > 1)
+  STDERR.printf("Just use one expression surrounded by quotes, like \"*.blastp\"\n")
+else
+  Dir.glob(ARGV.first) {|file|
+    File.new(file).each {|line|
+      print line
+    }
+  }
+end

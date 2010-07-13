@@ -1,0 +1,85 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt.include = ""
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " cluster-file site [site...]"
+  opts.on("-i ", "--include ", String,
+          "String in quotes with sites to include in cluster") {|t| opt.include = t}   
+  opts.on("-x ", "--exclude ", String,
+          "String in quotes with sites to exclude from cluster") {|t| opt.exclude = t}   
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.printf("Wrong!\n")
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+clstr, rest = ARGV
+
+clusters = Hash.new
+clusterSize = Hash.new
+num = nil
+
+STDERR.printf("Loading Clusters...\n")
+File.new(clstr).each {|line|
+  if (line =~/^>Cluster ([0-9]*)/) 
+    num = $1.to_i
+    clusters[num] = Hash.new
+    clusterSize[num] = 0
+  else
+    n, aa, name, percent = line.chomp.split(/,|\.\.\.|\t/)
+    percent = "at 100%" if (percent == " *")
+    percent = percent.gsub("at ","").to_f/100
+    name = name.gsub(/,|>|\ /, "")
+    site = name[0..2]
+    clusters[num][site] = [] if clusters[num][site].nil?
+    clusters[num][site].push(name + "," + aa + "," + sprintf("%.2f", percent))
+    clusterSize[num] += 1
+  end
+}
+
+include = Hash.new
+exclude = Hash.new
+
+
+if (opt.include)
+  opt.include.split(" ").each {|site|
+    include[site] = true
+  }
+end
+
+if (opt.exclude)
+  opt.exclude.split(" ").each {|site|
+    exclude[site] = true
+  }
+end
+
+printf("Cluster,Size,Site,AA,Fraction\n")
+STDERR.printf("Searching Clusters...\n")
+clusters.keys.sort.each {|num|
+  keep = true
+  include.keys.each {|site|
+    keep = false if !clusters[num][site]
+  }
+  exclude.keys.each {|site|
+    keep = false if clusters[num][site]
+  }
+  if (keep)
+    clusters[num].keys.sort.each {|site|
+      clusters[num][site].each {|pep|
+        printf("%d,%d,%s\n", num, clusterSize[num], pep)
+      }
+    }
+  end
+}

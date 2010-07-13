@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s kegg.fasta\n", $0)
+  exit(1)
+end
+
+prot = ARGV.pop
+
+list = Hash.new
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  if (seq.definition =~/\[EC:([^\]]*)\]/)
+    ec = $1.split(" ").first
+    s = seq.definition.index(" ")
+    s2 = seq.definition.index("; ") 
+    s = s2 if (!s2.nil? && s2 > s)
+    e = seq.definition.index("[") 
+    function = seq.definition[s+2..e-2]
+    if (list[ec].nil?)
+      list[ec] = function
+    elsif (list[ec].length > function.length)
+      list[ec] = function
+    end
+  end
+}
+
+list.keys.sort.each {|ec|
+  printf("%s\t%s\t%s\t%s\t%s\t%s\n", ec, ec, ec, ec, ec, list[ec])
+}

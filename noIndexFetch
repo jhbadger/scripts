@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size < 2)
+  STDERR.printf("usage: %s fasta contig [contig...]\n", $0)
+  exit(1)
+end
+
+fasta = ARGV.shift
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  ARGV.each {|name|
+    if (!seq.definition.index(name + " ").nil?)
+      print seq
+    end
+  }
+}

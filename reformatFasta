@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.remove = false
+opt.header = false
+
+o = OptionParser.new
+o.banner << " seq.fasta"
+o.on("-r", "--remove", "remove alignment (#{opt.remove})") {opt.remove = true}
+o.on("-h", "--header", "keep header (#{opt.header})") {opt.header = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
+  seq.seq.gsub!(/-|\./,"") if (opt.remove)
+  seq.definition = seq.entry_id if (!opt.header)
+  print seq.seq.upcase.to_fasta(seq.definition, 60)
+}

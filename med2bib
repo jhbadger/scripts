@@ -1,0 +1,436 @@
+#!/usr/bin/perl -w
+
+$version = "2005-07";
+
+# med2bib: download/convert references from PUBMED to BibTeX
+# Copyright (C) 2005 Tomas Vinar, Brona Brejova
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or (at
+# your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# Some parts of the code reproduced from program medlinebib.p
+# with permission of Tom Schneider, 
+# http://www.lecb.ncifcrf.gov/~toms/delila/medlinebib.html
+
+print STDERR "med2bib version $version, ". 
+"Copyright (C) Tomas Vinar, Brona Brejova\n".
+"med2bib comes with ABSOLUTELY NO WARRANTY\n\n";
+
+use strict;
+use Getopt::Std;
+
+# web stuff required the Debian package libwww-perl
+# (or relevant set of packages from CPAN) 
+use HTTP::Request;
+use HTTP::Response;
+use LWP::UserAgent;
+
+my $usage = "Usage [options] $0 <medline file> <BibTeX file> [<journals>]
+All records in <medline> file are processed and results are added
+to <BibTeX file>. - can be used instead of filename to indicate
+standard input or output.
+
+File <journals> is optionally used to translate journal names to
+the long versions. The current version of the file can be downloaded at:
+ftp://ftp.ncbi.nih.gov/pubmed/J_Medline.txt
+
+Other options:
+-a   print also abstracts
+-f   full author names where available
+-d   fetch the documents with specified PMIDs from Pubmed
+     instead of input from the file (put the PMIDs instead of 
+     <medline file>, separated with comma if multiple search terms)
+";
+
+
+my %options;
+getopts('afd',\%options);
+
+die $usage unless (@ARGV == 3 || @ARGV == 2);
+
+my $query = $ARGV[0];
+my $output = $ARGV[1];
+
+### TODO: transcoding journal names    
+my $transcode_journals = 0;
+my %journals;
+read_journals($ARGV[2]) if (exists $ARGV[2]);
+
+my $frompubmed;
+if (defined $options{d}) {
+    $frompubmed = fetchpubmed($query);
+    @$frompubmed = reverse @$frompubmed;
+    # the lines of the input in REVERSE order
+} elsif ($query ne "-") {
+    open STDIN, "<$query" or die "Cannot open medline file $query";
+}
+
+if ($output ne "-") {
+    open STDOUT, ">>$output" or die "Cannot open bibtex file $output";
+}
+
+while (my $entry=read_entry()) { 
+    write_bibtex($entry);
+}
+
+close STDIN;
+close STDOUT;
+
+
+sub read_journals {
+    my $filename = shift;
+
+    open JOURNALS, "<$filename" or die "Cannot open journals files $filename";
+    
+    my $fullname;
+    while (my $line = <JOURNALS>) {
+	chomp $line;
+	if ($line =~ /JournalTitle: (.*)$/) {
+	    $fullname = $1;
+	} elsif ($line =~ /MedAbbr: (.*)$/) {
+	    my $abbr=$1;
+	    $journals{$abbr}=$fullname;
+	    $fullname=undef;
+	}
+    }
+
+    $transcode_journals = 1;
+
+    close JOURNALS;
+}
+
+
+##--------------------------------------------------------------
+
+sub read_entry {
+
+    my $key="";
+    my $value="";
+
+    my %bibentry;
+
+    while (1) {
+	# fetch the next line
+	my $line;
+
+	if (defined $options{d}) {
+	    last unless defined($line = pop @$frompubmed);
+	} else {
+	    last unless defined($line = <STDIN>);
+	}
+
+	# lines are of the following form:
+	# XXXX- item (XXXX is a key)
+	#       item (item is a continuation of previous key
+	# items are separated by empty lines
+	
+	chomp $line;
+
+	# skip empty lines at the beginning
+	next if ($line eq "" && $key eq "");
+	# second form: just add to the current key
+	if ($line =~ /^\s\s\s\s\s\s(.*)$/) {
+	    $value .= "\n$1";
+	    next;
+	} elsif (!($line =~ /^....-/) && ($line ne "")) {
+	    # there is a formatting bug in PUBMED as of July, 2005
+	    # some lines get split into two
+	    warn "Pubmed bug: Bad line $line; adding to key $key";
+	    $value .= $line;
+	    next;
+	}
+
+	# first process current key
+	if ($key ne "") {
+	    $key =~ s/\s+$//;
+	    push @{$bibentry{$key}}, $value;
+	}
+
+	# start a new key or finish
+	last if ($line eq "");
+	if ($line =~ /^(....)-\s(.*)$/) {
+	    $key = $1;
+	    $value = $2;
+	} else {
+	    warn "Ignoring bad line $line";
+	}
+    }
+
+    return \%bibentry if ($key ne "");
+    return;
+}
+
+## ---------------------------------------------------
+    
+sub write_bibtex {
+    my $bibentry = shift;
+
+    # now print the bibtex
+    print STDOUT "\n\n", '@article{', tweak($bibentry,"thekey"), ",\n";
+    if (my $l = tweak($bibentry,"authors")) {
+	print STDOUT "author = \"$l\",\n";
+    }
+    if (my $l = tweak($bibentry,"title")) {
+	print STDOUT "title = \"{$l}\",\n";
+    }
+    if (my $l = tweak($bibentry,"journal")) {
+	print STDOUT "journal = \"$l\",\n";
+    }
+    if (my $l = tweak($bibentry,"volume")) {
+	print STDOUT "volume = \"$l\",\n";
+    }
+    if (my $l = tweak($bibentry,"pages")) {
+	print STDOUT "pages = \"$l\",\n";
+    }
+    if (my $l = tweak($bibentry,"year")) {
+	print STDOUT "year = \"$l\",\n";
+    }
+    if (my $l = tweak($bibentry,"pmid")) {
+	print STDOUT "pmid = \"$l\",\n";
+    }
+
+    if (exists($options{a}) && (my $l = tweak($bibentry,"abstract"))) {
+	print STDOUT "abstract = \"{\n$l}\",\n";
+    }
+    print STDOUT "}\n";
+}
+
+
+sub tweak {
+    my $bibentry = shift;
+    my $what = shift;
+
+    if ($what eq "thekey") {
+	my ($key,$first,$multipart,$junior)=
+	    parseauthorname($bibentry->{AU}[0]);
+	$key =~ s/\s//g;
+	$bibentry->{DP}[0] =~ /^(\S*)/;
+	$key .= $1;
+	return $key;
+    } elsif ($what eq "pmid") {
+	return $bibentry->{PMID}[0];
+    } elsif ($what eq "authors") {
+	if ($options{f} && exists($bibentry->{FAU})) {
+	    return fixauthors($bibentry->{FAU});
+	} else {
+	    return fixauthors($bibentry->{AU});
+	}
+    } elsif ($what eq "title") {
+	my $title = $bibentry->{TI}[0];
+	# remove dots at the end of the title
+	$title =~ s/\.$//;
+	# remove [something] from the title (such as [In Process Citation])
+	$title =~ s/[.*]$//;
+	return $title;
+    } elsif ($what eq "journal") {
+	my $journal=$bibentry->{TA}[0];
+	if ($transcode_journals && exists($journals{$journal})) {
+	    return fixjournal($journal);
+	} else {
+	    return $journal;
+	}
+    } elsif ($what eq "volume") {
+        return $bibentry->{VI}[0];
+    } elsif ($what eq "number") {
+	return $bibentry->{IP}[0];
+    } elsif ($what eq "pages") {
+	my $pages = $bibentry->{PG}[0];
+     	# changes the page numbers in 'pages' to expanded form if the only
+	# characters in the string are 0..9 and -.  For example:
+	#  input pages: "507-10"
+	# output pages: "507-510"
+	# input pages: "902-4"
+	#output pages: "902-904"
+	# input pages: "902-14"
+	#output pages: "902-914"    
+	# input pages: "902-914"
+	#output pages: "902-914"
+	#special case:  One page number.  Then no change.
+	# it can also be: "i902-4" or "i902-i4"
+	
+	if ($pages =~ /(\D*)(\d+)-(\D*)(\d+)/) {
+	    my $pg1=$2;
+	    my $pg2=$4;
+	    my $pf1=$1;
+	    my $pf2=$3;
+	    while ($pg1<10000 && $pg2<$pg1) {
+		$pg2+=10;
+	    }
+	    return "$pf1$pg1--$pf2$pg2";
+	} else {
+	    return $pages;
+	}
+	
+    } elsif ($what eq "year") {
+	my $year = $bibentry->{DP}[0];
+	# this is really a date of publication
+	# change "1997 Jan 7" to "1997"
+	$year =~ /^(\S+)/;
+	return $1;
+    } elsif ($what eq "abstract") {
+	return $bibentry->{AB}[0];
+    }
+
+    return;
+}
+
+
+sub fixauthors {
+    # put authors into bibtex format,
+    #  starting from: Borgstahl GEO
+    #       produce: G. E. O. Borgstahl
+    #  with 'and ' proceeding the second to last cases 
+    #  detect et al.
+
+    my $authors = shift;
+    return if (!$authors);
+
+    my $result = "";
+
+    foreach my $author (@$authors) {
+        $result .= " and " if ($result ne "");
+	if ($author eq "et al.") {
+	    $result.= "others";
+	} else {
+	    my ($last,$first,$multipart,$junior) = 
+		parseauthorname($author);
+
+	    # print the first name
+	    $result .= $first . " ";
+
+	    # print the last name
+	    if ($junior) { $result.="{$last Jr.}";}
+	    elsif ($multipart) {$result.="{$last}";}
+	    else {$result.="$last";}	    	    
+	}	    
+    }
+
+    return $result;
+}
+
+
+sub fixjournal {
+    my $abbr=shift; 
+
+    if (exists $journals{$abbr}) {
+	my $fullname = $journals{$abbr};
+	# series of fixes
+	# remove . at the end of the name
+	$fullname =~ s/\.$//;
+	# remove [electronic resource] tags
+	$fullname =~ s/\[electronic resource\]//;
+	# remove locations/publishers in parenthesis 
+	# at the end of the title
+	$fullname =~ s/\(.*\)$// unless $abbr =~ /\)$/;
+	# remove the trailing spaces
+	$fullname =~ s/\s+$//;
+	$fullname =~ s/^\s+//;
+
+	return $fullname;
+    } else {
+	return $abbr;
+    }
+}
+
+## -------------------------------------------------------
+sub parseauthorname {
+    my $author = shift;
+
+    return ("","",0,0) if not defined $author;
+
+    # is it full name, or short name?
+    if ($author =~ /,/) {
+	# FULL AUTHOR NAME
+	# example: Lacey, James V Jr
+
+	# detect junior
+	my $junior = 0;
+	if ($author =~ /\sJr$/) {
+	    $junior = 1;
+	    $author =~ s/\sJr$//;
+	}
+
+	# separate last name and first name
+        warn "Problematic author $author" 
+	    unless $author =~ /^(.*), (.*)$/;
+	my $last = $1;
+	my $first = $2;
+
+	my $multipart = 0;
+	$multipart=1 if ($last =~ /\s/);
+
+	# replace separate big letters with dotted letters
+	$first =~ s/([A-Z])(\s|$)/$1.$2/g;
+	return ($last,$first,$multipart,$junior);
+	
+    } else {
+	# SHORT AUTHOR NAME
+	# parse the the author into first and last name
+	# for      "Borgstahl GEO"
+	# last is  "Borgstahl"
+	# first is "GEO"
+	# and
+	# for      "de Ruyter van Steveninck RR"
+	# last is  "de Ruyter van Steveninck"
+	# first is "RR"
+	# The rule is that all continuous letters at the end are
+	# the first name parts.
+	# If the name has more than one part, multipart is set to true.
+	# When a Jr is at the end of the name, variable jr is set to true.
+	
+	# detect junior
+	my $junior = 0;
+	if ($author =~ /\sJr$/) {
+	    $junior = 1;
+	    $author =~ s/\sJr$//;
+	}
+	
+	# separate first name and last name
+	warn "Problematic author $author" 
+	    unless ($author =~ /(.+)\s(\S+)$/);
+	my $last = $1;
+	my $first = $2;
+	
+	my $multipart = 0;
+	$multipart=1 if ($last =~ /\s/);
+
+	$first = join(". ", split("",$first)).". ";
+	$first =~ s/\.//g;
+	return ($last,$first,$multipart,$junior);
+    }
+}
+
+
+## -------------------------------------------------------
+sub fetchpubmed {
+    # gets list of IDs separated by ,
+    # returns array of lines
+    
+    my $ids=shift;
+
+    my $fetchurl = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?".
+    "db=pubmed&rettype=medline&retmode=text&id=";
+
+    $ids =~ s/\s//g; # remove spaces
+    die "Wrong list of pubmed IDs $ids" 
+	unless $ids =~ /^[0-9,]+$/;
+    
+    my $url = $fetchurl.$ids;
+    my $request = HTTP::Request->new(GET=>$url);
+    my $ua = LWP::UserAgent->new;
+    my $response = $ua->request($request);
+    die "Cannot retrieve from Pubmed: ". $response->status_line
+	unless $response->is_success;
+    
+    my @lines = split("\n",$response->content);
+    return \@lines;
+}
+
+## ----------------------------------------------------

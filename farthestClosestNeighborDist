@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " mothur-dist"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+dist, rest = ARGV
+
+d = Hash.new
+File.new(dist).each do |line|
+  taxon1, taxon2, val = line.chomp.split(" ")
+  val = val.to_f
+  d[taxon1] = Hash.new if (d[taxon1].nil?)
+  d[taxon2] = Hash.new if (d[taxon2].nil?)
+  d[taxon1][taxon2] = val
+  d[taxon2][taxon1] = val
+end
+
+closest = Hash.new
+d.keys.each do |key|
+  vals = d[key].values.sort
+  closest[key] = vals.first
+end
+
+closest.keys.sort {|x, y| closest[y] <=> closest[x]}.each do |key|
+  printf("%s\t%f\n", key, closest[key])
+end

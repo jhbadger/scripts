@@ -1,0 +1,61 @@
+#!/usr/bin/env ruby
+
+require 'Btab'
+
+
+verbose = true
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s scaffolds.btab\n", $0)
+  exit(1)
+end
+
+btab = ARGV.first
+
+hits = Hash.new
+seen = Hash.new
+btab = Btab.new(btab)
+pos = Hash.new
+btab.keys.sort.each {|key|
+  btab[key].matches.each {|match|
+    next if (match.desc == "-")
+    g, s = match.desc.split(" ")
+    lin = "#{g} #{s}"
+    pos[lin] = Hash.new if (pos[lin].nil?)
+    pos[lin][key] = (match.srange.first + match.srange.last) / 2
+  }
+}
+
+dist = Hash.new
+pos.keys.each {|gen|
+  pos[gen].keys.each {|scaf1|
+    pos[gen].keys.each {|scaf2|
+      next if (scaf1 >= scaf2)
+      d = (pos[gen][scaf1] - pos[gen][scaf2]).abs
+      pair = scaf1 + "\t" + scaf2
+      dist[pair] = Hash.new if dist[pair].nil?
+      dist[pair][gen] = d
+    }
+  }
+}
+
+
+linked = Hash.new
+dist.keys.each {|pair|
+  dist[pair].keys.each{|gen1|
+    dist[pair].keys.each{|gen2|
+      next if (gen1 >= gen2)
+      diff = (dist[pair][gen1] - dist[pair][gen2]).abs
+      if (diff < 3000 && verbose)
+        printf("%s\t%s\t%s\t%d\n", pair, gen1, gen2, dist[pair][gen1],
+               dist[pair][gen2], diff)
+      end
+      linked[pair] = true
+    }
+  }
+}
+if (!verbose)
+  linked.keys.each {|pair|
+    printf("%s\n", pair)
+  }
+end

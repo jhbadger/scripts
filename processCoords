@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s coords-file prot.fasta\n", $0)
+  exit(1)
+end
+
+coords, prot = ARGV
+
+descs = Hash.new
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  name, desc = seq.definition.split(" ", 2)
+  descs[name] = desc
+}
+
+File.new(coords).each {|line|
+  name, start, stop = line.split(" ")
+  descs.keys.each {|key|
+    if (key =~ /#{name}/)
+      printf("%s\t%s\t%s\t100\t%s\n", name, start, stop, descs[key])
+      break
+    end
+  }
+}

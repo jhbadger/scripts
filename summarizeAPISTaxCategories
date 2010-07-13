@@ -1,0 +1,110 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'DBwrapper'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.filter = nil
+opt.storage = "misc_apis"
+opt.host = "mysql-lan-pro"
+
+ARGV.options {|o|
+  o.banner << " dataset [dataset .. dataset..]"
+  o.on("-f ", "--filter ", String, "taxonomic filter to limit to") {|f| opt.filter = f}
+  o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|s| opt.storage = s}
+  o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|h| opt.host = h}
+  begin
+    o.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts o
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts o
+    exit(1)
+  end
+}
+
+if (opt.filter !~ /Eukary/)
+  categories = 
+    [["Archaea", ["Archaea"]], 
+     ["Viruses", ["Viruses"]],
+     ["Flavobacteria", ["Bacteria;Bacteroidetes;Flavobacteria"]], 
+     ["Other Bacteroidetes/Chlorobi", ["Bacteria;Bacteroidetes", "Bacteria;Chlorobi"]], 
+     ["Prochlorococcus", ["Prochlorococcus"]], ["Synechococcus", ["Synechococcus"]], 
+     ["Other Cyanobacteria", ["Bacteria;Cyanobacteria"]], 
+     ["Rhodobacterales", ["Rhodobacterales"]], ["Pelagibacter", ["Candidatus Pelagibacter"]], 
+     ["Other Alphaproteobacteria", ["Bacteria;Proteobacteria;Alphaproteobacteria"]], 
+     ["Gammaproteobacteria", ["Bacteria;Proteobacteria;Gammaproteobacteria"]], 
+     ["Other Proteobacteria",["Bacteria;Proteobacteria"]],
+     ["Other Bacteria", ["Bacteria"]], ["Unclassified", [";"]]]
+else
+  categories = 
+    [["Diatoms",["Bacillariophyta"]],
+     ["Pelagophyceae", ["Pelagophyceae"]],
+     ["Other Stramenopiles", ["Bicosoecida", "Pelagophyceae", "Peronosporales", "Phaeophyceae", "Synurophyceae"]],
+     ["Haptophytes", ["Pavlovales", "Prymnesiales", "Phaeocystales", "Isochrysidales", "Coccolithales"]],
+     ["Mamiellales", ["Mamiellales"]],
+     ["Other Chlorophyte", ["Chlorophyta"]],
+     ["Rhodophytes", ["Bangiophyceae", "Cryptophyta","Florideophyceae", "Goniotrichales", "Stylonematophyceae", "Rhodellophyceae"]],
+     ["Streptophytes", ["Streptophyta"]],
+     ["Alveolata", ["Apicomplexa", "Ciliophora", "Dinophyceae", "Ellobiopsidae", "Oligohymenophorea"]],
+     ["Fungi", ["Ascomycota", "Basidiomycota", "Blastocladiomycota"]],
+     ["Choanoflagellida", ["Choanoflagellida"]],
+     ["Metazoan", ["Annelida", "Arthropoda", "Chordata", "Cnidaria", "Echinodermata", "Heterolobosea", 
+                   "Mollusca", "Nematoda", "Placozoa"]],
+     ["Other Eukaryotes", ["Eukaryota"]],
+     ["Unclassified", [";"]]]
+   end
+
+storage = MySQL.new(opt.host, opt.storage, "access", "access")
+
+def classifyTax(categories, tax)
+  categories.each {|cat|
+    name, defs = cat
+    defs.each {|defn|
+      if (tax =~/#{defn}/)
+        return name
+      end
+    }
+  }
+end 
+
+counts = Hash.new
+total = Hash.new
+
+ARGV.each {|dataset|
+  total[dataset] = 0
+  counts[dataset] = Hash.new
+  storage.query("SELECT kingdom, phylum, class, ord, family, genus, species FROM classification WHERE dataset='#{dataset}'").each {|row|
+    tax = ""
+    row.each {|field|
+      tax += field + ";"
+    }
+    tax.chop!
+    if (!opt.filter || tax =~/#{opt.filter}/)
+      group = classifyTax(categories, tax)
+      total[dataset] += 1
+      counts[dataset][group] = 0 if counts[dataset][group].nil?
+      counts[dataset][group] += 1
+    end
+  }
+}
+
+ARGV.each {|dataset|
+  printf(",%s", dataset.split("-").first)
+}
+printf("\n")
+
+categories.each {|cat|
+  name, defs = cat
+  print name
+  ARGV.each {|dataset|
+    counts[dataset][name] = 0 if (!counts[dataset][name])
+    printf(",%5.2f", counts[dataset][name]/(total[dataset]/100.0))
+  }
+  printf("\n")
+}

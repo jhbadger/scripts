@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'DBwrapper'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.host = "mysql-lan-pro"
+opt.all = false
+
+o.banner << " database [database...]"
+
+begin
+  o.on("-a", "--all", "process all databases") {opt.all = true}
+  o.on("-h ", "--host ", String,  
+    "database host (default #{opt.host})") {|h| opt.host = h}
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1 && !opt.all)
+  STDERR << o
+  exit(1)
+end
+
+if (opt.all)
+  db = MySQL.new(opt.host, "", "apis", "apis_user")
+  db.query("SHOW DATABASES").each {|row|
+    ARGV.push(row[0]) if (row[0] =~/_apis/ && row[0] != "compdb_apis" && row[0] != "gos_io_apis" && row[0] != "gosii_io_apis")
+  }
+end
+
+contigs = Hash.new
+
+ARGV.each {|dbname|
+  db = MySQL.new(opt.host, dbname, "apis", "apis_user")
+  db.query("SELECT dataset, date_added FROM dataset").each {|row|
+    dataset, date = row
+    STDERR.printf("Processing %s: %s...\n", dbname, dataset)
+    date = Date.parse(date)
+    db.query("SELECT subject_name FROM blast WHERE dataset = '#{dataset}'").each {|row|
+       acc, contig = row.first.split("-")
+       if (contigs[contig].nil? || contigs[contig] > date)
+         contigs[contig] = date
+       end
+    }
+  }
+  db.close
+}
+
+contigs.keys.sort.each {|key|
+  printf("%s\t%s\n", key, contigs[key].to_s)
+}

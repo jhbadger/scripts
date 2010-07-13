@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require 'DBwrapper'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.host = "mysql-lan-pro"
+opt.database = "combodb"
+
+ARGV.options {|opts|
+  opts.banner << " tax-id"
+	opts.on("-d ", "--database ", String, 
+	"database name (default #{opt.database})") {|t| opt.database = t}
+  opts.on("-h ", "--host ", String, 
+	"database host (default #{opt.host})") {|t| opt.host = t}
+  
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+taxid, rest = ARGV
+
+db = MySQL.new(opt.host, opt.database, "apis", "apis_user")
+print db.buildTaxFromTaxId(taxid, true) + "\n"
+db.close

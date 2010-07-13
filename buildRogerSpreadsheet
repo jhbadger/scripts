@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'RogerBlast'
+require 'rubygems'
+require 'Fastercsv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.threshold = 200
+
+o.banner << " blastn"
+o.on("-t ", "--threshold ", Integer, "length threshold (#{opt.threshold})") {|t| opt.threshold = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+
+samples = Hash.new
+RogerBlast.new(ARGV.first).each do |hit|
+  next if hit.length < opt.threshold
+  num, sample, rest = hit.query.split("_")
+  samples[sample] = Hash.new if (!samples[sample])
+  if (hit.query =~/T1F/)
+    dir = "f"
+  else
+    dir = "r"
+  end
+  samples[sample][dir] = Hash.new
+  match, tax = hit.target.split(" ", 2)
+  tax, rest = tax.split(" Length")
+  samples[sample][dir]["tax"] = tax
+  samples[sample][dir]["match"] = match
+  samples[sample][dir]["strand"] = hit.strand
+  samples[sample][dir]["ident"] = hit.ident
+  samples[sample][dir]["length"] = hit.length
+end
+samples.keys.each do |sample|
+  if (samples[sample]["f"] && samples[sample]["r"])
+    samples[sample]["avgident"] = samples[sample]["f"]["ident"] + samples[sample]["r"]["ident"]
+    samples[sample]["avgident"] /= 2
+  elsif (samples[sample]["f"])
+    samples[sample]["avgident"] = samples[sample]["f"]["ident"]
+  else
+    samples[sample]["avgident"] = samples[sample]["r"]["ident"]
+  end
+end
+
+print ["Sample", "Forward Length", "Forward Ident", "Foward Match", "Foward Tax", "Forward Strand",
+  "Reverse Length", "Reverse Ident", "Reverse Match", "Reverse Tax", "Reverse Strand"].to_csv
+
+samples.keys.sort {|x, y| samples[x]["avgident"] <=> samples[y]["avgident"]}.each do |sample|
+  row = [sample]
+  f = samples[sample]["f"]
+  if (f)
+    row += [f["length"], f["ident"], f["match"], f["tax"], f["strand"]]
+  else
+    row += [nil, nil, nil, nil, nil]
+  end
+  r = samples[sample]["r"]
+  if (r)
+    row += [r["length"], r["ident"], r["match"], r["tax"], r["strand"]]
+  else
+    row += [nil, nil, nil, nil, nil]
+  end
+  print row.to_csv
+end

@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+
+ARGV.options {|opts|
+  opts.banner << " fasta blast expression"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, blast, exp = ARGV
+grab = Hash.new
+
+id = nil
+File.new(blast).each {|line|
+  if line =~/^Query=/
+    id = line.split(" ")[1]
+  elsif (line =~/#{exp}/)
+    grab[id] = true
+  end   
+}
+  
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  print seq if (grab[seq.entry_id])
+}

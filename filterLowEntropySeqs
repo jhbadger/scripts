@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " seq.fasta [...seq.fasta...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+def diNucEntropy(seq)
+  dis = ["AA", "AC", "AG", "AT", "CA", "CC", "CG", "CT",
+        "GA", "GC", "GG", "GT", "TA", "TC", "TG", "TT"]
+  counts = Hash.new
+  tot = 0
+  dis.each {|di|
+    counts[di] = seq.seq.upcase.scan(/#{di}/).length
+    tot += counts[di]
+  }
+  h = 0
+  dis.each {|di|
+    p = counts[di]*1.0/tot
+    h += p*Math.log(p) if p > 0
+  }
+  return -h
+end
+
+def fractionAmbig(seq)
+  frac = (1.0*seq.length - seq.seq.upcase.count("AGCT"))/seq.length
+  return frac
+end
+
+ARGV.each {|file|
+  name = file.split(".").first
+  good = File.new(name + "_good.fa", "w")
+  bad = File.new(name + "_bad.fa", "w")
+  seqs = `grep -c ">" #{file}`.to_i
+  count = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+    count += 1
+    STDERR.printf("%4.2f%% done on file %s...\n", count*100.0/seqs, file) if (count % 1000 == 0)
+    entropy = diNucEntropy(seq)
+    ambig =  fractionAmbig(seq)
+    if (entropy < 2 || ambig > 0.1)
+      bad.print seq
+    else
+      good.print seq
+    end
+  }
+  good.close
+  bad.close
+}

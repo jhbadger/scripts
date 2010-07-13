@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'csv'
+require 'MySQL'
+opt = OpenStruct.new
+
+db = MySQL.new
+
+taxName = Hash.new
+taxSp = Hash.new
+
+Contig.find(:all).each {|contig|
+  taxName[contig.name] = contig.taxonomy
+  taxSp[contig.species] = contig.taxonomy
+}
+
+ARGV.options {|opts|
+  opts.banner << " main.csv day.csv night.csv"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+main, day, night = ARGV
+
+dayCount = Hash.new
+nightCount = Hash.new
+
+CSV.open(day,'r').each {|row|
+  name, sp, count = row
+  dayCount[name] = count.to_i
+}
+
+CSV.open(night, 'r').each{|row|
+  name, sp, count = row
+  nightCount[name] = count.to_i
+}
+
+fields = Hash.new
+CSV.open(main, 'r').each {|row|
+  if row.first == "DAY" 
+  elsif row.first == "Level"
+    row.size.times {|i|
+      fields[row[i]] = [] if fields[row[i]].nil?
+      fields[row[i]].push(i)
+    }
+  else 
+    if (!row[fields["Sequences"].first].nil?)
+      count = 0
+      dcount = 0
+      row[fields["Sequences"].first].split(",").each {|seq|
+        seq.gsub!(" ","")
+        count += dayCount[seq]
+        contig = seq.split("-").last
+        tax = taxName[contig]
+        dcount += dayCount[seq] if (tax =~/Bacillariophyta|Chrysophyceae|Pelagophyceae/) 
+      }
+      row[fields["#Transcripts"].first] = count
+      row[fields["#diatoms/au"].first] = dcount if fields["#diatoms/au"]
+    end
+    if (!row[fields["Sequences"].last].nil?)
+      count = 0
+      dcount = 0
+      row[fields["Sequences"].last].split(",").each {|seq|
+        seq.gsub!(" ","")
+        count += nightCount[seq]
+        contig = seq.split("-").last
+        tax = taxName[contig]
+        dcount += nightCount[seq] if (tax =~/Bacillariophyta|Chrysophyceae|Pelagophyceae/) 
+      }
+      row[fields["#Transcripts"].last] = count
+      row[fields["#diatoms/au"].last] = dcount if fields["#diatoms/au"]
+    end
+  end 
+  row.each {|col|
+    printf("\"%s\",", col)
+  }
+  printf("\n")
+}

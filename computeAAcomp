@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s prot.fasta [prot-fasta...]\n", $0)
+  exit(1)
+end
+
+
+aas = "ACDEFGHIKLMNPQRSTVWY"
+aaCount = Hash.new
+tLen = Hash.new
+
+ARGV.each {|prot|
+  tLen[prot] = 0
+  aaCount[prot] = Hash.new
+  aas.each_byte {|aa|
+    aaCount[prot][aa.chr] = 0
+  }
+  
+  FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+    aaCount[prot].keys.each {|aa|
+      aaCount[prot][aa] += seq.seq.count(aa)
+      tLen[prot] += seq.seq.count(aa)
+    }
+  }
+}
+
+f = ARGV.first
+sortedAA = aaCount[f].keys.sort {|x,y| aaCount[f][y] <=> aaCount[f][x]}
+sortedAA.each {|aa|
+  printf("%s\t", aa)
+  ARGV.each {|prot|
+    printf("%4.1f%%", aaCount[prot][aa]*100.0/tLen[prot])
+    if (prot == ARGV.last)
+      printf("\n")
+    else
+      printf("\t")
+    end
+  }
+}

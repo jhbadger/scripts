@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s prot.fasta\n", $0)
+  exit(1)
+end
+
+prot = ARGV.shift
+
+order = []
+orf = Hash.new
+miss = 0
+
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  if (seq.definition =~ /ribosomal protein ([^\ ,]*)/)
+    order.push("[#{miss}]") if miss > 0
+    order.push($1)
+    orf[$1], rest = seq.definition.split(" ")
+    miss = 0
+  else
+    miss += 1
+  end
+}
+
+order.each {|entry|
+  printf("%s ", entry)
+}
+

@@ -1,0 +1,12 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+File.new(ARGV.first).each {|line|
+  name, species, definition, sequence = line.chomp.split("\t")
+  seq = Sequence.new(sequence)
+  header = name + " " + definition + " {" + species + "}"
+  print seq.to_fasta(header, 60)
+}

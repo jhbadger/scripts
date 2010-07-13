@@ -1,0 +1,15 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 1)
+  STDERR.printf("Usage: %s \"*.file\"\n", File.basename($0))
+elsif (ARGV.size > 1)
+  STDERR.printf("Just use one expression surrounded by quotes, like \"*.blastp\"\n")
+else
+  Dir.glob(ARGV.first) {|file|
+    lines = ""
+    File.new(file).each {|line|
+      lines += line
+    }
+    print lines if lines !~ /\*\*\* NONE/
+  }
+end

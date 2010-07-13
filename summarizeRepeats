@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " fasta RM-report"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, rep = ARGV
+
+marked = Hash.new
+tot = Hash.new
+tottot = 0
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  marked[seq.entry_id] = Array.new(seq.length)
+  tot[seq.entry_id] = seq.length
+  tottot += seq.length
+}
+
+File.new(rep).each {|line|
+  fields = line.chomp.split(" ")
+  name, start, stop = fields[4], fields[5], fields[6]
+  start.to_i.upto(stop.to_i) {|i|
+    begin
+      marked[name][i] = 1
+    rescue
+    end
+  }
+}
+
+
+rtot = 0
+marked.keys.each {|name|
+  rtot += marked[name].grep(1).size
+}
+
+printf("%8.2f%% of genome is repeats\n", rtot*100.0/tottot)

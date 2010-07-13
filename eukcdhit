@@ -1,0 +1,121 @@
+#!/usr/bin/env ruby
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.level = nil
+opt.exclude = nil
+
+ARGV.options {|opts|
+  opts.banner << " blastn mapping clusters tax"
+  opts.on("-c ", "--compress ", Integer, "compress to level") {|t| opt.level = t}    
+  opts.on("-e ", "--exclude ", String, "compress to level") {|t| opt.exclude = t} 
+ begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 4)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+seenQuery = false
+seenHit = Hash.new
+query = ""
+hit = ""
+inHit = false
+match = Hash.new
+
+blast, mapfile, clusters, taxfile = ARGV
+
+map = Hash.new
+
+File.new(mapfile).each {|line|
+  n, orig = line.chomp.split(" ")
+  map[orig] = n
+}
+
+size = Hash.new
+csize = 0
+best = ""
+File.new(clusters).each {|line|
+  if (line=~/^>/)
+    size[map[best]] = csize
+    csize = 0
+  elsif line=~/>([^\.]*).../
+    best = $1 if line.index("*")
+    csize += 1
+  end
+}
+size[map[best]] = csize
+
+tax = Hash.new
+
+File.new(taxfile).each {|line|
+  name, t = line.chomp.split(" ", 2)
+  tax[name] = t
+}
+
+File.new(blast).each {|line|
+  if (line =~/^Query=/)
+    seenQuery = false
+    seenHit = Hash.new
+    query = line.chomp.split(" ")[1]
+  elsif (line =~/^>/)
+    hit = line.chomp[1..line.length]
+    inHit = true
+  elsif (line =~/Length =/)
+    inHit = false
+  elsif inHit
+    hit += " " + line.chomp
+  elsif (line =~/Score =/)
+    if (hit.index("}"))
+      hit = hit.split("}").first + "}"
+    end
+    p = line.split("=").last.to_f
+    if (p < 1e-4)
+      if (!seenQuery)
+        seenQuery = true
+      end
+      if (!seenHit[hit])
+        match[query] = hit
+        seenHit[hit] = true
+      end
+    end
+  end
+}
+
+counts = Hash.new
+rep = Hash.new
+match.keys.sort.each {|key|
+  if (opt.exclude)
+    next if tax[match[key]] =~/#{opt.exclude}/
+  end
+  counts[match[key]] = 0 if counts[match[key]].nil?
+  counts[match[key]] += size[key]
+  rep[match[key]] = "" if  rep[match[key]].nil?
+  rep[match[key]] += key + " "
+}
+
+ccounts = Hash.new
+if (opt.level)
+  counts.keys.each {|key|
+    taxon = tax[key].split(";")[opt.level]
+    if ccounts[taxon].nil? 
+      ccounts[taxon] = 0
+      tax[taxon] = taxon
+      rep[taxon] = ""
+    end
+    ccounts[taxon] += counts[key]
+    rep[taxon] += rep[key]
+  }
+  counts = ccounts
+end
+
+counts.keys.sort {|x,y| counts[y] <=> counts[x]}.each {|key|
+  printf("%d\t%s\t%s\n", counts[key], tax[key], rep[key])
+}

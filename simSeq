@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.length = 1000
+ARGV.options {|opts|
+  opts.banner << " a-fraction c-fraction g-fraction t-fraction"
+  opts.on("-l ", "--length ", Integer, "length of sequence") {|t| opt.length = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 4)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+a, c, g, t = ARGV
+a = a.to_f
+c = c.to_f
+g = g.to_f
+t = t.to_f
+
+if (a + c + g + t < 0.99 || a + c + g + t > 1.01)
+  STDERR.printf("percentages don't add up to 1!\n")
+  exit(1)
+end
+
+seq = ""
+opt.length.times {|i|
+  wheel = rand
+  if (wheel <= a)
+    seq += "A"
+  elsif (wheel <= a + c)
+    seq += "C"
+  elsif (wheel <= a + c + g)
+    seq += "G"
+  else
+    seq += "T"
+  end
+}
+
+print Sequence.new(seq).to_fasta("simseq", 60)

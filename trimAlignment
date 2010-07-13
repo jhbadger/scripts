@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'Phylogeny'
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s alignfile fraction-gaps-allowed\n", $0)
+  exit(1)
+end
+
+alignment, fraction = ARGV
+
+trimAlignment(File.basename(alignment, ".afa") + "_trim.afa", alignment, fraction.to_f)

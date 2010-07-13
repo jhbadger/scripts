@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'Bio'
+
+if (ARGV.size != 1 && ARGV.size != 2)
+  STDERR.printf("usage: %s alignfile [min-diffs]\n", $0)
+  exit(1)
+end
+
+alignment, diffs = ARGV
+diffs = 2 if diffs.nil?
+diffs = diffs.to_i
+
+
+pos = nil
+Bio::FlatFile.new(Bio::FastaFormat, File.new(alignment)).each do |seq|
+  pos = Array.new(seq.length) if pos.nil?
+  seq.length.times do |i|
+    pos[i] = Hash.new if pos[i].nil?
+    pos[i][seq.entry_id] = seq.seq[i].chr
+  end
+end
+
+pos[0].keys.each do |name|
+  seq = [nil]*pos.length
+  c = 0
+  pos.size.times do |i|
+    unique = pos[i].values.uniq
+    if (unique.size >= diffs)
+      seq[c] = pos[i][name]
+      c += 1
+    end 
+  end
+  print Bio::Sequence::AA.new(seq.to_s).to_fasta(name, 60)
+end
+

@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'http-access2'
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s prot.fasta\n", $0)
+  exit(1)
+end
+
+prot = ARGV.shift
+
+clnt = HTTPAccess2::Client.new
+url = "http://plasmodb.org/cgi-bin/plasmoap.cgi"
+data = {"signal"=>"Y"}
+
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  seq.definition = seq.definition.split(" ").first.tr(";", "")
+  data["sequence"] = seq.to_s
+  results = clnt.get(url, data).body.content 
+  if  results =~ /sequence seems to have an apicoplast-targeting sequence/
+    printf("%s yes\n", seq.definition)
+  else
+    printf("%s no\n", seq.definition)
+  end
+  sleep 2
+}

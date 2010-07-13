@@ -1,0 +1,28 @@
+#!/usr/bin/ruby
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " latex-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+latex, rest = ARGV
+
+system("latex2html -html 4,math,unicode -nonavigation -dir /tmp -split 1 #{latex} >/dev/null -noinfo -noauto_link 2>/dev/null")
+
+
+#printf("<HTML>\n<H3>%s</H3>\n", Time.now)
+File.new("/tmp/#{File.basename(latex, ".tex")}.html").each {|line|
+ print line
+}
+

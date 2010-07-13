@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+require 'apis'
+
+dir = "/home/jbadger/Web/genomes/Archaeoglobus_fulgidus"
+
+Dir.glob(dir + "/alignments/*").each {|file|
+  count = 0
+  File.new(file).each {|line|
+    count += 1 if (line =~ /^\>/)
+  }
+  if (count < 16 && count > 9)
+    name =  File.basename(file,".pir")
+    ali = dir + "/alias/" + name  + ".ali"
+    makeWeighborTree(name + "_weighbor.tree", file, name, ali)
+    makeRindTree(name + "_rind.tree", file, name, ali)
+    makeNJTree(name + "_NJ.tree", file, name, ali)
+    makePuzzleTree(name + "_puz.tree", file, name, ali)
+    makeProMLTree(name + "_ML.tree", file, name, ali)
+    makeParsTree(name + "_pars.tree", file, name, ali) 
+  end
+}
+
+
+

@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'DBwrapper'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " greentax.db greengenes16SrRNAgenes.txt.gz"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+db = SQLite.new(ARGV.shift)
+
+fields = Hash.new
+g2, hug, ludwig, pace, rdp, silva, ncbi, species, acc, id = nil
+IO.popen("zcat #{ARGV.shift}").each {|line|
+  if (line.chomp == "END")
+    db.insert("greentax", [[fields["prokMSA_id"], fields["ncbi_gi"], 
+                            fields["organism"], fields["Hugenholtz_tax_string"],
+                            fields["Ludwig_tax_string"], 
+                            fields["Pace_tax_string"],
+                            fields["RDP_tax_string"],
+                            fields["Silva_tax_string"],
+                            fields["ncbi_tax_string"]]])
+    fields = Hash.new
+  elsif (line.index("="))
+    field, value = line.chomp.split("=")
+    fields[field] = value
+  end
+}

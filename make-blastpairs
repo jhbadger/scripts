@@ -1,0 +1,84 @@
+#!/usr/bin/perl -w
+# Script to take output from blast-contigs and turn it into the "blast-pair"
+# format readable by critica.
+
+$seq1="";$seq2="";
+$start1=0;$start2=0;
+$gstart=0;$gend=0;
+$exclude="nothing at all";
+
+(@ARGV>0) || die ("make-blastpairs [-exclude=] blast-file\n");
+
+if(substr($ARGV[0],0,1) eq '-') {
+  $arg=shift(@ARGV);
+  if (index($arg,"-exclude=")>-1) {
+    (undef,$exclude)=split("=",$arg);
+  }
+}
+
+while(<>) {  
+  if (/^Query=/) {
+    print_pairs($acc,$id,$ident,$pvalue,$start1,$end1,$start2,$end2,
+                $seq1,$seq2);
+    ($q,$acc)=split(" ",$_);
+    $_=<>;
+    if (substr($_,0,1) ne " ") {
+      $acc.=$_; # BLAST stupidly inserts carriage returns when names are long
+    }
+    ($acc,$gstart,$gend)=split(/\=/,$acc);
+    $gstart--;
+  }
+  elsif (/^>/) {
+    ($id)=split(" ",$_);
+    ($q,$id)=split(">",$id);
+    $noprint=0;    
+    if (/$exclude/) {$noprint=1;}
+    $_=<>; # maybe species on next line 
+    if (/$exclude/) {$noprint=1;}
+    $_=<>; # or even the next
+    if (/$exclude/) {$noprint=1;}
+  }
+  elsif (/^Query:/) {
+    ($q,$s,$aln,$e)=split(" ",$_);
+    if ($start1==0) {
+      $start1=$gstart+$s;
+    }
+    $end1=$gstart+$e;
+    $seq1=$seq1.$aln."\n";
+  }
+  elsif (/^Sbjct:/) {
+    ($q,$s,$aln,$e)=split(" ",$_);
+    if ($start2==0) {$start2=$s;}
+    $end2=$e;
+    $seq2=$seq2.$aln."\n";
+  }
+  elsif ((/Expect =/) || (/Expect\([0-9]*\) =/))  {
+    print_pairs($acc,$id,$ident,$pvalue,$start1,$end1,$start2,$end2,
+                $seq1,$seq2);  
+    @data=split(" ",$_);
+    $pvalue=$data[$#data];
+  }
+  elsif (/Identities/) {
+    ($q,$e,$v)=split(" ",$_);
+    $ident=int(eval($v)*100);
+  }
+}
+print_pairs($acc,$id,$ident,$pvalue,$start1,$end1,$start2,$end2,
+            $seq1,$seq2); 
+
+
+sub print_pairs {
+  ($acc,$id,$ident,$pvalue,$start1,$end1,$start2,$end2,$seq1,$seq2)=@_;
+  if (($start1==0)|| ($ident>97) || ($noprint)) {
+    $seq1="";$seq2="";
+    $start1=0;$start2=0;
+    return;
+  }
+  printf(">$acc $start1-$end1 $ident $pvalue\n");
+  print uc($seq1);
+  printf(">$id $start2-$end2 $ident $pvalue\n");
+  print uc($seq2);
+  $seq1="";$seq2="";
+  $start1=0;$start2=0;
+}
+

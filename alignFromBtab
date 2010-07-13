@@ -1,0 +1,59 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " btab pep.fasta dna.fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+btab, pep, dna = ARGV
+
+seqs = Hash.new
+
+FlatFile.new(FastaFormat, File.new(pep)).each {|seq|
+  seqs[seq.entry_id] = seq.seq
+}
+
+system("sortFasta #{dna} > #{dna}.sorted")
+
+subseqs = Hash.new
+File.new(btab).each {|line|
+  fields = line.chomp.split("\t")
+  gene = fields[0]
+  genome = fields[5]
+  s = fields[8].to_i
+  e = fields[9].to_i
+  subseqs[gene] = [] if subseqs[gene].nil?
+  subseqs[gene].push(Sequence::AA.new(seqs[genome][(s-1)..(e-1)]
+				     ).to_fasta(genome, 60))
+}
+
+subseqs.keys.each {|gene|
+  out = File.new(gene + ".pep", "w")
+  subseqs[gene].each {|seq|
+    out.print seq
+  }
+  out.close
+  system("muscle -in #{gene}.pep -out #{gene}.afa")
+  system("sortFasta #{gene}.afa > #{gene}.sorted")
+  system("tranalign -asequence #{dna}.sorted -bsequence #{gene}.sorted -outseq #{gene}.dfa")
+  system("rm #{gene}.sorted")
+}
+system("rm #{dna}.sorted")

@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+require 'ZFile'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " blast"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+blast, rest = ARGV
+
+qname = ""
+counts = Hash.new
+contigs = Hash.new
+ZFile.new(blast).each do |line|
+  if line =~/Query= /
+    qname = line.split(" ")[1]
+    counts[qname] = Hash.new
+  elsif line =~/^>/
+    contig = line.tr(">","").split(" ").first.split("-").last
+    contigs[contig] = true
+    counts[qname][contig] = 0 if (counts[qname][contig].nil?)
+    counts[qname][contig] += 1
+  end
+end
+
+header = ["Query"] + contigs.keys.sort
+print header.to_csv
+counts.keys.sort.each do |key|
+  line = [key]
+  contigs.keys.sort.each do |contig|
+    line.push(counts[key][contig].to_i)
+  end
+  print line.to_csv
+end

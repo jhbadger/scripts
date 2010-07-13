@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+
+ARGV.options {|opts|
+  opts.banner << " gb-file1 gb-file2"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+gb1, gb2 = ARGV
+
+
+$/="\n//"; # each "line" is a genbank record
+
+loci = Hash.new  
+
+File.new(gb1).each {|record|
+  locus = record.split("\n").grep(/^LOCUS/).first.split(" ")[1]
+  loci[locus] = true
+}
+
+File.new(gb2).each {|record|
+  locus = record.split("\n").grep(/^LOCUS/).first.split(" ")[1]
+  print record if (!loci[locus])
+}

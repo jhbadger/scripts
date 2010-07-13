@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+ 
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s fasta\n", $0)
+  exit(1)
+end
+
+fasta = ARGV.first
+
+name = File.basename(fasta,".fasta")
+
+
+
+outFile = File.new("alias_#{name}.fasta", "w")
+aliFile = File.new("#{name}.ali", "w")
+
+
+orfNum = "SID0000001"
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  seq.definition =~ /([^ ]*) ([^\{]*)\{([^\}]*)\}/
+  acc, desc, spec = $1, $2, $3
+  if (spec.nil?)
+    aliData = seq.definition.tr(" ","_")
+  else
+    genus, species = spec.split(" ")
+    aliData = (desc + " " + genus + "  " + species).tr(" ","_")
+  end
+  aliFile.printf("%s\t%s\n", orfNum, aliData)
+  seq.definition = orfNum
+  outFile.print seq
+  orfNum = orfNum.succ
+}
+
+outFile.close
+aliFile.close

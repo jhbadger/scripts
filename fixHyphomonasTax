@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size == 0)
+  STDERR << "usage: " + $0 + " nei-file [nei-file..]\n"
+  exit(1)
+end
+
+ARGV.each {|nei|
+  out = File.new(nei + ".tmp", "w")
+  File.new(nei).each {|line|
+    line.gsub!("Rhodobacterales\tRhodobacteraceae\tHyphomonas", 
+	       "Badgerales\tBadgeraceae\tHyphomonas")
+    out.print line
+  }
+  File.unlink(nei)
+  File.rename(nei + ".tmp", nei)
+}

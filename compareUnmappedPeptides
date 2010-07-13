@@ -1,0 +1,61 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " unmatched.txt metagene.pep jcvi.pep"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 3)
+  STDERR << o
+  exit(1)
+end
+
+unmatched, metagene, jcvipep = ARGV
+
+need = Hash.new
+File.new(unmatched).each {|line|
+  need[line.chomp] = true
+}
+
+STDERR.printf("finding unmatched meta orfs...\n")
+unmeta = File.new("unmeta.pep", "w")
+Bio::FlatFile.new(Bio::FastaFormat, File.new(metagene)).each {|seq|
+  unmeta.print seq if need[seq.entry_id]
+}
+unmeta.close
+
+
+reads = Hash.new
+STDERR.printf("finding unmatched jcvi orfs...\n")
+unjcvi = File.new("unjcvi.pep", "w")
+Bio::FlatFile.new(Bio::FastaFormat, File.new(jcvipep)).each {|seq|
+  data = Hash.new
+  seq.definition.split(" /").grep(/=/).each {|entry|
+    name, value = entry.split("=")
+    data[name] = value
+  }
+  data = OpenStruct.new(data)
+  if need[seq.entry_id]
+    unjcvi.print seq
+    reads[seq.entry_id] = data.read_id.gsub("JCVI_READ_","")
+  end
+}
+unjcvi.close
+STDERR.printf("Building blast dbs...\n")
+$VERBOSE = nil
+system("formatdb -pT -i unmeta.pep")
+system("formatdb -pT -i unjcvi.pep")
+STDERR.printf("Blasting...\n")
+system("blastall -d unmeta.pep -e 1e-8 -b 1 -p blastp -i unjcvi.pep > unjcvi.blast")
+system("blastall -d unjcvi.pep -e 1e-8 -b 1 -p blastp -i unmeta.pep > unmeta.blast")
+

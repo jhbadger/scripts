@@ -1,0 +1,116 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Stats'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.rev = false
+opt.tex = false
+
+ARGV.options {|opts|
+  opts.banner << " prot.fasta"
+  opts.on("-r", "--rev", "reverse comparison") {|t| opt.rev = t}    
+  opts.on("-t", "--tex", "LaTeX output") {|t| opt.tex = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, rest = ARGV
+
+count = 0
+matches = []
+match = nil
+
+zimHydro = {"V"=>1.79, "K"=>1.6, "W"=>0.31, "L"=>2.52, "A"=>0.83,
+"M"=>1.4, "Y"=>2.97, "C"=>1.48, "N"=>0.09, "D"=>0.64, "E"=>0.65,
+"P"=>2.7, "Q"=>0.0, "F"=>2.75, "G"=>0.1, "R"=>0.83, "H"=>1.1,
+"S"=>0.14, "I"=>3.07, "T"=>0.54}
+
+bigVol = {"V"=>85.1, "K"=>105.1, "W"=>135.4, "L"=>102.0, "A"=>52.6,
+"M"=>97.7, "Y"=>116.2, "C"=>68.3, "N"=>75.7, "D"=>68.4, "E"=>84.7,
+"P"=>73.6, "Q"=>89.7, "F"=>113.9, "G"=>36.3, "R"=>109.1, "H"=>91.9,
+"S"=>54.9, "I"=>102.0, "T"=>71.2}
+
+
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  if (count % 2 == 0)
+    match = [seq]
+  else
+    match.push(seq)
+    matches.push(match)
+  end
+  count += 1
+}
+
+
+aaClass = {"A" => "Nonplr", "C" => "Nonplr", "D" => "Charge", 
+  "E" => "Charge", "F" => "Nonplr", "G" => "Nonpolar", 
+  "H" => "Nonplr", "I" => "Nonplr", "K" => "Charge", 
+  "L" => "Nonplr", "M" => "Nonplr", "N" => "Polar",
+  "P" => "Nonplr", "Q" => "Polar", "R" => "Charge", "S" => "Polar",
+  "T" => "Polar", "V" => "Nonplr", "W" => "Nonplr", "Y" => "Nonplr"}
+
+subs = Hash.new
+
+matches.each {|match|
+  match.first.seq.size.times {|i|
+    aa1 = match.first.seq[i].chr
+    aa2 = match.last.seq[i].chr
+    next if (aa1 == "-" || aa1.upcase == "X")
+    next if (aa2 == "-" || aa2.upcase == "X")
+    next if (aa1.downcase == aa1 || aa2.downcase == aa2)
+    aa1, aa2 = aa2, aa1 if (opt.rev)
+    subs[aa1 + aa2] = 0 if (subs[aa1 + aa2].nil?)
+    subs[aa2 + aa1] = 0 if (subs[aa2 + aa1].nil?)
+    subs[aa1 + aa2] += 1
+  }
+}
+
+
+sig = Hash.new
+subs.keys.sort.each {|sub|
+  sig[sub] = approxBinom(subs[sub], subs[sub.reverse], 0.5)
+}
+
+sep = "\t"
+sep = " & " if (opt.tex)
+fin = "\n"
+fin = "\\\\\n" if (opt.tex)
+
+if (opt.tex)
+  printf("\\begin{tabular}{lrrllcc}\n\\hline \\hline\n")
+  printf("Rep & Fwd & Rev & Sig & Type & Hydro $>$ & Vol $>$ \\\\\n")
+  printf("\\hline\n")
+end
+
+seen = Hash.new
+sig.keys.sort {|x, y| sig[x] <=> sig[y]}.each {|sub|
+  next if (seen[sub] || sig[sub] > 0.01)
+  seen[sub.reverse] = true
+  aa1 = sub[0].chr
+  aa2 = sub[1].chr
+  hydro = "-"
+  hydro = "+" if (zimHydro[aa2] > zimHydro[aa1])
+  vol = "-"
+  vol = "+" if (bigVol[aa2] > bigVol[aa1])
+  printf("%2s#{sep}%4d#{sep}%4d#{sep}%8.1e#{sep}%s-%s#{sep}%s#{sep}%s#{fin}", 
+	 sub, subs[sub], subs[sub.reverse], sig[sub], aaClass[aa1], 
+	 aaClass[aa2], hydro, vol)
+}
+
+if (opt.tex)
+  printf("\\hline \\hline\n\\end{tabular}\n")
+end

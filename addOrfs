@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.db = nil
+opt.asm = nil
+opt.gb = nil
+
+ARGV.options {|opts|
+  opts.banner << " compareGB-output"
+  opts.on("-d ", "--database ", String, "set db (required)") {|t| opt.db = t}  
+  opts.on("-a ", "--asmbl_id ", Integer, "set asmbl_id (required)") {|t| opt.asm = t}
+  opts.on("-g ", "--gb ", String, "set gb-file (required)") {|t| opt.gb = t}  
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1 || opt.db.nil? || opt.asm.nil? || opt.gb.nil?)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+out, rest = ARGV
+
+seq = nil
+FlatFile.new(GenBank, File.new(opt.gb)).each {|entry|
+  seq = entry
+}
+
+sql = File.new(opt.db+".sql", "w")
+File.new(out).each {|line|
+  orf, start, stop, product, ostart = line.split("\t")
+  start = start.to_i
+  stop = stop.to_i
+  ostart = ostart.to_i
+  next if orf == "ORF" || orf == "" || start == 0 || ostart != 0
+  orf, rest = orf.split(" ")
+  if (start < stop)
+    subSeq = Sequence::NA.new(seq.seq[(start - 1)..(stop - 1)])
+  else
+    subSeq = Sequence::NA.new(seq.seq[(stop - 1)..(start - 1)])
+    subSeq = subSeq.reverse_complement
+  end
+  sql.printf("INSERT INTO asm_feature (feat_type, feat_method, end5, end3, assignby, feat_name, asmbl_id, sequence, protein) VALUES ('ORF', 'addOrfs', #{start}, #{stop}, '#{orf}', '#{ENV["USER"]}', #{opt.asm}, '#{subSeq}', '#{subSeq.translate}')\n")
+}
+sql.close
+system("sqsh -D #{opt.db} -i #{opt.db}.sql")

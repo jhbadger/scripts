@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+
+if (ARGV.size != 1)
+  STDERR << "usage: " << $0 << " swiss-prot.dat\n"
+  exit(1)
+end
+
+swiss = ARGV.first
+
+FlatFile.new(EMBL,File.new(swiss)).each {|seq|
+  if (seq.description =~ /([^\(]*) \(EC ([^\)]*)\)/)
+    org = seq.os[0]["os"].tr(" ","_")
+    header = sprintf("%s %s [%s] {%s}", seq.accession, $1, org, $2)
+    print Sequence.new(seq.seq.upcase).to_fasta(header, 60)
+  end
+}
+

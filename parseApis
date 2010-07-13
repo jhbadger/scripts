@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " html-file [html-file...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|file|
+  name = File.basename(file, ".html")
+  count = 0
+  if (name =~/Contained|Outgroup|unresolved/)
+    out = File.new(name + ".txt", "w")
+    File.new(file).each {|line|
+      if (line=~/trees\/([^\.]*).tree/)
+	count += 1
+	out.printf("%s\n", $1)
+      end
+    }
+    out.close
+    printf("%7d\t%s\n", count, name) 
+  end
+}

@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+require 'FastaDB'
+
+if (ARGV.size != 4)
+  STDERR << "usage: " << File.basename($0) << " org-abbrev assemble-id start stop\n" 
+  exit(1)
+end
+
+org, id, start, stop = ARGV
+start = start.to_f
+stop = stop.to_f
+
+
+contig = "TG_#{org}_#{id}.con"
+
+if !File.exists?(contig)
+  STDERR.printf("Retrieving #{org} from database\n")
+  system("TigrGenomeRetriever.pl -db #{org}=1")
+end
+
+inRange = []
+File.new("TG_#{org}_#{id}.ent").each {|line|
+  name, s, e = line.split(" ")
+  inRange.push(name) if (s.to_i >= start && s.to_i <= stop)
+}
+
+FastaDB.new("TG_#{org}_#{id}.pep").each {|seq|
+  print seq if inRange.include?(seq.name)
+}

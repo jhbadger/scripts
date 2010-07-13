@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt.level = 1
+opt.number = 2
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+  opts.on("-n ", "--number ", Integer,
+          "number per level (default #{opt.num})") {|t| opt.num = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+rna, rest = ARGV
+
+names = []
+picked = Hash.new
+
+File.new(rna).each {|line|
+  fields = line.gsub('"',"").chomp.split(",")
+  if (names.empty?)
+    names = fields
+  else
+    data = Hash.new
+    names.size.times {|i|
+      data[names[i]] = fields[i]
+    }
+    tax = data["taxonomy"].split("; ")
+    p tax[opt.level]
+  end
+}

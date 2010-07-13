@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'csv'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " probe-set.csv"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rest = ARGV
+
+header = "Probe00000"
+CSV.foreach(csv) {|row|
+  name, seq, kingdom, org, phylum = row
+  next if name == "Name"
+  header.succ!
+  name = name.split(" [").first
+  printf(">%s %s {%s} %s; %s\n%s\n", header, name, org, kingdom, phylum, seq)
+}

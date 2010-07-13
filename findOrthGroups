@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.min = 4
+
+ARGV.options {|opts|
+  opts.banner << " recip recip [..recip...]"
+  opts.on("-m ", "--min ", Integer, "minimum cluster (#{opt.min})") {|t| opt.min = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+
+connection = Hash.new
+
+ARGV.each {|recip|
+  File.new(recip).each {|line|
+    n1, n2, p1, p2, orth = line.chomp.split("\t")
+    if (orth == "yes")
+      connection[n1] = Hash.new if (connection[n1].nil?)
+      connection[n1][n2] = true
+    end
+  }
+}
+
+clusters = Hash.new
+
+File.new(ARGV.first).each {|line|
+  n1, n2, p1, p2, orth = line.chomp.split("\t")
+  if (!connection[n1].nil?)
+    clust = [n1]
+    connection[n1].keys.each {|n2|
+      missing = 0
+      connection[n1].keys.each {|n3|
+        missing += 1 if ((n2 != n3) && !connection[n2][n3])
+      }
+      clust.push(n2) if (missing == 0)
+    }
+    clusters[n1] = clust.sort if (clust.size >= opt.min)
+  end
+}
+
+clusters.keys.sort.each {|n1|
+  clusters[n1].each {|n|
+    printf("%s\t", n)
+  }
+  printf("\n")
+}
+

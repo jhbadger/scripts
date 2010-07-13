@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'csv'
+require 'Stats'
+require 'MySQL'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " csv-file"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rest = ARGV
+
+combo = MySQL.new("/home/jbadger/EVOL/jbadger/combo.pep")
+
+CSV.open(csv, "r").each {|line|
+  species, match, tot, percent = line
+  accs = combo.accs(species.data)
+  next if accs.empty?
+  printf("%8.3f %d # %s\n", percent.data, accs.size, species.data)
+}

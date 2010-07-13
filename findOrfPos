@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s ent-file cds-file\n", $0)
+  exit(1)
+end
+
+ent, cds = ARGV
+
+starts = Hash.new
+stops = Hash.new
+descs = Hash.new
+midpoint = Hash.new
+
+File.new(ent).each {|line|
+  id, start, stop, gc, desc = line.chomp.split(" ", 5)
+  start = start.to_i
+  stop = stop.to_i
+  start, stop = stop, start if (start > stop)
+  starts[id] = start
+  stops[id] = stop
+  midpoint[id] = (start + stop) / 2
+  descs[id] = desc.split("\t").first
+}
+
+File.new(cds).each {|line|
+  contig, start, stop, desc = line.chomp.split(" ", 4)
+  start = start.to_i
+  stop = stop.to_i
+  start, stop = stop, start if (start > stop)
+  midDiff = Hash.new
+  starts.keys.each {|id|
+    midDiff[id] = (start - midpoint[id]).abs
+  }
+  neighbors = midDiff.keys.sort {|x, y| midDiff[x] <=> midDiff[y]}
+  message = ""
+  [neighbors[0], neighbors[1]].each {|n|
+    if (starts[n] <= start && stops[n] >= stop)
+      message = sprintf("%s is contained in %s (%s)\n", desc, n, descs[n])
+    elsif (starts[n] >= start && starts[n] <= stop)
+      message = sprintf("%s overlaps %s (%s)\n", desc, n, descs[n])
+    elsif (starts[n] <= start && stops[n] >= start)
+      message = sprintf("%s overlaps %s (%s)\n", desc, n, descs[n])
+    elsif (starts[n] <= start && stops[n] <= stop)
+      message = sprintf("%s is downstream of %s (%s)\n", desc, n, 
+                        descs[n]) if (message == "")
+    elsif (starts[n] >= start && stops[n] >= stop)
+      message = sprintf("%s is upstream of %s (%s)\n", desc, 
+                        n, descs[n]) if (message == "")
+    end
+  }
+  print message
+}

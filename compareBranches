@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'Newick'
+require 'optparse'
+opt = OpenStruct.new
+
+
+opt.file = nil
+ARGV.options {|opts|
+  opts.banner << " org1 org2 tree-dir"
+  opts.on("-f ", "--file ", String, 
+        "file of tree names to limit search") {|t| opt.file = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+org1, org2, dir = ARGV
+
+list = Hash.new
+if (opt.file)
+  File.new(opt.file).each {|line|
+    list[line.chomp] = true
+  }
+end
+
+edges = Hash.new
+edges[org1] = []
+edges[org2] = []
+
+trees = Dir.glob(dir + "/*.tree")
+trees.each {|tree|
+  name = File.basename(tree, ".tree")
+  next if (opt.file && !list[name])
+  tree = NewickTree.fromFile(tree)
+  taxa = tree.taxa
+  query1 = taxa.grep(/#{org1}/)
+  query2 = taxa.grep(/#{org2}/)
+  if (query1.size == 1 && query2.size == 1)
+    query1 = tree.findNode(query1[0])
+    query2 = tree.findNode(query2[0])
+    if (query1.edgeLen > 0 && query2.edgeLen > 0)
+      edges[org1].push(query1.edgeLen)
+      edges[org2].push(query2.edgeLen)
+    end
+  end
+}
+
+edges.keys.sort.each {|org|
+  printf("%s\t",org)
+}
+printf("\n")
+edges[org1].size.times {|i|
+  edges.keys.sort.each {|org|
+    printf("%f\t", edges[org][i])
+  }
+  printf("\n")
+}

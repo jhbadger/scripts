@@ -1,0 +1,88 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'GOS'
+opt = OpenStruct.new
+
+opt.level = 2
+opt.filter = 0.1
+opt.phy = false
+opt.site = false
+opt.normalize = false
+opt.sort = false
+
+ARGV.options {|opts|
+  opts.banner << " expression table.csv [metadata.csv]"
+  opts.on("-f ", "--filter ", String, 
+            "Filter size (default #{opt.filter}, valid 0.1, 0.8, 3.0, VIR)") {|t| opt.filter = t}
+  opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+  opts.on("-n", "--normalize",
+	  "normalize by site/filter size (default #{opt.normalize})") {|t| opt.normalize = t}
+  opts.on("-p", "--phyloClassify",
+	"classify by phylogeny (default #{opt.phy})") {|t| opt.phy = t}
+  opts.on("-s", "--siteClassify",
+          "classify by site (default #{opt.site})") {|t| opt.site = t}
+  opts.on("-z", "--sort", "sort values") {|t| opt.sort = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2 && ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+expression, table, metadata = ARGV
+
+metadata = loadMetaData(metadata) if !metadata.nil?
+opt.filter = opt.filter.to_f if (opt.filter != "VIR")
+
+counts = Hash.new
+`grep "#{expression}" #{table}`.each {|line|
+  fields = line.chomp.split(",")
+  site = fields[1]
+  tax = fields[4]
+  dir = fields[7]
+  next if (classifySample(dir) != opt.filter)
+  if (opt.site)
+    counts[site] = 0 if (counts[site].nil?)
+    counts[site] += 1
+  elsif (opt.phy)
+  else
+    print line
+  end
+}
+if (opt.site)
+  counts.keys.sort.each {|key|
+    if (opt.normalize)
+      counts[key] = counts[key]/($sampleCounts[key][opt.filter].to_f)*$sampleCounts["GS117"][opt.filter]
+    end
+  }
+  if (opt.sort)
+    keys = counts.keys.sort {|x, y| counts[y] <=> counts[x]}
+  else
+    keys = counts.keys.sort
+  end
+  printf("Site\t#{expression}")
+  printf("\tHabitat") if (!metadata.nil?)
+  printf("\n")
+  keys.each {|key|
+    printf("%s\t%d", key, counts[key])
+    printf("\t%s", metadata[key]["Habitat"]) if (!metadata.nil?)
+    printf("\n")
+  }
+  if (!metadata.nil?)
+    printf("Correlation with Urea: %3.2f\n", corr(counts,metadata,"Urea"))
+    printf("Correlation with TDN: %3.2f\n", corr(counts,metadata,"TDN"))
+    printf("Correlation with DON: %3.2f\n", corr(counts,metadata,"DON"))
+    printf("Correlation with NO3+NO2: %3.2f\n", corr(counts,metadata,"NO3+NO2"))
+    printf("Correlation with NH4: %3.2f\n", corr(counts,metadata,"NH4"))
+    printf("Correlation with PO4: %3.2f\n", corr(counts,metadata,"PO4"))
+  end 
+end

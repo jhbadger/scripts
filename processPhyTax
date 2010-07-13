@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta species.txt "
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, spec = ARGV
+
+sp = Hash.new
+File.new(spec).each {|line|
+ name, size, species, strain, taxon_id, taxonomy, form, proteins, rrnas, trnas,  gc = line.chomp.split("\t")
+  sp[name] = species
+}
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(prot)).each {|seq|
+  ann = nil
+  id, num, ann  = seq.definition.split("\t")
+  jgi, name, n2 = id.split(" ").first.split("|")
+  n2 += "_" + num if (!num.nil?)
+  seq.definition = jgi + "_" + n2 + "-" + name
+  seq.definition += " " + ann if (!ann.nil?)
+  seq.definition += " {" + sp[name] + "}"
+  print seq
+}
+

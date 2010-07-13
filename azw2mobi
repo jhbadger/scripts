@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " azw-file [azw...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+ARGV.each {|azw|
+  name = File.basename(azw, ".azw")
+  STDERR.printf("Processing %s...\n", name)
+  system("mobidedrm #{azw} #{name}.mobi")
+  if (File.size(name + ".mobi") == 0)
+    File.unlink(name + ".mobi")
+    File.link(azw, name + ".mobi")
+  end
+}

@@ -1,0 +1,102 @@
+#!/usr/bin/perl -w
+
+use Critica;
+
+@files=realArguments(@ARGV);
+(@files==2) || die ("usage: annotation-compare annotation.cds prediction.cds\n");
+
+$ann=shift(@files);
+$crit=shift(@files);
+
+open(ANN,$ann) || die ("Can't open $ann!\n");
+open(CRIT,$crit) || die ("Can't open $crit!\n");
+
+$ann_genes=0;
+while(<ANN>) {
+  ($contig, $start, $end)=split(" ",$_);
+  $ann{$contig." ".$end}=$start;
+  $ann_genes++;
+}
+close(ANN);
+
+
+$crit_genes=0;
+$fp=0;
+$fn=0;
+$early=0;
+$late=0;
+$fpfile=$crit.".fp";
+$fnfile=$crit.".fn";
+$earlyfile=$crit.".early";
+$latefile=$crit.".late";
+open(FP,">$fpfile") || die ("Can't open $fpfile for writing!\n");
+open(FN,">$fnfile") || die ("Can't open $fnfile for writing!\n");
+open(EARLY,">$earlyfile") || die ("Can't open $earlyfile for writing!\n");
+open(LATE,">$latefile") || die ("Can't open $latefile for writing!\n");
+
+while(<CRIT>) {
+  ($contig, $start, $end)=split(" ",$_);
+  
+  $crit{$contig." ".$end}=$start;
+  if (!defined($ann{$contig." ".$end})) {
+    printf FP $_;
+    $fp++;
+  }
+  elsif ($ann{$contig." ".$end}!=$start) {
+    if ($start<$end) {
+      if ($start<$ann{$contig." ".$end}) {
+        printf EARLY "%s %7d %7d starts %3d bases early (real start is %d)\n",
+          $contig, $start, $end,$ann{$contig." ".$end}-$start,
+	  $ann{$contig." ".$end};
+	$early++;
+      }
+      else {
+        printf LATE "%s %7d %7d starts %3d bases late (real start is %d)\n",
+          $contig, $start, $end,$start-$ann{$contig." ".$end},
+	  $ann{$contig." ".$end};
+	$late++;
+      }
+    }
+    else {
+      if ($start>$ann{$contig." ".$end}) {
+        printf EARLY "%s %7d %7d starts %3d bases early (real start is %d)\n",
+          $contig, $start, $end,$start-$ann{$contig." ".$end},
+	  $ann{$contig." ".$end};
+	$early++;
+      }
+      else {
+        printf LATE "%s %7d %7d starts %3d bases late (real start is %d)\n",
+          $contig, $start, $end,$ann{$contig." ".$end}-$start,
+	  $ann{$contig." ".$end};
+	$late++;
+      }
+    }
+  }
+  $crit_genes++;
+}
+close(CRIT);
+close(FP);
+close(EARLY);
+close(LATE);
+
+foreach $key (sort (keys %ann)) {
+  if (!defined($crit{$key})) {
+    ($contig,$end)=split(" ",$key);
+    $start=$ann{$key};
+    printf FN "%s %7d %7d\n",$contig,$start,$end;
+    $fn++;
+  }
+}
+close(FN);
+
+printf("Total number of annotated genes: %8d\n",$ann_genes);
+printf("Total number of predicted genes: %8d\n",$crit_genes);
+printf("False positives: %d/%d (%.1f%%)\n",$fp,$crit_genes,
+  $fp*100/$crit_genes);
+printf("False negatives: %d/%d (%.1f%%)\n",$fn,$ann_genes,
+  $fn*100/$ann_genes);
+printf("Early starts %d/%d (%.1f%%)\n",$early,$crit_genes-$fp,
+  $early*100/($crit_genes-$fp));
+printf("Late starts %d/%d (%.1f%%)\n",$late,$crit_genes-$fp,
+  $late*100/($crit_genes-$fp));
+

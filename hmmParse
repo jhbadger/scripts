@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s hmm-results-file\n", $0)
+  exit(1)
+end
+
+file = ARGV.first
+
+query = nil
+listStart = false
+
+File.new(file).each {|line|
+  next if (line =~ /^---/ || line =~/^\n/)
+  if (line =~ /Query sequence: (.*)/)
+    query = $1
+  end
+  listStart = false if (line =~/Parsed for domains/)
+  if (listStart)
+    model = line[0..9]
+    desc = line[10..53]
+    score = line[54..60]
+    evalue = line[61..71]
+    n = line[72..75]
+    printf("%s\t%s\t%s\t%s\t%s\t%s\n", query, model, desc, score, evalue,
+	     n)
+  end
+  listStart = true if (line =~ /Model/ && line =~/Description/)
+}
+

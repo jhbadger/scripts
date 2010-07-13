@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s prot.fasta min-size\n", $0)
+  exit(1)
+end
+
+prot, min = ARGV
+min = min.to_i
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(prot)).each {|seq|
+  print seq if (seq.length >= min)
+}

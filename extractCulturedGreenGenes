@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'Greengenes'
+require 'httpclient'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " align.gz"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+greengenes, rest = ARGV
+
+species = Hash.new
+genera = Hash.new
+
+STDERR.printf("Fetching List...\n")
+url = "http://bioinfo.unice.fr/blast/documentation/alphabetical_list.html"
+HTTPClient.new.get(url).body.content.split("\n").each {|line|
+  line =~/>([^<]*)/
+  if (!$1.nil? && $1 != "" && $1.index(" "))
+    species[$1] = true
+  end
+}
+
+seen = Hash.new
+STDERR.printf("Getting species....\n")
+GreenGenes.new(greengenes).each {|record|
+  species.keys.each {|key|
+    genus = key.split(" ").first
+    if (!seen[genus] && record["source"] =~/#{key}/)
+      seq = Bio::Sequence::NA.new(record["aligned_seq"].tr(".","-"))
+      header = record["organism"].tr(" ","_") + " " 
+      header += record["ncbi_tax_string"].gsub(" ","") 
+      print seq.to_fasta(header, 60)
+      seen[genus] = true
+      break
+    end
+  }
+}
+

@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+opt.template=ENV["HOME"] + "/lib/mothur/silva/silva.bacteria.fasta"
+opt.taxonomy=ENV["HOME"] + "/lib/mothur/silva/silva.rdp.taxonomy"
+o.banner << " fasta"
+o.on("-t ", "--template ", String, 
+  "template for classification (#{opt.template})") {|t| opt.template = t}
+o.on("-x ", "--taxonomy ", String, 
+  "taxonomy for classification (#{opt.taxonomy})") {|x| opt.taxonomy = x}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+def cleanup(dir)
+  system("rm -rf #{dir}")	
+end
+
+fasta = ARGV.shift
+
+name = File.basename(fasta).split(".").first
+tmpdir = ENV["HOME"] + "/.tmp"
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+
+File.link(fasta, tmpdir + "/seq.fasta")
+batch = File.new(tmpdir + "/batch", "w")
+batch.printf("classify.seqs(fasta=seq.fasta, template=#{opt.template}, taxonomy=#{opt.taxonomy}, processors=2)")
+batch.close
+system("cd #{tmpdir};mothur batch >/dev/null")
+tax = Dir.glob("#{tmpdir}/*.taxonomy").first
+File.new(tax).each do |line|
+  print line
+end
+cleanup(tmpdir)

@@ -1,0 +1,61 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+
+ARGV.options {|opts|
+  opts.banner << " contig-name species-name taxonomy tax-id pep-file [cds]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 5 && ARGV.size != 6)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+name, size, species, strain, taxon_id, taxonomy, form, 
+    proteins, rrnas, trnas,  gc = nil
+
+name, species, taxonomy, taxon_id, prot, cdsf = ARGV
+
+form = "Chromosome"
+att = File.new(name + ".att", "w")
+
+[name, size, species, strain, taxon_id, taxonomy, form, 
+ proteins, rrnas, trnas,  gc].each {|field|
+  att.printf("%s\t", field)
+}
+att.printf("\n")
+att.close
+
+pep = File.new(name + ".pep", "w")
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(prot)).each {|seq|
+  id = seq.entry_id.gsub("-","").gsub("|","")
+  annotation = seq.definition.split("#{seq.entry_id} ", 2).last
+  annotation = annotation.split(/ \{|\[/).first
+  header = id + "-" + name + " " + annotation + " {" + species + "}"
+  newSeq = Bio::Sequence::AA.new(seq.seq)
+  pep.print newSeq.to_fasta(header, 60)
+}
+pep.close
+
+if (cdsf)
+cds = File.new(name + ".cds", "w")
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(cdsf)).each {|seq|
+  id = seq.entry_id.gsub("-","").gsub("|","")
+  annotation = seq.definition.split("#{seq.entry_id} ", 2).last
+  annotation = annotation.split(/ \{|\[/).first
+  header = id + "-" + name + " " + annotation + " {" + species + "}"
+  newSeq = Bio::Sequence::AA.new(seq.seq)
+  cds.print newSeq.to_fasta(header, 60)
+}
+cds.close
+end

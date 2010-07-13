@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.org = nil 
+opt.max = 1
+
+ARGV.options {|opts|
+  opts.banner << " pgp-file"
+  opts.on("-o ", "--org ", String, "choose org to examine") {|t| opt.org = t}    
+  opts.on("-m ", "--max ", Integer, "max number of hits (default #{opt.max})") {|t| opt.max = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+pgp, rest = ARGV
+
+headers = []
+profile = Hash.new
+desc = Hash.new
+
+File.new(pgp).each {|line|
+  if (headers.empty?)
+    headers = line.chomp.split("\t")
+    headers.shift # gene 
+    headers.shift # name
+  else
+    fields = line.chomp.split("\t")
+    gene = fields.shift
+    name = fields.shift
+    profile[gene] = fields.to_s
+    desc[gene] = name
+  end
+}
+
+orgNum = nil
+
+if (opt.org)
+  headers.size.times {|i|
+    orgNum = i if (headers[i] =~/#{opt.org}/)
+  }
+  if (orgNum.nil?)
+    STDERR.printf("%s not found!\n", opt.org)
+    exit(1)
+  else
+    profile.keys.sort.each {|gene|
+      if (profile[gene][orgNum].chr == "1" && profile[gene].count("1") <= opt.max)
+        printf("%s & %s\\\\\n", desc[gene].split(" ",2).first, 
+               desc[gene].split(" ",2).last)
+      end
+    }
+  end
+else
+  headers.size.times {|orgNum|
+    count = 0
+    profile.keys.sort.each {|gene|
+      if (profile[gene][orgNum].chr == "1" && profile[gene].count("1") <= opt.max)
+        count += 1 
+      end
+    }
+    printf("%d\t%s\n", count, headers[orgNum])
+  }
+end
+
+
+

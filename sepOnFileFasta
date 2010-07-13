@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " seq.fasta file.txt"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, file = ARGV
+
+matches = []
+File.new(file).each {|line|
+  matches.push(line.chomp)
+}
+
+match = File.new(fasta + ".matched", "w")
+nomatch = File.new(fasta + ".nomatched", "w")
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  matched = false
+  matches.each {|m|
+    if (seq.definition =~/#{m}/)
+      matched = true
+      break
+    end
+  }
+  if (matched)
+    match.print seq
+  else
+    nomatch.print seq
+  end
+}
+
+match.close
+nomatch.close

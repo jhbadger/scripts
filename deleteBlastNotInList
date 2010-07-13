@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " blast-list include-list db dataset"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 4)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+blast, include, db, dataset = ARGV
+
+inc = Hash.new
+File.new(include).each {|line|
+  inc[line.chomp] = true
+}
+
+File.new(blast).each {|line|
+  gi, rest = line.chomp.split("-")
+  if (!inc[gi])
+    printf("DELETE from #{db}.blast WHERE subject_name = '#{line.chomp}' AND dataset = '#{dataset}';\n")
+  end
+}

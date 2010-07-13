@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 3)
+  STDERR.printf("usage: %s align.fasta unanligned.fasta new.fasta \n", $0)
+  exit(1)
+end
+
+align, fasta, newalign = ARGV
+
+aligner = "/home/dwu/rRNA_scripts/version_7/align_to_profile.pl"
+curAlign = align
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  seqTMP = File.new("seqtmp.tmp", "w")
+  seqTMP.print seq
+  seqTMP.close
+  system("#{aligner} -i seqtmp.tmp -p #{curAlign} -o aln.tmp")
+  system("cat #{curAlign} aln.tmp > new.aln")
+  File.rename("new.aln", newalign)
+  curAlign = newalign
+}
+File.unlink("seqtmp.tmp", "aln.tmp")

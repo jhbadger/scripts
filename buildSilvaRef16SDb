@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size != 2)
+  STDERR << "Usage: #{File.basename($0)} fasta tax\n"
+  exit(1)
+end
+
+fasta, tax = ARGV
+
+tx = Hash.new
+sp = Hash.new
+
+counter = 0
+STDERR << "Loading tax...\n"
+File.new(tax).each do |line|
+  name, t = line.chomp.split(" ", 2)
+  next if t.nil? || t.index(";").nil?
+  tx[name] = t
+  sp[name] = t.split(";").last.gsub(" ","_") + "_" + name
+  counter += 1
+  STDERR << counter << "...\n" if counter % 10000 == 0
+end
+
+counter = 0
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  name = seq.entry_id
+  print Bio::Sequence::NA.new(seq.seq).to_fasta(sp[name] + " " + tx[name], 60)
+  counter += 1
+  STDERR << counter << "...\n" if counter % 10000 == 0
+end

@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio    
+
+ARGV.options {|opts|
+  opts.banner << " coding-fasta"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dna, rest = ARGV
+  
+gcTot = [0, 0, 0]
+codonTot = 0
+FlatFile.new(FastaFormat, File.new(dna)).each {|seq|
+  3.step(seq.length, 3) {|i|
+    codon = seq.seq[i - 3, 3]
+    gcTot[0] += 1 if (codon[0].chr == "G" || codon[0].chr == "C")
+    gcTot[1] += 1 if (codon[1].chr == "G" || codon[1].chr == "C")
+    gcTot[2] += 1 if (codon[2].chr == "G" || codon[2].chr == "C")
+    codonTot += 1
+  }
+}
+printf("First  base %d%%\n", gcTot[0]*100.0/codonTot)
+printf("Second base %d%%\n", gcTot[1]*100.0/codonTot)
+printf("Third  base %d%%\n", gcTot[2]*100.0/codonTot)
+printf("Total  base %d%%\n", (gcTot[0] + gcTot[1] + gcTot[2])*33.3/codonTot)

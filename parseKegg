@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s fasta [fasta...]\n", $0)
+  exit(1)
+end
+
+ARGV.each {|fasta|
+  FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+    if (seq.definition =~ /([^\[]*)\[EC:([^\]]*)\]/)
+      seq.definition.tr!("{}", "")
+      seq.definition = $1 + "{" + $2 + "}"
+      print seq if (seq.definition.split(" ").first =~/^[a-z][a-z][a-z]:/)
+    end
+  }
+}

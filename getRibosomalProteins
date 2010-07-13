@@ -1,0 +1,103 @@
+#!/usr/bin/env ruby
+
+require 'Phylogeny'
+require 'rubygems'
+require'bio'
+
+report = false
+if (ARGV.first == "-report")
+  report = true
+  ARGV.shift
+end
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s [-report] protein-file\n", $0)
+  exit(1)
+end
+
+prot = ARGV.first
+
+names = {"rpsB" => "S2", "rpsC" => "S3", 
+  "rpsD" => "S4", "rpsE" => "S5", "rpsF" => "S6", "rpsG" => "S7",
+  "rpsH" => "S8", "rpsI" => "S9", "rpsJ" => "S10", "rpsK" => "S11",
+  "rpsL" => "S12", "rpsM"=> "S13", "rpsN" => "S14", "rpsO" => "S15",
+  "rpsP" => "S16", "rpsQ" => "S17", "rpsR" => "S18", "rpsS" => "S19",
+  "rplA"=> "L1", "rplB" => "L2", "rplC" => "L3", "rplD" => "L4", 
+  "rplE" => "L5", "rplF" => "L6",  "rplG" => "L7", "rplH" => "L8", 
+  "rplI" => "L9", "rplJ" => "L10", "rplK" => "L11",
+  "rplL" => "L12", "rplM" => "L13", "rplN" => "L14", "rplO" => "L15",
+  "rplP" => "L16", "rplQ" => "L17", "rplR" => "L18", "rplS" => "L19",
+  "rplT" => "L20", "rplU" => "L21", "rplV" => "L22", "rplW" => "L23", 
+  "rplX" => "L24", "rpmA" => "L27"}
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(prot)).each {|seq|
+  id, desc = seq.definition.split(" ", 2)
+  desc =~/\{([^\}]*)\}/
+  species = $1
+  seqs[species] = Hash.new if (seqs[species].nil?)
+  if (desc.index("ribosomal"))
+    next if (desc.index("modification")) # not a ribo protein
+    next if (desc.index("methyltransferase")) # not a ribo protein
+    names.keys.each {|name|
+      shortName = " " + names[name] + "[ |P]" 
+      if (desc.index(name) || desc.index(/#{shortName}/))
+	if (seqs[species][name].nil?)
+	  seqs[species][name] = seq.seq
+	else
+	  STDERR.printf("warning! %s has two %s\n", species, names[name])
+	end
+      end
+    }
+  end
+}
+
+if (report)
+  seqs.keys.each {|species|
+    next if (seqs[species].size < 10)
+    printf("%40s\t ", species)
+    names.keys.each {|name|
+      if (seqs[species][name])
+	printf("*")
+      else
+	printf("-")
+      end
+    }
+    printf("\n")
+  }
+  exit(0)
+end
+
+usedNames = names.keys
+seqs.keys.each {|species|
+  next if (seqs[species].size < 10)
+  names.keys.each {|name|
+    if (seqs[species][name].nil? && usedNames.include?(name))
+      usedNames.delete(name)
+      STDERR.printf("warning! %s doesn't have %s. Deleting %s\n", 
+		    species, names[name], names[name])
+    end
+  }
+}
+
+
+
+
+STDERR.printf("%s Genes used in alignment: ", usedNames.size)
+usedNames.sort.each {|name|
+  STDERR.printf("%s ", names[name])
+}
+
+outFile = "ribo.fasta"
+out = File.new(outFile, "w")
+seqs.keys.each {|species|
+  next if (seqs[species].size < 10)
+  data = ""
+  usedNames.sort.each {|name|
+    data += seqs[species][name]
+  }
+  out.print Bio::Sequence::AA.new(data).to_fasta(species.tr(" ","_"), 60) 
+}
+out.close
+

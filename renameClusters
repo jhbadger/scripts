@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+
+ARGV.options {|opts|
+  opts.banner << " clusters.fa ann.pep recip"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, ann, recip = ARGV
+
+
+STDERR.printf("Loading recips...\n")
+orth = Hash.new
+File.new(recip).each {|line|
+  sybil, real, x, y, o = line.split(" ")
+  orth[sybil] = real if (o == "yes")
+}
+
+STDERR.printf("Loading ann...\n")
+seqs = Hash.new
+FlatFile.new(FastaFormat, File.new(ann)).each {|seq|
+  seqs[seq.entry_id] = seq
+}
+
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  print seqs[orth[seq.entry_id]] if (!seqs[orth[seq.entry_id]].nil?)
+}

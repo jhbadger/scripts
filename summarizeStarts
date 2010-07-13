@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+
+require 'MySQL'
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " taxon"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+taxon, rest = ARGV
+
+db = MySQL.new
+
+count = Hash.new
+total = Hash.new
+db.eachCodingTaxonomy(taxon) {|seq|
+  species = nil
+  start = nil
+  seq.split("\n").each {|line|
+    if (line =~/^>/)
+      species = $1.tr('()[]: ",', "_") if (line =~/\{([^\}]*)/)
+      count[species] = Hash.new if (count[species].nil?)
+      total[species] = 0 if (total[species].nil?)
+    else
+      start = line[0..2]
+      count[species][start] = 0 if (count[species][start].nil?)
+      count[species][start] += 1
+      total[species] += 1
+      break
+    end
+  }
+}    
+
+tcount = Hash.new
+tot = 0
+
+count.keys.sort.each {|sp|
+  printf("%40s ", sp)
+  count[sp].keys.sort.each {|key|
+    tcount[key] = 0 if tcount[key].nil?
+    tcount[key] += count[sp][key]
+    tot += count[sp][key]
+    percent = (count[sp][key]*100)/total[sp]
+    printf("%s %3d%% ", key, percent) if (percent > 0)
+  }
+  printf("\n")
+}
+
+printf("%40s ", "Total:")
+tcount.keys.sort.each {|key|
+  percent = (tcount[key]*100)/tot
+  printf("%s %3d%% ", key, percent) if (percent > 0)
+}
+printf("\n")

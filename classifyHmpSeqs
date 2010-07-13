@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+require 'csv'
+opt = OpenStruct.new
+
+
+ARGV.options {|opts|
+  opts.banner << " csv fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, fasta = ARGV
+
+loc = Hash.new
+
+sites = Hash.new
+CSV.foreach(csv) {|row|
+  hmp, name, strain, gg, site = row
+  next if site.nil? || gg == "Greengenes ID"
+  site.gsub!(" ", "_")
+  nm = name.split(" ")[0] + " " + name.split(" ")[1]
+  sites[site] = [] if sites[site].nil?
+  sites[site].push(nm) if (!nm.nil?)
+}
+
+
+files = Hash.new
+sites.keys.each {|key|
+  files[key] = File.new(key + ".afa", "w")
+}
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  found = false
+  name = seq.definition.split(" ")[1] + " " + seq.definition.split(" ")[2]
+  p name
+  sites.keys.each {|site|
+    if (sites[site].include?(name))
+      files[site].print seq
+      found = true
+      break
+    end
+  }
+  if (!found)
+    STDERR.printf("No %s!\n", seq.definition)
+  end
+}
+files.keys.each {|key|
+  files[key].close
+}

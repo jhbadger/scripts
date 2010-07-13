@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s blast-file, cutoff\n", $0)
+  exit(1)
+end
+
+file, cutoff = ARGV
+cutoff = cutoff.to_f
+
+report = Blast::Default::Report.open(file, "r").each {|query|
+  count = -1
+  name = query.query_def.split(" ")[0]
+  query.each {|hit|
+    if (hit.evalue.to_f < cutoff)
+      count += 1
+    end
+  }
+  count = 0 if (count < 1)
+  printf("%10s %4d\n", name, count) 
+}

@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'apis'
+
+@all = false
+@host = "mysql-lan-pro.jcvi.org"
+@contig = nil
+@taxfilter = nil
+@notree = false
+@user = "apis"
+@password = "apis_user"
+@sql = false
+
+storage = MySQL.new(@host, "gosii_io_apis", @user, @password)
+
+peps = Hash.new
+storage.query("select seq_name from sequence").each {|row|
+  peps[row[0]] = true
+}
+
+out = File.new("cluster.txt", "w")
+File.new("c.txt").each {|line|
+  num, id = line.chomp.split(" ")
+  if (peps[id])
+    out.printf("%s\t%s\n", id, num)
+  end
+}
+out.close

@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+@file = nil
+
+ARGV.options {|opts|
+  opts.banner << " gene-instr"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+instr, rest = ARGV
+
+names = []
+aliases = []
+
+short = []
+File.new(instr).each {|line|
+  name, database, ali, start, stop, startSeq, endSeq = line.chomp.split("\t")
+  short.push(ali) if (stop.to_i - start.to_i < 25)
+  aliases.push(ali)
+  names.push(name)
+}
+dupAli = aliases.sort.size - aliases.sort.uniq.size
+printf("There are %d duplicated aliases\n", dupAli)
+
+apos = names.grep(/'|\:/).size + aliases.grep(/'|\:/).size
+printf("There are %d names and aliases with apostrophes or colons\n", apos)
+
+lname = []
+names.each {|name|;lname.push(name) if name.length > 20}
+
+lali = []
+aliases.each {|ali|;lali.push(ali) if ali.length > 20}
+
+
+
+printf("There are %d names greater than length 20\n", lname.size)
+printf("There are %d aliases greater than length 20\n", lali.size)
+
+
+printf("There are %d aliases with seqs shorter than length 25\n", 
+       short.size - 1)
+
+

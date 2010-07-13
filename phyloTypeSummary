@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'GOS'
+
+ARGV.options {|opts|
+  opts.banner << " list table.csv"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+list, csv = ARGV
+
+groups = Hash.new
+minuses = Hash.new
+
+File.new(list).each {|line|
+  group, minus = line.chomp.split("\t")
+  groups[group] = group
+  minuses[group] = minus
+}
+
+counts = Hash.new
+
+File.new(csv).each {|line|
+  name, site, size, ann, tax, hmm, hmmann, dir = line.chomp.split(",")
+  counts[site] = Hash.new if (counts[site].nil?)
+  filter = classifySample(dir)
+  next if filter == "VIR"
+  counts[site][filter] = Hash.new if (counts[site][filter].nil?)
+  groups.keys.each {|group|
+    if (tax =~/#{group}/)
+      if (minuses[group].nil? || tax !~/#{minuses[group]}/)
+        counts[site][filter][group] = 0 if (counts[site][filter][group].nil?)
+        counts[site][filter][group] += 1
+      end
+    end
+  }
+}
+
+printf(",")
+counts.keys.sort.each {|site|
+  counts[site].keys.sort.each {|filter|
+    printf("%s %s,", site, filter)
+  }
+}
+printf("\n")
+
+groups.keys.each {|group|
+  printf("%s,", group)
+  counts.keys.sort.each {|site|
+    counts[site].keys.sort.each {|filter|
+      printf("%d,", counts[site][filter][group])
+    }
+  }
+  printf("\n")
+}

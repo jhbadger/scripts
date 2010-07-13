@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s fasta fraction\n", $0)
+  exit(1)
+end
+
+fasta, fraction = ARGV
+fraction = fraction.to_f
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  print seq if (rand < fraction)
+}

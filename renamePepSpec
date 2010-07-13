@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, rest = ARGV
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(prot)).each {|seq|
+  if seq.definition =~ /\{([^\{]*)\}/
+    fields = $1.split(" ")
+    sp = fields[0][0].chr+fields[1][0].chr+fields.last.tr("/","").tr("-","")
+    header = seq.entry_id.split("-").first + "-" + sp + " " + seq.definition.split(" ",2).last
+    print Bio::Sequence::AA.new(seq.seq).to_fasta(header, 60)
+  else
+    STDERR.printf("%s has no species!\n", seq.entry_id)
+    exit(1)
+  end
+}
+

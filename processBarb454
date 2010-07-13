@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'csv'
+opt = OpenStruct.new
+
+opt.project = nil
+ARGV.options {|opts|
+  opts.banner << " csv-file rna-db.fasta"
+  opts.on("-p ", "--project ", Integer, 
+	  "JCVI project number") {|t| opt.project = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rna = ARGV
+
+def run(command, project)
+  if (project.nil?)
+    system(command)
+  else
+    qsub = "qsub -P #{project} -l \"memory=4G\" -e std.err -cwd -o std.out"
+    system("#{qsub} \"#{command}\"")
+  end
+end
+
+map = Hash.new
+CSV.open(csv).each {|row|
+  next if row[0] == "Number"
+  num, name, barcode, location, treatment = row
+  treatment.gsub!("/","+")
+  map[barcode] = name + "_" + location + "_" + treatment
+  if (!File.exists?(map[barcode]))
+    Dir.mkdir(map[barcode])
+    File.link("../" + barcode + "/trim/#{barcode}_notnot16s.fa", map[barcode] + "/" + map[barcode] + ".fa")
+  end
+}
+
+map.values.each {|dir|
+  if (!File.exists?(dir + "/" + dir + ".clstr"))
+    run("cd-hit-est -i #{dir}/#{dir}.fa -o #{dir}/#{dir} -c 1.0 -d 0", opt.project)
+  end
+  if (!File.exists?(dir + "/" + dir + ".blastn"))
+    run("blastall -p blastn -i #{dir}/#{dir} -d #{rna} -b 1 -v 1 -o #{dir}/#{dir}.blastn", opt.project)
+  end
+}

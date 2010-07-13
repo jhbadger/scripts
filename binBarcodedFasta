@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " barcode.info fasta [...fasta...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+barcode = ARGV.shift
+codes = Hash.new
+
+File.new(barcode).each {|line|
+  barcode, info = line.chomp.split(" ")
+  codes[barcode] = info
+}
+
+files = Hash.new
+codes.keys.each {|code|
+  files[code] = File.new(codes[code] + ".fa", "w")
+}
+nocode = File.new("nobarcode.fa", "w")
+
+ARGV.each {|fasta|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+    coded = false
+    codes.keys.each {|code|
+      if (seq.seq =~/^#{code}/)
+        s = seq.seq.gsub(/^#{code}/, "")
+        files[code].print Bio::Sequence::NA.new(s).to_fasta(seq.definition, 60)
+        coded = true
+        break
+      end
+    }
+    nocode.print seq if (!coded)
+  }
+}
+
+codes.keys.each {|code|
+  files[code].close
+}
+nocode.close

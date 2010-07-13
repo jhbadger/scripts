@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s fasta-file [fasta-file...]\n", $0)
+  exit(1)
+end
+
+seqs = Hash.new
+
+ARGV.each {|file|
+  FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+    acc = seq.definition.split(" ").first
+    seqs[acc] = seq
+  }
+}
+
+seqs.values.each {|seq|
+  print seq
+}
+
+

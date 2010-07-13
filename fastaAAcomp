@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+rev = false
+if (ARGV.index("-rev"))
+  ARGV.delete("-rev")
+  rev = true
+end
+
+tex = false
+if (ARGV.index("-tex"))
+  ARGV.delete("-tex")
+  tex = true
+end
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s [-rev] [-tex] prot.fasta threshold\n", $0)
+  exit(1)
+end
+
+prot, thresh = ARGV
+thresh = thresh.to_f
+
+count = 0
+matches = []
+match = nil
+
+$VERBOSE = nil
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  header, pvalue = seq.definition.split(" ")
+  next if (pvalue.to_f > thresh)
+  if (count % 2 == 0)
+    match = [seq]
+  else
+    match.push(seq)
+    matches.push(match)
+  end
+  count += 1
+}
+$VERBOSE = true
+
+aaClass = {"A" => "Nonpolar", "C" => "Nonpolar", "D" => "Charged", 
+  "E" => "Charged", "F" => "Nonpolar", "G" => "Nonpolar", 
+  "H" => "Nonpolar", "I" => "Nonpolar", "K" => "Charged", 
+  "L" => "Nonpolar", "M" => "Nonpolar", "N" => "Polar",
+  "P" => "Nonpolar", "Q" => "Polar", "R" => "Charged", "S" => "Polar",
+  "T" => "Polar", "V" => "Nonpolar", "W" => "Nonpolar", "Y" => "Nonpolar"}
+
+counts1 = Hash.new
+counts2 = Hash.new
+tot = 0
+
+matches.each {|match|
+  match.first.seq.size.times {|i|
+    aa1 = match.first.seq[i].chr
+    aa2 = match.last.seq[i].chr
+    next if (aa1 == "-" || aa2 == "-" || aa1 == 'X' || aa2 == 'X' ||
+		       aa1 == 'U' || aa2 == 'U')
+    counts1[aa1] = 0 if counts1[aa1].nil?
+    counts2[aa2] = 0 if counts2[aa2].nil?
+    counts1[aa1] += 1
+    counts2[aa2] += 1
+    tot += 0.01
+  }
+}
+
+
+seen = Hash.new
+counts1.keys.sort {|x, y| counts1[y] <=> counts1[x]}.each {|aa|
+  printf("%2s\t%4.1f%%\t%4.1f%%\t%s\n", aa , counts1[aa] / tot, 
+	 counts2[aa] / tot, aaClass[aa])
+}

@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'FastaDB'
+require 'Stats'
+opt = OpenStruct.new
+
+opt.winSize = 3
+opt.background = nil
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-w ", "--windowSize ", Integer, 
+          "set window size (default #{opt.winSize})") {|t| opt.winSize = t}  
+  opts.on("-b ", "--background ", String, 
+          "set fasta file for background frequencies") {|t| opt.background = t}  
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, rest = ARGV
+
+nucCounts = {"A"=> 0, "C" => 0, "G" => 0, "T" => 0}
+tot = 0.0
+counts = Hash.new
+backCounts = Hash.new
+bTot = 0.0
+
+FastaDB.new(fasta).each {|seq|
+  s = seq.seq.upcase
+  nucCounts["A"] += s.count("A")
+  nucCounts["C"] += s.count("C")
+  nucCounts["G"] += s.count("G")
+  nucCounts["T"] += s.count("T")
+  tot += s.length
+  0.upto(s.length - opt.winSize) {|i|
+    window = s[i,opt.winSize]
+    next if (window.index(/[^A|C|G|T]/))
+    counts[window] = 0 if (counts[window].nil?)
+    counts[window] += 1
+  }
+}
+
+if (opt.background)
+  FastaDB.new(opt.background).each {|seq|
+    s = seq.seq.upcase
+    bTot += s.length
+    0.upto(s.length - opt.winSize) {|i|
+      window = s[i,opt.winSize]
+      next if (window.index(/[^A|C|G|T]/))
+      backCounts[window] = 0 if (backCounts[window].nil?)
+      backCounts[window] += 1
+    }
+  }
+end
+
+
+expect = Hash.new
+ratio = Hash.new
+sig = Hash.new
+counts.keys.each {|window|
+  if (opt.background.nil?)
+    prob = 1
+    window.each_byte {|c|
+      prob *= (nucCounts[c.chr]/tot) 
+    }
+    expect[window] = (prob*tot).round
+  else
+    expect[window] = ((backCounts[window]/bTot)*tot).round
+  end
+  expect[window] = 1 if (expect[window] == 0) 
+  ratio[window] = 1.0*counts[window]/expect[window]
+  z = computeZScore(counts[window], expect[window], tot)
+  sig[window] = normalP(z)
+}
+
+sig.keys.sort {|a, b| sig[a] <=> sig[b]}.each {|win|
+  printf("%#{opt.winSize}s %8d %8d %4.2f %8.1e\n", win,counts[win],
+         expect[win], ratio[win], sig[win])
+}
+

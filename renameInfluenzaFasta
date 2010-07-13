@@ -1,0 +1,96 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+$VERBOSE = false
+opt.maxMiss = 0
+opt.align = false
+
+ARGV.options {|opts|
+  opts.banner << " fasta [fasta..]"
+  opts.on("-a", "--align", "align & tree sequences (#{opt.align})") {|t| opt.align = t}
+  opts.on("-m ", "--maxMiss ", Integer, 
+	  "max number of missed genes to allow (#{opt.maxMiss})") {|t| opt.maxMiss = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+seqs = Hash.new
+names = []
+output = Hash.new
+ARGV.each {|fasta|
+  name = File.basename(fasta,".fa").split("_").first
+  names.push(name)
+  output[name] = File.new(name + ".fasta", "w")
+  FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+    id = nil
+    if (seq.definition =~/\(([A|B][^\)]*)\)/)
+      id = $1.tr(" /","_").upcase
+    elsif (seq.definition =~/\ ([A|B][\/[A-Z|a-z|\ ]*\/[0-9]*)]*/)
+      id = $1.tr(" /","_").upcase
+    elsif (seq.definition =~/strain:([^\.]*)\./)
+      id = $1.tr("/-","_").upcase
+    end
+    if (!id.nil?)
+      seqs[id] = Hash.new if (seqs[id].nil?)
+      seqs[id][name] = seq.seq
+    else
+      STDERR.printf("Warning: Skipping %s (can't parse header)\n", 
+		    seq.definition)
+    end
+  }
+}
+
+seqs.keys.sort.each {|id|
+  miss = 0
+  seq = ""
+  names.sort.each {|name|
+    if (seqs[id][name].nil?)
+      miss += 1
+    else
+      seq += seqs[id][name]
+    end
+  }
+  if (miss <= opt.maxMiss)
+    names.sort.each {|name|
+      s = seqs[id][name]
+      if (!s.nil?)
+        output[name].print  Sequence::AA.new(s).to_fasta(id, 60)
+      end
+    }
+  end
+}
+
+
+
+output.keys.each {|name|
+  output[name].close
+  if (opt.align)
+    system("muscle -in #{name}.fasta -out #{name}.afa")
+    system("paupFasta -m nj -e #{name}.afa")
+  end
+}
+
+
+if (opt.align)
+  cmd = "buildConcatAlignFromAlign "
+  output.keys.each {|key|
+    cmd += key + ".afa "
+  }
+  system("#{cmd} > full.afa")
+  system("paupFasta -m nj -e full.afa")
+end

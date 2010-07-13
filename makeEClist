@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s prot.fasta\n", $0)
+  exit(1)
+end
+
+prot = ARGV.pop
+
+list = Hash.new
+FlatFile.new(FastaFormat, File.new(prot)).each {|seq|
+  seq.definition =~/([^;]*) \{([^\}]*)\}/
+  func, ec = $1, $2
+  header, func = func.split("  ") if func.index("  ")
+  next if (!func.index("putative").nil?)
+  next if (!func.index("probable").nil?)
+  ec.split(" ").each {|ec1|
+    if (list[ec1].nil? || list[ec1].downcase.index("hypothetical") || 
+	list[ec1].downcase.index("homolog"))
+      list[ec1] = func 
+    end
+  }
+}
+
+list.keys.sort.each {|ec|
+  printf("%s\t%s\n", ec, list[ec])
+}

@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " btab similarity-threshold"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+btab, sim  = ARGV
+
+sim = sim.to_i
+coverage = Hash.new
+hsps = 0
+File.new(btab).each {|line|
+  query, date, qlen, program, database, subject, qleft, qright, 
+  sleft, sright, percentId, percentSim, dummy, score, dummy,
+  desc, frame, strand, slen, evalue = line.chomp.split("\t")
+  sleft = sleft.to_i
+  sright = sright.to_i
+  percentSim = percentSim.to_i
+  if (percentSim >= sim)
+    coverage[subject] = Array.new(100000) if coverage[subject].nil?
+    sleft.upto(sright) {|i|
+      coverage[subject][i] = 1
+    }
+    hsps += 1
+  end
+}
+
+tot = 0
+coverage.keys.each {|key|
+  tot += coverage[key].count(1)
+}
+printf("%d HSPs with similarity>%d, %d unique bp\n", hsps, sim, tot)

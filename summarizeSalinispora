@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'rsruby'
+
+@bin = 25
+
+ARGV.options {|opts|
+  opts.banner << " directory"
+  opts.on("-b ", "--bin ", Integer, "bin size (default #{@bin})")
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+Dir.glob(ARGV.first + "/*").each {|genome|
+  con = Dir.glob(genome + "/*.con").first
+  con = Dir.glob(genome + "/analysis/*.con").first if con.nil?
+  
+  cds = Dir.glob(genome + "/*.ent").first
+  cds = Dir.glob(genome + "/analysis/*.ent").first if cds.nil?
+
+  name = File.read(con).split("\n").first
+  name = name[1 + name.index("{")..name.index("}") - 1]
+  
+  r = RSRuby.instance
+
+  bins = []
+  posbin = []
+  count = 0
+  File.new(cds).each {|line|
+    fields = line.chomp.split("\t")
+    orf = fields.shift
+    if (fields.first =~/^[A-Z|a-z]/)
+      n = fields.shift
+    end
+    start = fields.shift.to_i
+    stop = fields.shift.to_i
+    if (count % @bin == 0)
+      bins.push(Array.new)
+      posbin.push(Array.new)
+    end
+    len = (stop - start).abs
+    bins.last.push(len)
+    posbin.last.push(start)
+    count += 1
+  }
+  
+  
+  means = []
+  pos = []
+  cutoff = false
+
+  bins.size.times {|i|
+    means.push(r.mean(bins[i]))
+    pos.push(r.mean(posbin[i]))
+    if (pos.last > 2e6 && means.last < 400 && !cutoff)
+      STDERR.printf("Cutoff for  %s is %d\n", name, pos.last - @bin) 
+      cutoff = true
+    end
+  }
+
+  r.pdf("#{name.gsub(" ","_")}_plot.pdf")
+  r.plot(pos, means, :ylab=>"Length", :xlab=>"Genome Position",
+         :main=>"Average ORF length vs. position for #{name}", :type=>"h")
+  r.dev_off.call
+}

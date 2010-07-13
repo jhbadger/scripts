@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " command"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+command = ARGV.shift
+
+system("export PATH=/home/jbadger/Projects/APIS:/usr/local/packages/EMBOSS/bin:/usr/local/packages/phylip-3.6/bin:/usr/local/packages/R-2.0.1/bin/:/home/sgeworker/bin:/local/n1ge/bin:/local/n1ge/bin/lx26-x86/:/home/jbadger/bin:/usr/local/bin:/usr/local/common:/usr/bin:/bin:/opt/gnome/bin:/opt/kde3/bin; export RUBYLIB=/home/jbadger/Projects/APIS;#{command}")
+
+
+

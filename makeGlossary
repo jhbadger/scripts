@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+require 'dict'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s html-file\n", $0)
+  exit(1)
+end
+
+file = ARGV.pop
+
+words = Hash.new
+File.new(file).each {|line|
+  line = line.chomp.downcase
+  line.gsub!(/[l|m|t]'/,"")
+  line.split(/[ |>|<|\.|,|?|;|(|)|-]/).each {|word|
+    words[word] = true if (word.to_i == 0)
+  }
+}
+
+dict = DICT.new("dict.tugraz.at")
+words.keys.sort.each {|word|
+  definitions = dict.define("fd-fra-eng", word)
+  p definitions
+}

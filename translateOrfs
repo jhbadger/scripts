@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s dna.fasta code\n", $0)
+  exit(1)
+end
+
+dna, code = ARGV
+code = code.to_i
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(dna)).each do |seq|
+  print  seq.naseq.translate(1, code).to_fasta(seq.definition, 60)
+end

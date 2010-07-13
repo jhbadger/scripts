@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'   
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s seq.fasta\n", $0)
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+  if (seq.seq =~/J/)
+    s = seq.seq.gsub("J","I")
+    print s.to_fasta(seq.definition, 60)
+    STDERR.printf("%s\n", seq.definition)
+  else
+    print seq
+  end
+}

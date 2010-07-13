@@ -1,0 +1,192 @@
+#!/usr/bin/perl 
+# Script to automate iterative runs of CRITICA
+
+use Critica;
+
+$scriptname=getScriptName();
+@files=realArguments(@ARGV);
+
+(@files==3) || usage();
+
+$fraction=0.8;
+$iterations=3;
+$addlong=0;
+$nosd=0;
+$noprom=1;
+$startiteration=0;
+$dicodonscores="";
+$initscores="";
+$options="";
+$fixedoptions="";
+$gencode="";
+
+process_options(flagArguments(@ARGV));
+
+$tripletsfile=pop(@files);
+$seqfile=pop(@files);
+$outputprefix=pop(@files);
+
+if(!-e($seqfile)) {
+  die("$scriptname: No such file as $seqfile!\n");
+}
+if(!-e($tripletsfile)) {
+  die("$scriptname: No such file as $tripletsfile!\n");
+}
+
+$totalinits=$outputprefix.".init";
+
+
+for($i=$startiteration;$i<=$iterations;$i++) {
+  $options.=$fixedoptions;
+  $scratch=$outputprefix.".tmp";
+  $criticaoutput=$outputprefix.$i;
+  $crit=$criticaoutput.".crit";
+  $mesg=$criticaoutput.".mesg";
+  $cdsfile=$criticaoutput.".cds";
+  $rejectfile=$criticaoutput.".reject";
+  $sdscores=$criticaoutput.".sdscores";
+  $promscores=$criticaoutput.".promscores";
+  $dicodonscores=$criticaoutput.".dicod";
+  $initscores=$criticaoutput.".init";
+  $err=system("critica $seqfile $tripletsfile $gencode $options > $crit 2> $mesg");
+  if ($err) {
+    printf("critica died with error message %d\n",$err/256);
+    die("Aborting\n");
+  }
+  bestInits($crit,$scratch);
+  if (($i==0) && ($addlong>0)) {
+    $err=system("addlongorfs -orf-aa-length=$addlong $gencode $scratch $seqfile >> $scratch");
+    if ($err) {
+      printf("addlongorfs died with error message %d\n",$err/256);
+      die("Aborting\n");
+    }
+  }
+  $err=system("removeoverlaps $seqfile $scratch 20 > $cdsfile 2>$rejectfile");
+  if ($err) {
+    printf("removeoverlaps died with error message %d\n",$err/256);
+    die("Aborting\n");
+  }
+  cdsSort($cdsfile);
+  if ($i<$iterations) {
+    if (!$nosd) {
+      computeSDScores($crit,$sdscores);
+    }
+    if (!$noprom) {
+      computePromScores($crit,$promscores);
+    }
+    computeInitScores($cdsfile,$seqfile,$initscores);
+    if ($i==0) {
+      $diflag="-fraction-coding=$fraction";
+    }
+    else {
+      $diflag="";
+    }
+    $err=system("dicodontable $diflag $cdsfile $seqfile > $dicodonscores 2>> $mesg");
+    if ($err) {
+      printf("dicodontable died with error message %d\n",$err/256);
+      die("Aborting\n");
+    }
+    $options="-dicodon-scores=$dicodonscores -init-scores=$initscores";
+    if (!$nosd) {
+      $options.=" -sd-scores=$sdscores";
+    }
+    if (!$noprom) {
+      $options.=" -prom-scores=$promscores";
+    }
+
+  }
+}
+$criticaoutput=$outputprefix.$i;
+$cdsfile=$criticaoutput.".cds";
+unlink $scratch;
+
+sub usage {
+  printf("Reference: Badger, Jonathan H. and Gary J. Olsen. CRITICA:\n");
+  printf("Coding Region Identification Tool Invoking Comparative Analysis.\n");
+  printf("Molecular Biology and Evolution 16: 512-524 (1999)\n\n");
+
+  printf("$scriptname: [options] output-name seq-file triplets-scores\n");
+  printf("Valid $scriptname options:\n");
+  printf("\t-iterations=number (default: 3)\n");
+  printf("\t-scoring-matrix=file\n");
+  printf("\t-initial-dicod=file\n");
+  printf("\t-initial-init=file\n");
+  printf("\t-initial-sd=file\n");
+  printf("\t-initial-prom=file\n");
+  printf("\t-no-sdscores\n");
+  printf("\t-prom-find\n");
+  printf("\t-threshold=value\n");
+  printf("\t-alpha=value\n");
+  printf("\t-fraction-coding=value\n");
+  printf("\t-add-longorfs=length\n");
+  printf("\t-genetic-code=number\n");
+  printf("\t-strict-threshold\n"); 
+  printf("\t-frameshift-threshold=value\n"); 
+  die("\t-quick-stats\n"); 
+}
+
+sub process_options {
+  foreach $arg (@_) {
+    if (index($arg,"-iterations=")>-1) {
+      ($dummy,$iterations)=split("=",$arg);
+    }
+    elsif (index($arg,"-scoring-matrix=")>-1) {
+      $fixedoptions.=" $arg";
+    }
+    elsif (index($arg,"-initial-dicod=")>-1) {
+      ($dummy,$dicodonscores)=split("=",$arg);
+      $startiteration=1;
+      $options.="-dicodon-scores=$dicodonscores";
+    }
+    elsif (index($arg,"-initial-init=")>-1) {
+      ($dummy,$initscores)=split("=",$arg);
+      $startiteration=1;
+      $options.=" -init-scores=$initscores";
+    }
+    elsif (index($arg,"-initial-sd=")>-1) {
+      ($dummy,$sdscores)=split("=",$arg);
+      $startiteration=1;
+      $options.=" -sd-scores=$sdscores";
+    }
+    elsif (index($arg,"-initial-prom=")>-1) {
+      ($dummy,$promscores)=split("=",$arg);
+      $startiteration=1;
+      $options.=" -prom-scores=$promscores";
+    }
+    elsif (index($arg,"-no-sdscores")>-1) {
+      $nosd=1;
+      $fixedoptions.=" $arg";
+    }
+    elsif (index($arg,"-prom-find")>-1) {
+      $noprom=0;
+      $fixedoptions.=" $arg";
+    }
+    elsif (index($arg,"-threshold=")>-1) {
+      $fixedoptions.=" $arg";
+    }
+    elsif (index($arg,"-alpha=")>-1) {
+      $fixedoptions.=" $arg";
+    }
+    elsif (index($arg,"-quick-stats")>-1) {
+      $fixedoptions.=" $arg";
+    }
+    elsif (index($arg,"-frameshift-threshold=")>-1) {
+      $fixedoptions.=" $arg";
+    }
+    elsif (index($arg,"-genetic-code=")>-1) {
+      $gencode=$arg;
+    }
+    elsif (index($arg,"-strict-threshold")>-1) {
+      $fixedoptions.=" -strict-threshold";
+    }
+    elsif (index($arg,"-add-longorfs=")>-1) {
+      ($dummy,$addlong)=split("=",$arg);
+    }
+    elsif (index($arg,"-fraction-coding=")>-1) {
+      ($dummy,$fraction)=split("=",$arg);
+    }
+    else {
+      die("$scriptname: option $arg not valid!\n");
+    }
+  }
+}

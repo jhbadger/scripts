@@ -1,0 +1,146 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+require 'Btab'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " blast-dir day.btab night.btab"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dir, dayBtab, nightBtab = ARGV
+
+dayIds = Hash.new
+nightIds = Hash.new
+daySps = Hash.new
+nightSps = Hash.new
+species = Hash.new
+
+dayIdent = File.new("#{ENV["PWD"]}/dayIdent.csv", "w")
+nightIdent = File.new("#{ENV["PWD"]}/nightIdent.csv", "w")
+
+dayId = File.new("#{ENV["PWD"]}/dayId.csv", "w")
+nightId = File.new("#{ENV["PWD"]}/nightId.csv", "w")
+
+daySp = File.new("#{ENV["PWD"]}/daySp.csv", "w")
+nightSp = File.new("#{ENV["PWD"]}/nightSp.csv", "w")
+
+count = 0
+
+Dir.glob("#{dir}/*.blastx").each {|file|
+  report = Blast::WU::Report.open(file, "r").each {|query|
+    name = query.query_def
+    query.each {|hit|
+      next if hit.hsps.empty?
+      hname = hit.definition
+      if (hname =~/\{([^\}]*)/)
+        species[hname] = $1
+      else
+        species[hname] = "Unknown"
+      end
+      if (name =~/^63/)
+        dayIdent.printf("%s,%d\n", name, hit.hsps.first.percent_identity)
+        dayIds[hname] = [] if dayIds[hname].nil?
+        dayIds[hname].push(name) if (!dayIds[hname].include?(name))
+        daySps[species[hname]] = 0 if daySps[species].nil?
+        daySps[species[hname]] += 1
+      else
+        nightIdent.printf("%s,%d\n", name, hit.hsps.first.percent_identity)
+        nightIds[hname] = [] if nightIds[hname].nil?
+        nightIds[hname].push(name) if (!nightIds[hname].include?(name))
+        nightSps[species[hname]] = 0 if nightSps[species].nil?
+        nightSps[species[hname]] += 1
+      end
+      break
+    }
+  }
+}
+
+swissID = Hash.new
+swissDesc = Hash.new
+swissE = Hash.new
+swissPer = Hash.new
+
+
+[dayBtab, nightBtab].each {|btab|
+  Btab.new(dayBtab).each {|query|
+    query.matches.each {|match|
+      #next if match.desc =~/^Putative|^Predicted|^Chromosome|^Similar/
+      swissID[query.name] = match.name
+      swissDesc[query.name] = match.desc.tr(",","")
+      swissE[query.name] = match.evalue
+      swissPer[query.name] = match.percentId
+      break
+    }
+  }
+}
+
+dayId.printf("MySQL,Species,Times hit,SwissProt Hit,SwissProt Func,Evalue,Percent Id\n")
+dayIds.keys.sort{|x, y| dayIds[y].size <=> dayIds[x].size}.each {|id|
+  name = id.split(" ").first
+  dayId.printf("%s,%s,%d,%s,%s,%s,%s\n", name, species[id], dayIds[id].size,
+               swissID[name], swissDesc[name],swissE[name],swissPer[name])
+}
+
+nightId.printf("MySQL,Species,Times hit,SwissProt Hit,SwissProt Func,Evalue,Percent Id\n")
+
+nightIds.keys.sort{|x, y| nightIds[y].size <=> nightIds[x].size}.each {|id|
+  name = id.split(" ").first
+  nightId.printf("%s,%s,%d,%s,%s,%s,%s\n", name, species[id], nightIds[id].size,
+                 swissID[name], swissDesc[name],swissE[name],swissPer[name])
+}
+
+daySps.keys.sort{|x, y| daySps[y] <=> daySps[x]}.each {|sp|
+  daySp.printf("%s,%d\n", sp, daySps[sp])
+}
+nightSps.keys.sort{|x, y| nightSps[y] <=> nightSps[x]}.each {|sp|
+  nightSp.printf("%s,%d\n", sp, nightSps[sp])
+}
+
+
+dayIdList = File.new("daylist.csv","w")
+nightIdList = File.new("nightlist.csv","w")
+
+dayIds.keys.sort.each {|key|
+  dayIdList.printf("%s",key.split(" ").first)
+  dayIds[key].sort.each {|est|
+    dayIdList.printf(",%s",est)
+  }
+  dayIdList.printf("\n")
+}
+
+nightIds.keys.sort.each {|key|
+  nightIdList.printf("%s",key.split(" ").first)
+  nightIds[key].sort.each {|est|
+    nightIdList.printf(",%s",est)
+  }
+  nightIdList.printf("\n")
+}
+
+dayIdent.close
+nightIdent.close
+
+dayId.close
+nightId.close
+
+daySp.close
+nightSp.close
+
+nightIdList.close
+dayIdList.close

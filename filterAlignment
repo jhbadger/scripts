@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'optparse'
+require 'ZFile'
+
+keep = nil
+ARGV.options {|opts|
+  opts.banner << " aln max-gaps"
+  opts.on("-k ", "--keep ", String, 
+          "list of strings to keep even if more than maxgap") {|k| keep = k}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size  != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+if (keep)
+  keep = keep.split(",")
+end
+
+aln, minGaps = ARGV
+minGaps = minGaps.to_i
+
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(aln)).each {|seq|
+  gaps =  seq.seq.count(".-")
+  if (keep)
+    found = false
+    keep.each {|k|
+      found = true if seq.definition =~/#{k}/
+    }
+    if (found)
+      STDERR.printf("Keeping %s anyway...\n", seq.entry_id)
+      gaps = 0
+    end
+  end
+  if (gaps > minGaps)
+    STDERR.printf("Skipping %s because it has %d gaps...\n", seq.entry_id, gaps)
+  else
+    print seq
+  end
+}
+
+

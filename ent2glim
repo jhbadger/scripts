@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " ent-file"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ent, rest = ARGV
+
+seen = Hash.new
+
+File.new(ent).each {|line|
+  id, start, stop, gc = line.split(" ")
+  start, stop = start.to_i, stop.to_i
+  id, contig = id.split("-")
+  frame = ((start % 3) + 1).to_s
+  if (start < stop)
+    frame = "+" + frame
+  else
+    frame = "-" + frame
+  end
+  id = id.downcase
+  if (!seen[contig])
+    printf(">%s\n", contig)
+    seen[contig] = true
+  end
+  printf("%-9s %7d %7d %4s %5s\n", id, start, stop, frame, gc)
+}

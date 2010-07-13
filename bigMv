@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 2)
+  STDERR.printf("usage: %s \"glob\" destination\n", $0)
+  exit(1)
+end
+
+glob, dest = ARGV
+
+$VERBOSE = nil
+
+if (!File.stat(dest).directory?)
+  STDERR.printf("%s is not a directory\n", dest)
+  exit(1)
+end
+
+files = Dir.glob(glob)
+report = 10
+
+count = 0
+files.each {|file|
+  system("mv '#{file}' #{dest}")
+  printf("%s (%5.2f%%)\n", file, count*1e2/files.size) if (count % report == 0)
+  count += 1
+}

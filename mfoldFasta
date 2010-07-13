@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+temp = 37
+if (ARGV.index("-temp"))
+  r = ARGV.index("-temp")
+  ARGV.delete_at(r)
+  temp = ARGV[r].to_i
+  ARGV.delete_at(r)
+end
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s nuc.fasta [-temp deg]\n", $0)
+  exit(1)
+end
+
+nuc = ARGV.shift
+
+dir = nuc + ".dir"
+Dir.mkdir(dir) if (!File.exist?(dir))
+FlatFile.new(FastaFormat, File.new(nuc)).each {|seq|
+  name = seq.definition.split(" ").first
+  system("rm #{dir}/#{name}*")
+  seqFile = File.new(dir + "/" + name, "w")
+  seqFile.printf(";\n%s\n%s\n", name, seq.seq)
+  seqFile.close
+  system("cd #{dir};mfold SEQ='#{name}' T=#{temp}")
+}

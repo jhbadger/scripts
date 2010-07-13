@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+require "bio"
+
+if ARGV.size != 3
+  STDERR.print "usage: hmmpfamFind cdhitout.fasta cdhitout.clstr hmmpfamout.dir\n"
+  exit(1)
+end
+
+pfam = Hash.new
+cdhit,clstr,hmm = ARGV
+Bio::FlatFile.new(Bio::FastaFormat, File.new(cdhit)).each{|seq|
+  hit=hmm + "/" + seq.entry_id + ".hmmpfam"
+  if File.exists?(hit)
+
+    query = nil
+    listStart = false
+
+    File.new(hit).each{|line|
+      line = line.chomp
+      next if (line =~ /^---/ || line =~/^\n/)
+      if (line =~ /Query sequence: (.*)/)
+        query = $1
+      end
+      listStart = false if (line =~/Parsed for domains/)
+      if (listStart)
+        pfam[query] = "" if pfam[query].nil?
+        pfam[query] += line + "; "
+      end
+      listStart = true if (line =~ /Model/ && line =~/Description/)
+    }
+  end
+}
+
+num = nil
+cluster = Hash.new
+
+File.new(clstr).each{|line|
+  if line =~ /^>Cluster ([0-9]*)/
+    num = $1
+  elsif line =~ />(.*)\.\.\./
+    cluster[$1]=num.to_i if (pfam[$1])
+  end
+}
+
+cluster.keys.sort{|x,y| cluster[x]<=>cluster[y]}.each {|key|
+  printf("%d, %s, \"%s\"\n", cluster[key], key, pfam[key])
+}
+

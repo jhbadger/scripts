@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " condition-genome recip recip [recip...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 4)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+alignment = Hash.new
+
+condition = ARGV.shift
+alignment[condition] = ""
+
+count = 0
+ARGV.each {|recip|
+  x, y = File.basename(recip.gsub(/.pep|.fasta|.recip/,"")).split("_vs_")
+  x = x[0..9]
+  y = y[0..9]
+  if (x == condition)
+    alignment[y] = ""
+    count = 0
+    File.new(recip).each {|line|
+      x1, y1, p1, p2, orth = line.chomp.split(" ")
+      if (orth == "yes")
+        alignment[y] += "1"
+      else
+        alignment[y] += "0"
+      end
+      count += 1
+    }
+  end
+}
+
+alignment[condition] = "1" * count
+lineLen = 60
+printf("%d %d\n", alignment.keys.size, count)
+pos = 0
+while (pos < count)
+  alignment.keys.sort.each {|name|
+    if (pos == 0)
+      printf("%-10s ", name)
+    end
+    printf("%s\n", alignment[name][pos..pos + lineLen - 1])
+  }
+  pos += lineLen
+  printf("\n")
+end
+
+

@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " tab-file.txt"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+file, rest = ARGV
+
+
+File.new(file).each {|row|
+  station, filter, lib, path = row.chomp.split("\t")
+  next if station == "station"
+  STDERR.printf("Processing %s...\n", lib)
+  system("zcat #{path} > #{lib}.pep")
+}

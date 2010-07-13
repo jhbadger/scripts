@@ -1,0 +1,110 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'apis'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " taxonomy.txt fasta [fasta...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+taxonomy = ARGV.shift
+
+tax = Hash.new
+taxid = Hash.new
+File.new(taxonomy).each {|line|
+  file, id, tl = line.chomp.split("\t")
+  tax[file] = tl
+  taxid[file] = id
+}
+
+
+abbr = Hash.new
+conName = Hash.new
+out = File.new("contigs.dat", "w")
+ARGV.each {|file|
+  org = nil
+  strain = nil
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+    if (org.nil? && seq.definition =~/\[organism=([^\]]*)\]/)
+      org = $1
+      abbr[file] = org.split(" ")[0][0..2]+ org.split(" ")[1][0..2]
+      if (seq.definition =~/\[strain=([^\]]*)\]/)
+        strain = $1
+      end
+    end
+    conName[file] = "JGI_#{abbr[file]}"
+    out.printf("%s_%s\t%s\t%s\t%d\t%s\tChromosome\t%s\n", conName[file],
+               seq.entry_id, org, strain, taxid[file], tax[file], seq.seq)
+  }
+}
+out.close
+log = File.new("log.txt", "w")
+prot = File.new("proteins.dat","w")
+cds = File.new("transcripts.dat","w")
+order = File.new("geneorders.dat","w")
+
+STDERR.printf("Calling genes...\n")
+ARGV.each {|file|
+  asProt(file, 45, false, true)
+  orfName = "ORF0000"
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file + ".pep")).each {|seq|
+    orfName.succ!
+    fields = seq.entry_id.split("_")
+    frame = fields.pop.to_i - 1
+    stop = fields.pop.to_i
+    start = fields.pop.to_i
+    rest = ""
+    fields.each {|f|
+      rest += "_" + f
+    }
+    prot.printf("%s\t%s\t\t%s\n", orfName+"-"+conName[file]+rest, conName[file]+rest,seq.seq)
+    
+    if (start < stop)
+      strand = 1
+      start += frame
+    else
+      start, stop = stop, start
+      stop -= frame
+      strand = -1
+    end
+    order.printf("%s\t%s\t%d\t%d\t%d\n", orfName+"-"+conName[file]+rest, conName[file]+rest,
+                 start, stop, strand)
+  }
+  orfName = "ORF0000"
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file + ".cds")).each {|seq|
+    orfName.succ!
+    begin
+      fields = seq.entry_id.split("_")
+    rescue
+      STDERR.printf("Skipping %s\n", orfName)
+      next
+    end
+    fields.pop
+    stop = fields.pop.to_i
+    start = fields.pop.to_i
+    rest = ""
+    fields.each {|f|
+      rest += "_" + f
+    }
+    cds.printf("%s\t%s\t%s\n", orfName+"-"+conName[file]+rest, conName[file]+rest,seq.seq.upcase)
+  }
+  File.unlink(file + ".pep", file + ".cds")
+  log.printf("%s\n", file)
+}
+prot.close
+cds.close
+order.close
+log.close

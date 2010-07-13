@@ -1,0 +1,15 @@
+#!/usr/bin/env ruby
+
+require 'Newick'
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s tree-file alias.txt\n", $0)
+  exit(1)
+end
+
+treeFile, aliasFile = ARGV
+
+tree = NewickTree.fromFile(treeFile)
+
+tree.alias(aliasFile)
+print tree.to_s + "\n"

@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " spsum"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+spsum, rest = ARGV
+
+printf("Species,CGA,CGC,CGG,CGU,AGA,AGG,CUA,CUC,CUG,CUU,UUA,UUG,UCA,UCC,UCG,UCU,AGC,AGU,ACA,ACC,ACG,ACU,CCA,CCC,CCG,CCU,GCA,GCC,GCG,GCU,GGA,GGC,GGG,GGU,GUA,GUC,GUG,GUU,AAA,AAG,AAC,AAU,CAA,CAG,CAC,CAU,GAA,GAG,GAC,GAU,UAC,UAU,UGC,UGU,UUC,UUU,AUA,AUC,AUU,AUG,UGG,UAA,UAG,UGA\n")
+lines = File.new(spsum).read.split("\n")
+while (!lines.empty?)
+  header = lines.shift
+  values = lines.shift
+  num, sp, count = header.split(":")
+  count = count.to_i
+  next if count < 500 || (sp=~/Mycoplasma/ && count < 200)
+  printf("%s",sp)
+  values = values.split(" ")
+  total = 0.0
+  values.each {|value|
+    total += value.to_i
+  }
+  values.each {|value|
+    printf(",%5.3f", value.to_i*100/total)
+  }
+  printf("\n")
+end
+

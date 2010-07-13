@@ -1,0 +1,111 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require'bio'
+require 'optparse'
+include Bio    
+opt = OpenStruct.new
+
+
+opt.e = false
+opt.f = false
+opt.s = false
+opt.v = false
+opt.d = false
+opt.l = false
+opt.desc = false
+
+ARGV.options {|opts|
+  opts.banner << " expression gb-file [gb-file...]"
+  opts.on("-d", "--dna",  "extract DNA and not protein") {|t| opt.d = t}
+  opts.on("-z", "--desc",  "show desc (default false)") {|t| opt.desc = t}
+  opts.on("-e ", "--expression ", String,  "expression to search for") {|t| opt.e = t}
+  opts.on("-s ", "--species ", String,  "species of organism") {|t| opt.s = t}
+  opts.on("-v", "--inverse", "return lines not matching expression") {|t| opt.v = t}
+  opts.on("-f ", "--file ", String, 
+          "read list of ids to search from file") {|t| opt.f = t}  
+  opts.on("-l", "--locus",  "use locus tag (false)") {|t| opt.l = t}
+  opts.on("-v", "--inverse", "return lines not matching expression") {|t| opt.v = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+def getProt(seq, header, cds)
+  if (cds.position =~/([0-9]*)\.\.([0-9]*)/)
+    start, stop = $1.to_i, $2.to_i
+    subSeq = Sequence::NA.new(seq[(start - 1)..(stop - 1)])
+    subSeq = subSeq.reverse_complement if (cds.position =~/complement/)
+    if (!opt.d)
+      fasta = subSeq.translate.to_fasta(header, 60)
+    else
+      fasta = subSeq.to_fasta(header, 60)
+    end
+    return fasta
+  end
+end
+  
+subList = []
+if (opt.f)
+  File.new(opt.f).each {|line|
+    line = line.chomp.split("-").first
+    subList.push(line) 
+  }
+end
+
+
+ARGV.each {|gb|
+  compress = false
+  if (gb.index(".gz"))
+    system("PATH=/usr/bin;zcat #{gb} > #{gb}.tmp")
+    gb = gb + ".tmp"
+    compress = true
+  end
+  FlatFile.new(GenBank, File.new(gb)).each {|seq|
+    opt.s = seq.organism if (!opt.s && seq.organism != "")
+    if (!opt.s && gb =~/TG_([A-Z|a-z|0-9]*)/)
+      orgCode = $1
+      `getdb #{orgCode}`.each {|line|
+        if line=~/organism: (.*)/
+          opt.s = $1.chomp
+        end
+      } 
+    end
+    s = seq.seq
+    id = seq.entry_id
+    seq.each_cds {|cds|
+      if (opt.l)
+        header = File.basename(gb, ".gb") + "_" + cds.assoc["locus_tag"]
+      else
+        header = File.basename(gb, ".gb") + "_" + cds.assoc["protein_id"] 
+      end
+      if (opt.desc)
+	header += " "
+	header += cds.assoc["product"] if (!cds.assoc["product"].nil?)
+	header += " (" + cds.assoc["note"] + ")" if (!cds.assoc["note"].nil?)
+	header += " EC:" + cds.assoc["EC_number"] if 
+	  (!cds.assoc["EC_number"].nil?)
+	if (opt.s)
+	  header += " {#{opt.s}}"
+	end
+      end
+      if (!opt.f || subList.include?(cds.assoc["protein_id"]))
+        if (!opt.e || (!opt.v && header =~/#{opt.e}/i))
+          print getProt(s, header, cds)
+        elsif (opt.v && header !~/#{opt.e}/i)
+          print getProt(s, header, cds)
+        end
+      end
+    }
+  }
+  File.unlink(gb) if compress
+}

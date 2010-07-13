@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'csv'
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.remove = false
+opt.header = false
+
+o = OptionParser.new
+o.banner << " csv-file ann.fasta"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+csv, fasta = ARGV
+
+annotation = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  ann = seq.definition.split(" ", 2).last.split(" [").first
+  annotation[seq.entry_id] = ann
+}
+
+CSV.foreach(csv) {|fields|
+  name, tree = fields
+  name, contig = name.split("-")
+  if (tree == "Tree")
+    fields.push("Annotation")
+  else
+    fields.push(annotation[name])
+  end
+  print fields.to_csv
+}

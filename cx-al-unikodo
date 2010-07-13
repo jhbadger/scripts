@@ -1,0 +1,19 @@
+#!/usr/bin/perl
+use Unicode::String;
+
+while (<>) {
+  $_ = Unicode::String::latin1($_);
+  s/Cx/\304\210/g;
+  s/cx/\304\211/g;
+  s/Gx/\304\234/g;
+  s/gx/\304\235/g;
+  s/Hx/\304\244/g;
+  s/hx/\304\245/g;
+  s/Jx/\304\264/g;
+  s/jx/\304\265/g;
+  s/Sx/\305\234/g;
+  s/sx/\305\235/g;
+  s/Ux/\305\254/g;
+  s/ux/\305\255/g;
+  print $_;
+};

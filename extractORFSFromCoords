@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+prot = false
+if (ARGV.first == "-p")
+  ARGV.shift
+  prot = true
+end
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s [-p] orf-coords fasta\n", $0)
+  exit(1)
+end
+
+coords, fasta = ARGV
+
+dna = Hash.new
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  dna[seq.entry_id] = seq.naseq
+}
+
+File.new(coords).each {|line|
+  contig, start, stop = line.split(" ")
+  start = start.to_i
+  stop = stop.to_i
+  if (start < stop)
+    subSeq = dna[contig][start - 1 .. stop - 1]
+  else
+    subSeq = dna[contig][stop - 1 .. start - 1].complement
+  end
+  subSeq = subSeq.translate(1, 11) if prot
+  print subSeq.upcase.to_fasta("#{contig} (#{start}..#{stop})", 60)
+}

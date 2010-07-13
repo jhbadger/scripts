@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+require 'Phylogeny'
+
+comboDir = "/usr/local/projects/EVOL/MySQL/"
+blastDir = ""
+tax = loadTax(comboDir + "contig.att")
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s blast-dir fasta-file\n", $0)
+  exit(1)
+end
+
+blastDir, fasta = ARGV
+
+Dir.mkdir(blastDir + "/subBlast") if (!File.exists?(blastDir + "/subBlast"))
+names = []
+
+Dir.glob(blastDir+"/*.blastp").sort.each {|file|
+  report = Bio::Blast::WU::Report.open(file, "r").each {|query|
+    hitNum = 1
+    query.each {|hit|
+      hit.definition =~ /\{([^\{]*)\}/
+      next if $1.nil?
+      species = $1.gsub!(/ |\:|\(|\)|\//,"_")
+      if (!tax[species].nil?)
+	if (tax[species]["Taxonomy"] =~ /Cyanobacteria/)
+	  names.push(File.basename(file, ".blastp"))
+	  File.link(file, blastDir + "/subBlast/" + File.basename(file))
+	  break
+	end
+      end
+      hitNum += 1
+      break if (hitNum > 5)
+    }
+  }
+}
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  name, rest = seq.definition.split(" ")
+  print seq if (names.include?(name))
+}

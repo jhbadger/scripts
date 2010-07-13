@@ -1,0 +1,84 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.level = "1"
+opt.cluster = false
+opt.chloro = false
+
+ARGV.options {|opts|
+  opts.banner << " clstr-file results-file"
+  opts.on("-l ", "--level ", Integer, "Level of taxonomy to use") {|t| opt.level = t}
+  opts.on("-f ", "--file ", String,"Use cluster file (#{opt.cluster})") {|t| opt.cluster = t}
+  opts.on("-c", "--chloroplast", "Skip Chloroplasts") {|t| opt.chloro = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+results, rest = ARGV
+
+
+cgroup = Hash.new
+clusters = Hash.new
+cnum = 0
+
+if (opt.cluster)
+  File.new(opt.cluster).each {|line|
+    if (line =~/^>Cluster ([0-9]*)/)
+      cnum = $1.to_i
+      clusters[cnum] = []
+    elsif (line =~/, >([A-Z|a-z|0-9|\_]*)/)
+      cgroup[$1] = cnum
+      clusters[cnum].push($1)
+    end
+  }
+end
+
+classify = Hash.new
+opt.level = opt.level.to_i
+count = 0
+total = 0
+
+File.new(results).each {|line|
+  name, blast, tree1, tree2 = line.chomp.split(" ")
+  phy = tree2.split("|")
+  phy.shift
+  taxon = phy[opt.level]
+  next if taxon.nil?
+  next if taxon.downcase =~/chloroplast/ && opt.chloro
+  classify[taxon] = 0 if (classify[taxon].nil?) 
+  if (!opt.cluster)
+    classify[taxon] += 1
+    count += 1
+  else
+    classify[taxon] += clusters[cgroup[name]].size
+    total += clusters[cgroup[name]].size
+  end
+}
+
+name = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
+
+ptotal = 0
+printf("\t%s\n", name[opt.level])
+classify.keys.sort{|x, y| classify[y] <=> classify[x]}.each {|key|
+  if (!opt.cluster)
+    percent = (classify[key]*100)/count
+  else
+    percent = (classify[key]*100)/total
+  end
+  ptotal += percent
+  printf("%s\t %d\n", key, percent) if percent > 0
+}
+
+printf("%s\t %d\n", "Misc.", 100-ptotal) if ptotal < 100 

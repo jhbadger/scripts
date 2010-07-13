@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s fasta-file\n", $0)
+  exit(1)
+end
+
+fasta = ARGV.pop
+
+seqs = Hash.new
+name = nil
+File.new(fasta).each {|line|
+  line.chomp!
+  line.tr!("*","")
+  if (line =~ /^>/)
+    name = line[1..line.length].split(";").pop
+    seqs[name] = ""
+  else
+    seqs[name] += line
+  end
+}
+
+
+seqs.keys.each {|name|
+  printf("%-10s %s\n", name, seqs[name])
+}

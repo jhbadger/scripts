@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s seq.fasta\n", $0)
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+  if (seq.definition =~/\{([^\}]*)/)
+    sp = $1.tr('()[]: ",', "_") 
+    header = seq.entry_id + "__#{sp}"
+  else
+    header = seq.entry_id
+  end
+  print seq.seq.to_fasta(header, 60)
+}

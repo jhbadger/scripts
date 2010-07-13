@@ -1,0 +1,64 @@
+#!/usr/bin/env ruby 
+
+require 'optparse'
+require 'ZFile'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+
+opt.csv = false
+opt.delimiter = " "
+
+ARGV.options {|o|
+  o.banner << " col [file]"
+  o.on("-c", "--csv", 
+  "Parse using csv library (default #{opt.csv})") {opt.csv = true}
+  o.on("-d ", "--delimiter ", String, 
+          "delimiter character (default \"#{opt.delimiter}\")") {|d| opt.delimiter = d}
+  begin
+    o.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts o
+    exit(1)
+  end
+  if (ARGV.size != 2 && ARGV.size != 1)
+    STDERR.puts o
+    exit(1)
+  end
+}
+
+if (ARGV.size == 2)
+  col, file = ARGV
+else
+  col = ARGV.shift
+  file = STDIN
+end
+col = col.to_i
+toPrint = []
+
+opt.delimiter = "\t" if opt.delimiter == "\\t"
+
+counts = Hash.new
+
+if (opt.csv)
+  CSV.foreach(file).each do |fields|
+    counts[fields[col]] = 0 if counts[fields[col]].nil?
+    counts[fields[col]] += 1
+  end
+else
+  file = ZFile.new(file) if file != STDIN
+  file.each do |line|
+    fields = line.chomp.split(opt.delimiter)
+    counts[fields[col]] = 0 if counts[fields[col]].nil?
+    counts[fields[col]] += 1
+  end
+end
+
+counts.keys.sort {|x, y| counts[y] <=> counts[x]}.each do |key|
+  printf("%6d\t%s\n", counts[key], key)
+end
+
+
+

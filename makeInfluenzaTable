@@ -1,0 +1,103 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+genes = ["PB2", "PB1-F2", "PB1", "PA", "HA", "NP", "NA", "M1", "M2", "NS1", "NS2"]
+
+opt.prot = false
+ARGV.options {|opts|
+  opts.banner << " genbank-file strain-list"
+  opts.on("-p", "--protein", "report protein ids") {|t| opt.prot = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+gb, list = ARGV
+
+print "isolate,"
+genes.each {|gene|
+  print gene
+  if (gene == genes.last)
+    print "\n"
+  else
+    print ","
+  end
+}
+
+isolate = Hash.new
+File.new(list).each {|line|
+  prettyName = line.split(",").first
+  key = prettyName.tr("_","").tr(" ","")
+  isolate[key] = Hash.new
+  isolate[key]["name"] = prettyName
+  genes.each {|gene|
+    isolate[key][gene] = ""
+  }
+  isolate[key]["found"] = nil
+}
+
+
+$/="\n//"; # each "line" is a genbank record                   
+File.new(gb).each {|seq|
+  lines = seq.split("\n")
+  source = lines.grep(/^SOURCE/).first
+  if (!source.nil?)
+    source = source.tr("-", "").tr("/","").tr(" ","").tr("'","") 
+  end
+  isolate.keys.each {|key|
+    if (source =~/#{key}/i)
+      isolate[key]["found"] = true
+      lines.grep(/gene=|product=/).each {|gene|
+        next if (gene =~ /^precursor/i)
+        if (gene =~ /\"([^\"]*)\"/)
+          gname = $1.upcase.split(" ").first
+          gname = "M" if (gname =~ /^MARTIX/)
+          gname = "M" if (gname =~ /^MATRIX/)
+          gname = "HA" if (gname =~ /^HEMA/)
+          gname ="NS" if (gname =~/^NON/)
+          gname = "HA" if (gname =~ /^HA/)
+          gname = "NS" if (gname =~ /^NS/)
+          gname = "M" if (gname =~ /^M/)
+          if (genes.include?(gname))
+	    if (!opt.prot)
+	      acc = lines.grep(/^ACCESSION/).first.split(" ")[1]
+	    else
+	      acc = lines.grep(/protein_id/).first.split("\"")[1]
+	    end 
+            isolate[key][gname] = acc
+          end
+        end
+      }
+    end
+  }
+}
+
+missed = File.new("missed.log", "w")
+isolate.keys.sort.each {|key|
+  if (isolate[key]["found"])
+    print isolate[key]["name"] + ","
+    genes.each {|gene|
+      print isolate[key][gene]
+      if (gene == genes.last)
+        print "\n"
+      else
+        print ","
+      end
+    }
+  else
+    missed.printf("%s\n", isolate[key]["name"])
+  end
+}
+missed.close

@@ -1,0 +1,106 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Newick'
+require 'MySQL'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " spreadsheet.csv pos.csv"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+sheet, posl = ARGV
+
+taxName = Hash.new
+taxSp = Hash.new
+
+db = MySQL.new
+
+File.new(File.dirname(sheet)+"/contig.att").each {|line|
+  name, size, species, strain, id, tax = line.split("\t")
+  taxName[name] = tax
+  taxSp[species] = tax
+}
+
+pos = Hash.new
+File.new(posl).each {|line|
+  id, num = line.chomp.split(",")
+  pos[id] = num.to_i
+}
+
+pt = Hash.new
+allbact =[]
+File.new(sheet).each {|line|
+  name = line.split(",").first
+  tree = File.dirname(sheet)+"/trees/#{name}.tree"
+  if (File.exists?(tree))
+    tree = NewickTree.fromFile(tree)
+    query = tree.findNode(name)
+    found = false
+    only = true
+    ingroup = true
+    bact = []
+    while (query != tree.root)
+      bact = []
+      query.taxa.each {|taxon|
+        tname = taxon.split(/-|__/)[1]
+        ingroup = false if (taxName[tname] !~/stramen/)
+        if (taxName[tname] =~/Bacteria|Archaea/)
+          found = true
+          bact.push(taxon)
+          pt[taxon.split("__").first] = "" if  pt[taxon.split("__").first].nil?
+          pt[taxon.split("__").first] += "," + name
+        elsif (taxName[tname] !~/stramen/)
+          only = false
+        end
+      }
+      break if (found && only)
+      break if (!ingroup)
+      query = query.parent
+    end
+    if (found && only)
+      allbact += bact
+    end 
+  end
+}
+allbact = allbact.uniq
+contigpos = Hash.new
+n = Hash.new
+allbact.each {|gene|
+  name, sp = gene.split("__")
+  id, contig = name.split("-")
+  n[contig] = Hash.new if (n[contig].nil?)
+  if (pos[name])
+    contigpos[contig] = [] if (contigpos[contig].nil?)
+    contigpos[contig].push(pos[name]) 
+    n[contig][pos[name]] = name
+  end
+}
+
+contigpos.keys.each {|key|
+  oldP = -500
+  oldN = ""
+  contigpos[key].sort.each {|p|
+    if (p - oldP < 5)
+      ann = db.fetchProtID(n[key][p]).split("\n").first.tr(">","")
+      oann = db.fetchProtID(oldN).split("\n").first.tr(">","")
+      printf("%7d,%s%s\n", oldP, oann,pt[oldN])
+      printf("%7d,%s%s\n\n", p, ann,pt[n[key][p]])
+    end
+    oldP = p
+    oldN = n[key][p]
+  }
+}

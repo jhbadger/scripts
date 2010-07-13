@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " matrix fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+matrix, fasta = ARGV
+
+functions = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  functions[seq.entry_id] = seq.definition
+}
+
+File.new(matrix).each {|line|
+  genome, orf = line.split("\t")
+  func = functions[orf + "-" + genome]
+  next if (func =~/hypothetical/ && func !~/conserved/)
+  print line
+}

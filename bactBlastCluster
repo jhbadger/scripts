@@ -1,0 +1,84 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'MySQL'
+$VERBOSE=nil
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " orf-list"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+db = MySQL.new
+
+list, rest = ARGV
+
+
+genomes = Hash.new
+seen = Hash.new
+pos = Hash.new
+
+genomesF = File.new("genomes.csv", "w")
+seenF = File.new("seen.csv", "w")
+posF = File.new("pos.csv", "w")
+
+File.new(list).each {|line|
+  prot = line.split(/ |,/).first
+  STDERR.printf("Processing %s...\n", prot)
+  if (File.exists?("blast/#{prot}.blastp.gz"))
+    blast = `zcat blast/#{prot}.blastp.gz`
+    blast.split("\n").each {|line|
+      if (line =~/^>/)
+        id = line.split(/>| /)[1]
+        name, contig = id.split("-", 2)
+        num = db.geneNumber(id)
+        if (!num.nil?)
+          pos[id] = num
+          seen[id] = [] if (seen[id].nil?)
+          seen[id].push(prot)
+          genomes[contig] = [] if genomes[contig].nil?
+          genomes[contig].push(num) if (!genomes[contig].include?(num))
+        end
+      end
+    }
+  end
+}
+
+genomes.keys.sort.each {|key|
+  next if genomes[key].size == 1
+  genomesF.printf("%s", key)
+  genomes[key].sort.each {|num|
+    genomesF.printf(",%d", num)
+  }
+  genomesF.printf("\n")
+}
+
+seen.keys.sort.each {|key|
+  seenF.printf("%s", key)
+  seen[key].sort.each {|prot|
+    seenF.printf(",%s", prot)
+  }
+  seenF.printf("\n")
+}
+
+
+pos.keys.sort.each {|key|
+  posF.printf("%s,%d\n", key, pos[key])
+}
+
+genomesF.close
+seenF.close
+posF.close

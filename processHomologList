@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+fraction = 0.3
+minCluster = 4
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s sub-contig.att homolog-list\n", $0)
+  exit(1)
+end
+
+contig, list = ARGV
+
+specList = Hash.new
+File.new(contig).each {|line|
+  contig, length, species = line.split("\t")
+  specList[contig] = species
+}
+
+clusters = []
+File.new(list).each {|line|
+  pairs = line.chomp.split("\t")
+  query, qScore = pairs.shift.split(" ")
+  qScore = qScore.to_i
+  cluster = [query]
+  pairs.each {|pair|
+    match, mScore = pairs.shift.split(" ")
+    mScore = mScore.to_i
+    if (mScore >= qScore*fraction)
+      cluster.push(match)
+    end
+  }
+  cluster.sort!
+  noDups = true
+  species = Hash.new
+  cluster.each {|entry|
+    gi, contig = entry.chomp.split("-")
+    if (!species[contig].nil?)
+      noDups = false
+      break
+    else
+      species[contig] = specList[contig]
+    end
+  }
+  clusters.push(cluster) if (noDups && cluster.size >= minCluster)
+}
+clusters.uniq!
+
+clusters.sort {|a, b| a.size <=> b.size}.each {|cluster|
+  printf("%d\t", cluster.size)
+  cluster.each {|entry|
+    printf("%s ", entry)
+  }
+  printf("\n")
+}
+

@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'uri'
+require 'net/http'
+require 'net/ftp'
+require 'MySQL'
+
+STDERR.printf("Listing existing contigs...\n")
+contigs = Hash.new
+db = MySQL.new
+Contig.find(:all).each {|contig|
+  contigs[contig.name] = true
+}
+
+
+ftp = Net::FTP.new("ftp.ncbi.nlm.nih.gov")
+ftp.login
+ftp.chdir("/genomes/Bacteria")
+STDERR.printf("Fetching ftp list...\n")
+files = ftp.nlst("*_*")
+STDERR.printf("Processing ftp list...\n")
+files.each {|file|
+  if (file =~/.gbk/ && !File.exists?(file))
+    if (contigs[File.basename(file, ".gbk")])
+      STDERR.printf("Downloading %s\n", file)
+      ftp.gettextfile(file)
+    end
+  end
+}  

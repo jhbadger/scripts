@@ -1,0 +1,58 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " alignment reference-list"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+alignment, ref = ARGV
+
+seqs = Hash.new
+
+FlatFile.new(FastaFormat, File.new(alignment)).each {|seq|
+  seqs[seq.entry_id] = seq
+}
+
+File.new(ref).each {|line|
+  acc, gene, start, stop = line.split(" ")
+  start = start.to_i
+  stop = stop.to_i
+  if (seqs[acc].nil?)
+    STDERR.printf("%s not in alignment!\n", acc)
+    exit(1)
+  else
+    realPos = 0
+    aStart  = 0
+    aStop = 0
+    1.upto(seqs[acc].length) {|i|
+      na = seqs[acc].seq[i - 1].chr
+      realPos += 1 if (na != "-" && na != ".")
+      aStart = i if (realPos == start)
+      aStop = i if (realPos == stop)
+    }
+    out = File.new(gene + ".afa", "w")
+    seqs.keys.each {|key|
+      out.print Sequence::AA.new(seqs[key].seq[aStart - 1..aStop - 1]).to_fasta(key, 60)
+    }
+    out.close
+  end
+  
+}

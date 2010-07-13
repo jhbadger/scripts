@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " mummer-csv"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+csv, rest = ARGV
+
+coverage = Array.new
+CSV.foreach(csv) {|row|
+  next if row[0].to_i == 0 # only count rows with coords
+  s1, e1, s2, e2 = row[0].to_i, row[1].to_i, row[2].to_i, row[3].to_i
+  s1, e1 = e1, s1 if (e1 < s1) # reverse if end is before start 
+  s1.upto(e1) {|i|
+    coverage[i] = [] if coverage[i].nil? # make array for reads if none
+    coverage[i].push(row.last) if (!coverage[i].include?(row.last)) # add read  
+  }
+}
+
+STDOUT << ["Position, Coverage"].to_csv
+1.upto(coverage.size) {|i|
+  coverage[i] = [] if (!coverage[i]) # handle no coverage
+  STDOUT << [i, coverage[i].size].to_csv
+}

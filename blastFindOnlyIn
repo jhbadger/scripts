@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+
+if (ARGV.size !=2)
+  STDERR.printf("usage: %s blast-file pvalue\n", $0)
+  exit(1)
+end
+
+file, pvalue = ARGV
+pvalue = pvalue.to_f
+
+report = Bio::Blast::WU::Report.open(file, "r").each {|query|
+  hits = []
+  name, funct = query.query_def.split(" ")
+  query.each {|hit|
+    next if hit.evalue.nil?
+    if (hit.evalue.to_f < pvalue)
+      if (hit.definition =~ /\{([^\}]*)\}/)
+	hits.push($1) if (!hits.include?($1))
+      end
+    end
+  }
+  print name + "\n" if (hits.size == 2)
+}

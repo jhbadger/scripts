@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'FastaDB'
+
+ARGV.options {|opts|
+  opts.banner << " tree [tree...] org-tree"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+trees = ARGV.size
+org = ARGV.pop
+
+list = File.new("list.txt", "w")
+
+list.printf("%d\n%s\n", trees, org)
+ARGV.each {|tree|
+  list.printf("%s\n", tree)
+}
+list.close
+
+$VERBOSE=nil
+
+system("Horizstory -f list.txt -r 1 -m 20")

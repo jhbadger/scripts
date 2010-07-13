@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'DBwrapper'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " ecto.db go.db"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+ecto, go = ARGV
+
+ecto = SQLite.new(ecto)
+go = SQLite.new(go)
+
+ecto.query("SELECT gene, go FROM summary30 WHERE diatoms='X'").each {|row|
+}

@@ -1,0 +1,6 @@
+#!/usr/bin/env ruby
+
+ARGV.each {|num|
+  system("wget -r -l1 --convert-links http://www.bartleby.com/#{num}")
+  system("parseBart www.bartleby.com/#{num}/*")
+}

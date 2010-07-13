@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'apis'
+opt = OpenStruct.new
+
+$VERBOSE = nil
+
+opt.storage = "gosii_io_apis"
+opt.host = "mysql-lan-pro"
+opt.all = false
+
+ARGV.options {|opts|
+  opts.banner << " [dataset .. dataset..]"
+  opts.on("-a", "--all", "use all datasets in database") {|t| opt.all = t}
+  opts.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})")
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1 && !opt.all)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
+
+def processHeaders(header)
+  hash = Hash.new
+  fields = header.chomp.gsub("\""," ").split(" ")
+  hash["id"] = fields.shift.gsub(">","")
+  fields.each {|field|
+    name, value = field.split("=")
+    hash[name.gsub("/","")] = value
+  }
+  return hash
+end
+
+cds = File.new("cds.txt", "w")
+pep2cds = File.new("pep_cds.txt", "w")
+log = File.new("log.txt", "w")
+
+if (opt.all)
+  storage.query("select dataset from dataset").each {|dataset|
+    ARGV.push(dataset[0])
+  }
+end
+
+
+ARGV.each {|dataset|
+  file = "/usr/local/projects/GOSII/ANNOTATION/#{dataset}"
+  file += "/clr_range_filter_orf/*/clr_range_filter_orf.clr.combined.fna.gz"
+  file = Dir.glob(file).first
+  if (!file.nil? && File.exist?(file))
+    STDERR.printf("Processing %s....\n", dataset)
+    Bio::FlatFile.new(Bio::FastaFormat, IO.popen("zcat #{file}", "r")).each {|seq|
+      headers = processHeaders(seq.definition)
+      pep2cds.printf("%s\t%s\n", headers["pep_id"], headers["id"])
+      cds.printf("%s\t%s\n", headers["id"], seq.seq)
+    }
+  else
+    log.printf("No cds file for dataset %s\n", dataset)
+  end
+}
+
+cds.close
+pep2cds.close
+log.close

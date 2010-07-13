@@ -1,0 +1,136 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'DBwrapper'
+
+opt = OpenStruct.new
+opt.storage = "misc_apis"
+opt.host = "mysql-lan-pro"
+opt.all = false
+
+o = OptionParser.new
+o.banner << " dataset [...dataset...]"
+o.on("-a", "--all", "dump all datasets") {opt.all = true}
+o.on("-s ", "--storage ", String, 
+     "storage database (default #{opt.storage})") {|s| opt.storage = s}
+o.on("-h ", "--host ", String, 
+     "database host (default #{opt.host})") {|h| opt.host = h}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1 && !opt.all)
+  STDERR << o
+  exit(1)
+end
+
+db = MySQL.new(opt.host, opt.storage, "access", "access")
+
+if (opt.all)
+  db.query("select dataset from dataset").each {|dataset|
+    ARGV.push(dataset[0])
+  }
+end
+
+
+counts = Hash.new
+percents = Hash.new
+total = Hash.new
+alltot = Hash.new
+
+alltot["Misc. Taxa"] = 0
+ARGV.each {|dataset|
+  counts[dataset] = Hash.new
+  percents[dataset] = Hash.new
+  counts[dataset]["Misc. Taxa"] = 0
+  total[dataset] = 0
+  query = "SELECT phylum AS thing, count(seq_name) AS pepcount FROM
+  classification c WHERE kingdom = 'Bacteria' AND (NOT phylum =
+  'Proteobacteria' OR class = 'Mixed' OR NOT phylum = 'Bacteriodetes') AND dataset = '#{dataset}'
+  GROUP BY thing UNION ALL SELECT  phylum AS thing, count(seq_name) AS pepcount FROM classification c WHERE phylum = 'Bacteriodetes' AND NOT genus = 'Polaribacter' AND dataset = '#{dataset}' GROUP BY thing UNION ALL
+SELECT genus AS thing, count(seq_name) AS pepcount FROM classification WHERE genus='Polaribacter' AND dataset = '#{dataset}'
+  GROUP BY thing UNION ALL
+SELECT class AS thing, count(seq_name) AS
+  pepcount FROM classification c WHERE kingdom = 'Bacteria' AND phylum
+  = 'Proteobacteria' AND NOT class = 'Mixed' AND dataset =
+  '#{dataset}' GROUP BY thing UNION ALL SELECT family AS thing,
+  count(seq_name) AS pepcount FROM classification c WHERE kingdom =
+  'Bacteria' AND phylum = 'Proteobacteria' AND class =
+  'Alphaproteobacteria' AND ord = 'Rickettsiales' AND family = 'SAR11
+  cluster' AND dataset = '#{dataset}' GROUP BY thing UNION ALL SELECT
+  ord AS thing, count(seq_name) AS pepcount FROM classification c
+  WHERE kingdom = 'Bacteria' AND phylum = 'Proteobacteria' AND class =
+  'Alphaproteobacteria' AND ord = 'Rhodobacterales' AND dataset =
+  '#{dataset}' GROUP BY thing UNION ALL SELECT ord AS thing,
+  count(seq_name) AS pepcount FROM classification c WHERE kingdom =
+  'Bacteria' AND phylum = 'Cyanobacteria' AND class = 'Chroococcales'
+  AND ord = 'Synechococcus' AND dataset = '#{dataset}' GROUP BY thing
+  UNION ALL SELECT family AS thing, count(seq_name) AS pepcount FROM
+  classification c WHERE kingdom = 'Bacteria' AND phylum =
+  'Cyanobacteria' AND class = 'Prochlorales' AND ord =
+  'Prochlorococcaceae' AND family = 'Prochlorococcus' AND dataset =
+  '#{dataset}' GROUP BY thing UNION ALL SELECT genus AS thing,  count(seq_name) AS pepcount FROM classification c WHERE kingdom =  'Bacteria' AND phylum = 'Proteobacteria' AND class =  'Alphaproteobacteria' AND ord = 'Rickettsiales' AND genus = 'Candidatus Pelagibacter' AND dataset = '#{dataset}' UNION ALL
+  SELECT kingdom AS thing, count(seq_name) AS pepcount FROM
+  classification c WHERE kingdom = 'Viruses' AND dataset =
+  '#{dataset}' GROUP BY thing UNION ALL
+  SELECT kingdom AS thing, count(seq_name) AS pepcount FROM
+  classification c WHERE kingdom = 'Eukaryota' AND dataset =
+  '#{dataset}' GROUP BY thing"
+  db.query(query).each {|row|
+    taxon, num = row
+    next if taxon == "Proteobacteria (class)"
+    taxon = "Other Bacteroidetes" if taxon == "Bacteroidetes"
+    taxon = "Other Proteobacteria" if taxon == "Proteobacteria"
+    taxon = "Misc. Taxa" if taxon == "Mixed"
+    num = num.to_i
+    counts[dataset][taxon] = num
+    alltot[taxon] = 0 if alltot[taxon].nil?
+    alltot[taxon] += num
+    total[dataset] += num
+  }
+  other = 0
+  counts[dataset].keys.each {|taxon|
+    percents[dataset][taxon] = counts[dataset][taxon] / (total[dataset] / 100.0)
+  }
+}
+
+alltot.keys.each {|taxon|
+  next if (taxon == "Misc. Taxa")
+  keep = false
+  percents.keys.each {|dataset|
+    percents[dataset][taxon] = 0 if (percents[dataset][taxon].nil?)
+    counts[dataset][taxon] = 0 if (counts[dataset][taxon].nil?)
+    keep = true if (percents[dataset][taxon] > 1.0)
+  }
+  if (!keep)
+    percents.keys.each {|dataset| 
+      percents[dataset]["Misc. Taxa"] += percents[dataset][taxon]
+      alltot["Misc. Taxa"] += counts[dataset][taxon]
+      alltot.delete(taxon)
+    }
+  end
+}
+
+maxper = Hash.new
+percents.keys.sort.each {|dataset|
+  printf(",%s",dataset)
+  alltot.keys.each {|taxon|
+    if (maxper[taxon].nil? || maxper[taxon] < percents[dataset][taxon])
+      maxper[taxon] = percents[dataset][taxon]
+    end
+  }
+}
+printf("\n")
+maxper.keys.sort {|x,y| maxper[y] <=> maxper[x]}.each {|taxon|
+  printf("%s",taxon)
+  percents.keys.sort.each {|dataset|
+    percents[dataset][taxon] = 0 if percents[dataset][taxon].nil?
+    printf(",%5.2f", percents[dataset][taxon])
+  }
+  printf("\n")
+}

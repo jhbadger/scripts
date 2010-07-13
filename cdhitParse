@@ -1,0 +1,119 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " cdhit.clstr hmm-dir apis-dir\n"
+  opts.banner << "must have ann.pep file in apis-dir for apis annotation"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+cdhit, dir, apisdir = ARGV 
+
+annotation = Hash.new
+cluster = Hash.new
+samples = Array.new
+
+annPep = apisdir + "/ann.pep"
+if (File.exists?(annPep))
+  File.new(apisdir + "/ann.pep").each {|line|
+    if (line =~ /^>/)
+      id,ann = line.chomp.split(" ",2)
+      annotation[id.gsub(">","")]=ann
+    end
+  }
+end
+
+def getPfam(id, dir, apisdir, annotation)
+  hit = dir + "/" + id + ".hmmpfam"
+  if File.exists?(hit)
+    #STDERR.printf("Yeah! we found %s\n", hit)
+    pfam = ""
+    apis = ""
+    rest = ""
+    ann = ""
+    query = nil
+    listStart = false
+    apisHit = apisdir + "/neighbors/" + id + ".nei"
+    if File.exists?(apisHit)
+      File.new(apisHit).each {|line|
+        apis = line.chomp
+        ann = annotation[id]
+        break
+      }
+      
+    end
+    File.new(hit).each{|line|
+      line = line.chomp.gsub(",","")
+      next if (line =~ /^---/ || line =~/^\n/)
+      if (line =~ /Query sequence: (.*)/)
+        query = $1
+      end
+      listStart = false if (line =~/Parsed for domains/)
+      if (listStart)
+        pfam, rest = line.split(" ",2)
+	break
+      end
+      listStart = true if (line =~ /Model/ && line =~/Description/)
+    }
+    return pfam, rest, apis, ann
+  else
+    #STDERR.printf("What? Are You nuts? There's no %s!\n", hit)
+  end
+  return nil, nil
+end
+
+num = nil
+ann = nil
+File.new(cdhit).each{|line|
+  if (line=~/^>Cluster (.*)/)
+    num = $1.to_i
+    cluster[num] = Hash.new
+  elsif (line=~/>(.*)\.\.\./)
+    pep = $1
+    sample = pep[0..2]
+    samples.push(sample) if (!samples.include?(sample))
+    cluster[num][sample] = Array.new if (cluster[num][sample].nil?)
+    cluster[num][sample].push(pep)
+  end
+}
+printf("cluster, hits,")
+samples.sort.each {|sample|
+  printf("%s,",sample)
+}
+printf("pfam, desc, apis, annotation\n")
+
+cluster.keys.sort.each {|num|
+  pfam = nil
+  apis = nil
+  rest = nil
+  ann = nil
+  printf("%d,",num)
+  s = ""
+  hits = 0
+  samples.sort.each {|sample|
+    if (cluster[num][sample])
+      cluster[num][sample].sort.each {|pep|
+        s += sprintf("%s ",pep)
+        hits += 1
+        pfam, rest, apis, ann = getPfam(pep, dir, apisdir, annotation) if (pfam.nil?)
+      }
+    end
+    printf("%d,%s,",hits, s)
+    printf(",")
+  }
+  printf("%s,%s,%s,%s\n", pfam, rest, apis, ann)
+}

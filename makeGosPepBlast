@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+$VERBOSE=nil
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " csv"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rest = ARGV
+
+out = File.new("gos2.pep", "w")
+fieldNames = []
+File.new(csv).each {|line|
+  row = Hash.new
+  if (fieldNames.empty?)
+    fieldNames = line.chomp.split(", ")
+  else
+    fields = line.chomp.split(",")
+    fields.size.times {|i|
+      row[fieldNames[i]] = fields[i]
+    }
+    pep = `zcat /home/jbadger/gosii/APIS/#{row["Directory"]}/seq/#{row["Peptide"]}.fasta.gz`.split("\n").each {|line|
+      if (line =~/^>/)
+	line += " " + row["Directory"] + " " + row["APIS Annotation"] + " %" + row["Taxonomy"] + "%"
+      end 
+      out.print line +  "\n"
+    }
+  end
+}
+out.close
+system("setdb gos2.pep")

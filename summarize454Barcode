@@ -1,0 +1,61 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " threshold"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+threshold, rest = ARGV
+
+
+printf("Sample,Sequences,Clusters at #{threshold}%%,Most Common Phyla by Cluster,Most Common Classes by Cluster\n")
+files = Dir.glob("*")
+files.grep(/[0-9]_/).each {|dir|
+  phydist = []
+  fasta = Dir.glob(dir + "/#{threshold}/*_0#{threshold}").first
+  full  = Dir.glob(dir + "/*.fna").first
+  count = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(full)).each {|seq|
+    count += 1
+  }
+  clusters = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+    clusters += 1
+  }
+  Dir.glob(dir + "/#{threshold}/*.results").each {|res|
+    res = File.new(res).read.split("\t")
+    phylo = res[3].split("|")
+    phylo.shift
+    phylo.size.times {|l|
+      phydist[l] = Hash.new if phydist[l].nil?
+      phydist[l][phylo[l]] = 0 if phydist[l][phylo[l]].nil?
+      phydist[l][phylo[l]] += 1
+    }
+  }
+  bestPhylum = phydist[1].keys.sort {|x,y| phydist[1][y] <=> phydist[1][x]}
+  bestClass = phydist[2].keys.sort {|x,y| phydist[2][y] <=> phydist[2][x]}
+  printf("%s,%d,%d,%s %d%% %s %d%%,%s %d%% %s %d%%\n", 
+         dir, count, clusters, 
+         bestPhylum[0], phydist[1][bestPhylum[0]]*100/clusters, 
+         bestPhylum[1], phydist[1][bestPhylum[1]]*100/clusters,
+         bestClass[0], phydist[2][bestClass[0]]*100/clusters, 
+         bestClass[1], phydist[2][bestClass[1]]*100/clusters)
+  
+}

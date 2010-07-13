@@ -1,0 +1,103 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.min = 5
+
+ARGV.options {|opts|
+  opts.banner << " cluster-dir dna"
+  opts.on("-m", "--min ", Integer, 
+	  "minimum cluster size (#{opt.min})") {|t| opt.min = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dir, dna = ARGV
+
+STDERR.printf("Loading dna...\n")
+dnaSeq = Hash.new
+FlatFile.new(FastaFormat, File.new(dna)).each {|seq|
+  header = seq.definition
+  s = seq.seq
+  firstCodon = s[0, 3].upcase
+  if (firstCodon =~/[A-Z]TG/)
+    s[0, 3] = "ATG"
+  end
+  lastCodon = s[-3,3].upcase
+  if (lastCodon == "TGA" || lastCodon == "TAA" || lastCodon == "TAG")
+    s = s[0..-4]
+  end
+  seq = Sequence::NA.new(s)
+  dnaSeq[header] = seq.to_fasta(header, 60)
+}
+
+STDERR.printf("Processing clusters...\n")
+list = File.new("list.txt", "w")
+Dir.glob(dir + "/*.fsa").each {|cluster|
+  seqs = []
+  FlatFile.new(FastaFormat, File.new(cluster)).each {|seq|
+    name = "TG_"
+    seq.definition.split("_").each {|field|
+      next if field !~/[A-Z|a-z]/ 
+      name += field
+      break if (field =~/^ORF/)
+      name += "_"
+    }
+    seq.definition = name
+    seqs.push(seq)
+  }
+  if (seqs.size >= opt.min)
+    begin
+      seqFile = File.basename(cluster, ".fsa") + ".seq"
+      dnaFile = File.basename(cluster, ".fsa") + ".dna"
+      protAln = File.basename(cluster, ".fsa") + "_prot.aln"
+      dnaAln = File.basename(cluster, ".fsa") + "_dna.aln"
+      seqOut = File.new(seqFile, "w")
+      dnaOut = File.new(dnaFile, "w")
+      seqs.each {|seq|
+	seqOut.print seq
+	dnaOut.print dnaSeq[seq.entry_id]
+      }
+      seqOut.close
+      dnaOut.close
+      if (!File.exists?(protAln))
+	system("muscle -stable -in #{seqFile} -out #{protAln}")
+      end
+      if (!File.exists?(dnaAln))
+	system("tranalign -asequence #{dnaFile} -bsequence #{protAln} -outseq #{dnaAln}")
+      end
+      File.unlink(seqFile)
+      File.unlink(dnaFile)
+      count = 0
+      length = 0
+      FlatFile.new(FastaFormat, File.new(dnaAln)).each {|seq|
+	count += 1
+	length = seq.length
+      }
+      out = File.new(File.basename(cluster, ".fsa") + ".PAMLseq", "w")
+      out.printf(" %d %d\n", count, length)
+      File.new(dnaAln).each {|line|
+	out.print line
+      }
+      out.close
+      list.printf("%s.PAMLseq\n", File.basename(cluster, ".fsa"))
+    rescue
+      STDERR.printf("Skipping #{cluster}...\n") 
+    end
+  end
+}
+list.close

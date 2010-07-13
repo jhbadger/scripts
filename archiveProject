@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+$VERBOSE = nil
+dir = "/home/jbadger/EVOL/projectArchive"
+
+ARGV.options {|opts|
+  opts.banner << " project [..project...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|project|
+  project = project.upcase
+  STDERR.printf("Processing %s...\n", project)
+  system("cd /usr/local/projects;zip -r -q #{dir}/#{project}.zip #{project} 2>/dev/null")
+}

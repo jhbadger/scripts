@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+hitMax = 5
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s fasta-file blast-dir\n", $0)
+  exit(1)
+end
+
+file, dir = ARGV
+
+FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+  desc  = seq.definition.split(" ")[0]
+  blast = Dir.glob(dir + "/" + desc + ".blast*")[0]
+  Bio::Blast::WU::Report.open(blast, "r").each {|query|
+    printf("%s", desc)
+    hits = query.hits[0..hitMax - 1]
+    if (!hits.empty?)
+      hits.each {|hit|
+	product, species = hit.definition.split("{")
+	species = "???" if (species.nil?)
+	species, rest = species.split("}")
+	product, rest = product.split(/\(|\[/)
+	printf("\t%s\t%s\t%s", hit.pvalue, species, product)
+      }
+    else
+      printf("\t-1\t%s", "***NONE***")
+    end
+    printf("\n")
+  }
+}

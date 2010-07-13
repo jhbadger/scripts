@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'csv'
+require 'gchart'
+
+level = 2
+field = 2
+stap = false
+
+ARGV.options {|opts|
+  opts.banner << " [csv ... csv...]"
+  opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{level})") {|level|}
+  opts.on("-f ", "--field ", Integer, 
+          "field number for taxonomy (default #{field})")  {|field|}
+  opts.on("-s", "--stap", "parse STAP results file (default #{stap})")  {|stap|}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+out = File.new("chart.html", "w")
+fieldNames =  ["kingdom","phylum","class","ord","family","genus","species"]
+rank = fieldNames[level]
+
+percents = Hash.new
+if (stap)
+  col_sep = "\t"
+  tax_sep = "|"
+else
+  col_sep = ","
+  tax_sep = "; "
+end
+
+ARGV.each {|dataset|
+  STDERR.printf("Processing %s...\n", dataset)
+  counts = Hash.new
+  total = 0
+  CSV.foreach(dataset, {:col_sep => col_sep}) {|row|
+    taxon = row[field].split(tax_sep)[level]
+    taxon = "Mixed" if taxon.nil?
+    next if taxon == "Undefined" 
+    counts[taxon] = 0 if counts[taxon].nil?
+    counts[taxon] += 1
+  }
+  counts.keys.each {|taxon|
+    total += counts[taxon].to_f / 100
+  }
+  percents[dataset] = Hash.new
+  counts["Misc"] = 0
+  percents[dataset]["Misc"] = 0
+  
+  counts.keys.each {|key|
+    percents[dataset][key] = counts[key]/total if total > 0
+  }
+
+  printf("\nCategory in #{dataset}, Counts, Percent\n")
+  percents[dataset].keys.sort {|x,y| percents[dataset][y] <=> percents[dataset][x]}.each {|key|
+    printf("%s,%d,%5.2f\n", key, counts[key], percents[dataset][key]) if (percents[dataset][key]> 0.0)
+  }
+  
+  counts.keys.each {|key|
+    if (percents[dataset][key] < 2 && key != "Misc")
+      percents[dataset]["Misc"] += percents[dataset][key]
+      counts.delete(key)
+      percents[dataset].delete(key)
+    end
+  }
+  percents[dataset].delete("Misc") if (percents[dataset]["Misc"] < 2)  
+}
+
+colors = ["#90B8C0","#988CA0","#FF9999","#99FF99","#CE0000",
+          "#000063","#5A79A5","#9CAAC6","#DEE7EF","#84596B",
+          "#B58AA5","#CECFCE","#005B9A","#0191C8","#74C2E1",
+          "#8C8984","#E8D0A9","#B7AFA3","#727B84","#DF9496",
+          "#00008B", "#0000CD", "#0000FF", "#006400", "#008000",
+          "#008000", "#008080", "#008B8B", "#00BFFF", "#00CED1",
+          "#F5FFFA", "#F8F8FF", "#FA8072" "#FAEBD7", "#FAF0E6",
+          "#FAFAD2", "#000063","#5A79A5","#9CAAC6","#DEE7EF","#84596B"]
+
+colors *= 5 # provide duplicates of colors to stop running out
+
+taxa = Hash.new
+percents.keys.sort.each {|dataset|
+  percents[dataset].keys.each {|taxon|
+    taxa[taxon] = 0 if taxa[taxon].nil?
+    taxa[taxon] += percents[dataset][taxon]
+  }
+}
+
+colorTaxa = Hash.new
+taxa.keys.sort {|x,y| taxa[y] <=> taxa[x]}.each {|taxon|
+  colorTaxa[taxon] = colors.shift if (colors.size > 0)
+}
+
+radius = 50
+x = radius*2
+y = radius*2
+num = 0
+
+percents.keys.sort.each {|dataset|
+  STDERR.printf("Drawing chart for %s...\n", dataset)
+  data = percents[dataset].values
+  legend = percents[dataset].keys
+  url = Gchart.pie(:data => data, :legend => legend, :width=>500, :title => dataset.split(".").first)
+  col = ""
+  legend.each {|key|
+    col += colorTaxa[key].downcase.gsub("#","") + ","
+  }
+  col.chop!
+  out.printf("<img src=\"%s&chco=%s\"/>\n\n", url, col)
+}
+out.close

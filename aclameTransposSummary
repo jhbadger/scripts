@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: blast-directory\n", $0)
+  exit(1)
+end
+
+count = 0
+virT = 0
+plasT = 0
+Dir.glob(ARGV[0]+"/*.blast*") {|file|
+  report = Bio::Blast::WU::Report.open(file, "r").each {|query|
+    count += 1
+    query.each {|hit|
+      if (hit.definition =~/transpos/)
+	virT += 1 if hit.definition =~/vir:/
+	plasT += 1 if hit.definition =~/plasmid:/
+      end
+      break
+    }
+  }
+}
+printf("%d files, %d hit transposases (%d viral, %d plasmid)\n", 
+       count, virT+plasT, virT, plasT)

@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " metagene.pep jcvi.pep"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+metagene, jcvipep = ARGV
+
+meta = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(metagene)).each {|seq|
+  read, start, stop, frame = seq.entry_id.split("_")
+  meta[read + "_" + stop] = seq.entry_id 
+}
+
+jcvi = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(jcvipep)).each {|seq|
+  data = Hash.new
+  seq.definition.split(" /").grep(/=/).each {|entry|
+    name, value = entry.split("=")
+    data[name] = value
+  }
+  data = OpenStruct.new(data)
+  data.begin = data.begin.to_i
+  data.end = data.end.to_i
+  data.clr_range_begin = data.clr_range_begin.to_i
+  if (data.orientation == "1")
+    key = data.read_id.gsub("JCVI_READ_","") + "_" +  (data.end - data.clr_range_begin).to_s 
+  else
+    key = data.read_id.gsub("JCVI_READ_","") + "_" +  (1 + data.begin - data.clr_range_begin).to_s 
+  end
+  jcvi[key] = seq.entry_id
+  if meta[key]
+    printf("%s\t%s\n", meta[key], jcvi[key])
+    meta.delete(key)
+  else
+    STDERR.printf("%s\n", jcvi[key])
+  end
+}
+meta.keys.sort.each {|key|
+   STDERR.printf("%s\n", meta[key])
+}

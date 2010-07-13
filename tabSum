@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " two-tab.txt"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+counts = Hash.new
+File.new(ARGV.first).each do |line|
+  id, val = line.chomp.split("\t")
+  counts[val] = 0 if counts[val].nil?
+  counts[val] += 1
+end
+
+counts.keys.sort {|x, y| counts[y] <=> counts[x]}.each do |key|
+  printf("%d\t%s\n", counts[key], key)
+end

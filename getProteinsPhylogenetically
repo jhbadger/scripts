@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.num = 2
+opt.rank = 4 
+ARGV.options {|opts|
+  opts.banner << " group att-file fasta"
+   opts.on("-n ", "--num ", Integer, 
+        "number reps for each clade  (default #{opt.num})") {|t| opt.num = t}
+  opts.on("-r ", "--rank ", Integer, 
+          "rank lebel to base clade on (default #{opt.rank})") {|t| opt.rank = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+group, att, fasta = ARGV
+
+hits = Hash.new
+genes = Hash.new
+File.new(att).each {|line|
+  fields = line.chomp.split("\t")
+  contig = fields[0]
+  tax = fields[5]
+  gene = fields[7].to_i
+  ranks = tax.split("; ")
+  clade = ranks[opt.rank]
+  if (tax =~/#{group}/)
+    hits[clade] = [] if hits[clade].nil?
+    hits[clade].push(contig)
+    genes[contig] = gene
+  end
+}
+
+contigs = []
+hits.keys.each {|clade|
+  #printf("==%s==\n", clade)
+  count = 0
+  hits[clade].sort {|a, b| genes[b] <=> genes[a]}.each {|contig|
+    if (genes[contig] > 500 && count < opt.num)
+      #printf("%s %d\n", contig, genes[contig])
+      count += 1
+      contigs.push(contig)
+    end
+  }
+}
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  contigs.each {|contig|
+    print seq if (seq.definition =~/#{contig}/)
+  }
+}

@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+# provides some information about sequence(s) in a FASTA file
+
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'optparse'
+require 'ZFile'
+opt = OpenStruct.new
+
+opt.total = false
+
+ARGV.options {|opts|
+  opts.banner << " fasta [...fasta...]"
+  opts.on("-t", "--total", "run all sequences in each file as one") {|t| opt.total = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|file|
+  tLen = 0
+  tgc = 0
+  tat = 0
+  tam = 0
+  count  = 0
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
+    gc =  seq.seq.count("GCgc")
+    at =  seq.seq.count("ATUatu")
+    ambig = seq.seq.count("NRYWSnryws")
+    if (!opt.total)
+      printf("---%s---\n", seq.definition)
+      printf("Length: %d (%.1f megabases)\n", seq.length, seq.length / 1.0e6)
+      printf("Ambiguous bases: %d (%.1f megabases)\n", ambig, ambig / 1.0e6)
+      printf("GC:     %d%%\n", (gc*100.0) / (gc + at))
+    else
+      tLen += seq.length
+      tgc +=  gc
+      tat += at
+      tam += ambig
+      count += 1
+    end
+  }
+  if (opt.total)
+    printf("---%s---\n", file)
+    printf("Sequences: %d\n", count)
+    printf("Length: %d (%.1f megabases)\n", tLen, tLen / 1.0e6)
+    printf("Average length: %d (%.1f megabases)\n", tLen/(1.0*count), tLen / (count*1.0e6))
+    printf("Ambiguous bases: %d (%.1f megabases)\n", tam, tam / 1.0e6)
+    printf("GC:     %d%%\n", (tgc*100.0) / (tgc + tat))
+  end
+}

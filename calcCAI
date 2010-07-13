@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'FastaDB'
+require 'Codon'
+
+ARGV.options {|opts|
+  opts.banner << " ref-fasta seq-fasta"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ref, seq = ARGV
+
+refC = Codon.new
+FastaDB.new(ref).each {|seq|
+  refC.add(seq)
+}
+refCodon = refC.calcAll
+p refCodon

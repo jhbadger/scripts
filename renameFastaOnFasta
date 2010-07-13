@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio    
+
+ARGV.options {|opts|
+  opts.banner << " good-name.fasta bad-name.fasta"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+ 
+good, bad = ARGV
+  
+names = []
+FlatFile.new(FastaFormat, File.new(good)).each {|seq|
+  names.push(seq.entry_id)
+}
+
+count = 0
+FlatFile.new(FastaFormat, File.new(bad)).each {|seq|
+  seq.definition = names[count]
+  print seq
+  count += 1
+}

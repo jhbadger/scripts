@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+$VERBOSE = nil
+opt.height = 4.5
+opt.width = 5
+
+ARGV.options {|opts|
+  opts.banner << " genus species [png|gif] [png|gif...]"
+  opts.on("-h ", "--height", Float, "set height (#{opt.height})") {|t| opt.height = t}    
+  opts.on("-w ", "--width", Float, "set width (#{opt.width})") {|t| opt.width = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+genus = ARGV.shift
+species = ARGV.shift
+
+name = genus + "_" + species
+outFile = File.new(name + ".tex", "w")
+
+outFile << "
+\\documentclass[landscape]{/home/jbadger/manuscripts/sciposter}
+\\usepackage{multicol}
+\\usepackage[pdftex]{graphicx}
+\\title{\\em{#{genus} #{species}}}
+\\textheight 33in
+\\oddsidemargin -1.5in
+\\begin{document}
+\\maketitle\n"
+
+ARGV.each {|pic|
+  if (pic.index(".gif"))
+    system("gif2png #{pic}")
+    pic = pic.gsub(".gif", ".png")
+  end
+  outFile << "\\includegraphics[height=#{opt.height}in,width=#{opt.width}in]{#{pic}}\n"
+}
+
+
+outFile << "\\end{document}\n"
+
+outFile.close
+
+system("pdflatex #{name}.tex")
+

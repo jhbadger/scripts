@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " blast.dir [blast.dir..]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|blastDir|
+  if (File.directory?(blastDir))
+    Dir.glob(blastDir + "/*.b*").each {|file|
+      out = File.new(blastDir[0, blastDir.rindex(".")] + ".btab", "w")
+      File.new(file).each {|line|
+        out.print line
+      }
+      out.close
+    }
+  end
+}

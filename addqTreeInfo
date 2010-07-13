@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " info fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+info, fasta = ARGV
+
+seen = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  seen[seq.entry_id[0..20]] = true
+}
+
+File.new(info).each {|line|
+  n1, n2, type, name, tax = line.chomp.split("\t")
+  if (!name.nil? && seen[name[0..20]])
+    type = "q"
+    printf("%s\t%s\t%s\t%s\t%s\n", n1, n2, type, name, tax)
+  elsif tax.nil?
+    STDERR.print line
+    print line
+  else
+    print line
+  end
+}

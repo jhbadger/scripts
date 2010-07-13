@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.winSize = 50
+opt.winInc = 240
+
+ARGV.options {|opts|
+  opts.banner << " word fasta"
+  opts.on("-w", "--winSize ", Integer, 	
+          "Relative size of window (default #{opt.winSize})") {|t| opt.winSize = t}
+  opts.on("-i", "--winInc ", Integer, 	
+          "Relative size of increment (default #{opt.winInc})") {|t| opt.winInc = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+word, fasta = ARGV
+
+word = word.downcase
+antiWord = Sequence::NA.new(word).complement.seq
+
+p word
+p antiWord
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  winSize = seq.length / opt.winSize
+  winInc = seq.length / opt.winInc
+  pos = 0
+  seq.naseq.window_search(winSize, winInc) {|window|
+    nW = 0
+    nWt = 0
+    window.window_search(word.size, 1) {|subWin|
+      nW += 1.0 if subWin.seq == word
+      nWt += 1.0 if subWin.seq == antiWord
+    } 
+    p nW
+    p nWt
+    printf("%7d %8.1f\n", pos, (nW - nWt)/(nW + nWt))
+    pos += winInc
+  }
+}

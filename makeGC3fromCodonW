@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " out-file fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+out, seqs = ARGV
+
+n = Hash.new
+
+File.new(out).each {|line|
+  next if line =~/^title/
+  name, nc = line.split(" ")
+  name, rest = name.split("-")
+  n[name] = nc.to_f
+}
+
+FlatFile.new(FastaFormat, File.new(seqs)).each {|seq|
+  gc = 0
+  name = seq.definition.split(/ |-/).first
+  seq.length.times {|i|
+    gc += 1 if (i%3 == 2 && seq.seq[i].chr =~/G|C/)
+  }
+  printf("%8.3f %8.3f #%s\n", gc / (seq.length/3.0), n[name], name)
+}

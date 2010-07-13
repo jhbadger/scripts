@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.species = false
+
+ARGV.options {|opts|
+  opts.banner << " file tax.txt SSU.afa[.bz2]"
+  opts.on("-s", "--species", "only pick one per species") {|t| opt.species = t} 
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+file, tax, fasta = ARGV
+
+sps = Hash.new
+File.new(tax).each {|line|
+  id, t = line.chomp.split(" ", 2)
+  s = t.split(";").last
+  sps[s] = id
+}
+
+picked = Hash.new
+species = Hash.new
+
+File.new(file).each {|line|
+  sp = line.chomp
+  spec, genus = sp.split(" ")
+  if (sps[sp])
+    if (!opt.species || species[spec].nil?)
+      picked[sps[sp]] = sp
+      species[spec] = true
+    end
+  else
+    STDERR.printf("Can't find %s\n", sp) if (!sps[sp])
+  end
+}
+
+if fasta.index(".bz2")
+  file = Bio::FlatFile.new(Bio::FastaFormat, IO.popen("bzcat #{fasta}","r"))
+else
+  file = Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta))
+end
+
+file.each {|seq|
+  if picked[seq.entry_id]
+    seq.definition = seq.entry_id + " " + picked[seq.entry_id]  
+    print seq 
+  end
+}
+
+file.close

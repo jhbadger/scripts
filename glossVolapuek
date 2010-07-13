@@ -1,0 +1,153 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+# encoding: utf-8
+
+class String
+  # convert umlauts to -y
+  def unUmlaut
+    text = self.dup
+    text.gsub!("\u00e4","ay")
+    text.gsub!("\u00f6","oy")
+    text.gsub!("\u00fc","uy")
+    text.gsub!("\u00c4","AY")
+    text.gsub!("\u00d6","OY")
+    text.gsub!("\u00dc","UY")
+    return text
+  end
+  # convert [aou]y's to umlauts
+  def umlaut
+    text = self.dup
+    text.gsub!("ay","\u00e4")
+    text.gsub!("oy","\u00f6")
+    text.gsub!("uy","\u00fc")
+    text.gsub!("AY","\u00c4")
+    text.gsub!("OY","\u00d6")
+    text.gsub!("UY","\u00dc")
+    return text
+  end
+end
+
+def loadDict(voedasbuk)
+  dict = Hash.new
+  File.new(voedasbuk).each {|line|
+    vol, lan = line.chomp.split(" = ")
+    next if vol.nil?
+    first, rest = vol.split(" ")
+    next if first.nil?
+    dict[first.downcase] = lan
+  }
+  return dict
+end
+
+opt.voedasbuk = "#{ENV["HOME"]}/lib/Volapuk-English.txt"
+
+ARGV.options {|opts|
+  opts.banner << " \"text\""
+  opts.on("-d ", "--dict ", String, "change dictionary file") {|t| opt.voedabuk = t}
+  opts.on("-l", "--lookup", "lookup English word") {|t| opt.lookup = t}
+  opts.on("-f", "--file", "read from file (default command-line)") {|t| opt.fromFile = t}
+  opts.on("-m", "--missing", "list missing words") {|t| opt.missing = t}
+  opts.on("-b", "--both", "show both languages side-by-side") {|t| opt.both = t}
+  opts.parse!
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dict = loadDict(opt.voedasbuk)
+
+if (opt.fromFile)
+  text = File.new(ARGV.first).read
+else
+  text = ARGV.first
+end
+
+if (opt.lookup)
+  text.split(/ |,|\(|\)|-|;|"|\.|\?|\!|:/).each {|word|
+    dict.keys.each {|key|
+      if (dict[key] =~ /#{word.downcase}/)
+	printf("%s = %s\n", key.umlaut, dict[key])
+      end
+    }
+  }
+  exit(0)
+end
+
+def parseWord(word, dict, flags = "")
+  match = dict[word.downcase]
+  if (word[-1,1] == "s")
+    flags += "pl. "
+    return parseWord(word[0..-2], dict, flags)
+  elsif (word[-1, 1] == "i")
+    flags += "acc. "
+    return parseWord(word[0..-2], dict, flags)
+  elsif (word[-1, 1] == "a")
+    flags += "gen. "
+    return parseWord(word[0..-2], dict, flags)
+  elsif (word[-1, 1] == "e")
+    flags += "dat. "
+    return parseWord(word[0..-2], dict, flags)
+  elsif (word[-2, 2] == "ob")
+    flags += "I "
+    return parseWord(word[0..-3] + "oyn", dict, flags)
+  elsif (word[-2, 2] == "om")
+    flags += "he "
+    return parseWord(word[0..-3] + "oyn", dict, flags)
+  elsif (word[-2, 2] == "of")
+    flags += "she "
+    return parseWord(word[0..-3] + "oyn", dict, flags)
+  elsif (word[-2, 2] == "on")
+    flags += "it "
+    return parseWord(word[0..-3] + "oyn", dict, flags)
+  elsif (word[0, 2] == "ay")
+    flags += "hist. past "
+    return parseWord(word[2..word.length], dict, flags)
+  elsif (word[0, 1] == "p")
+    flags += "pass. "
+    return parseWord(word[1..word.length], dict, flags)
+  elsif (word[0, 1] == "a")
+    flags += "pres. "
+    return parseWord(word[1..word.length], dict, flags)
+  elsif (word[0, 1] == "e")
+    flags += "past "
+    return parseWord(word[1..word.length], dict, flags)
+  end
+  if (match && flags != "")
+    match += " (#{flags.chop})"
+  end
+  return match 
+end
+
+text.unUmlaut.split(/\. |\n|\r|\? \! /).each {|sentence|
+  next if sentence.length < 2
+  sentString = ""
+  glossString = ""
+  sentence.split(/ |,|\(|\)|-|;|"|\.|\?|\!|\:/).each {|word|
+    next if (word == "" || word == "\n")
+    match = nil
+    match = dict[word.downcase]
+    match = parseWord(word.downcase, dict) if (!match)
+    if (opt.both)
+      printf("%s = %s\n", word.umlaut, match) if (!match.nil?)
+    elsif (opt.missing && match.nil?)
+      printf("%s\n", word.umlaut)
+    end
+    if (match.nil?)
+	match = sprintf("**%s** ", word.umlaut)
+    else 
+      match = sprintf("/%s/ ", match) 
+    end
+    sentString += sprintf("%-#{match.length}s", word.umlaut)
+    glossString += match
+  }
+  if (!opt.missing && !opt.both)
+    print sentString + "\n"
+    print glossString + "\n"
+    printf("\n\n") 
+  end
+}

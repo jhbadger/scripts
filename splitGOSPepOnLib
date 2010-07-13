@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " seq.fasta"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+files = Hash.new
+
+lib = nil
+$/ = ">"
+File.new(file).each {|seq|
+  seq.gsub!(">","")
+  header, body = seq.split("\n", 2)
+  next if header.nil?
+  if (header =~/library_id=JCVI_LIB_([A-Z|a-z|0-9|\_|-]*)/)
+    lib =  $1
+    if (files[lib].nil?)
+      files[lib] = File.new(lib + ".pep", "w")
+    end
+    header = header.split(" ").first
+    files[lib].print ">" + header+"\n"+body
+  else
+    STDERR.printf("Can't process %s\n", header)
+  end 
+}
+
+files.keys.each {|lib|
+  files[lib].close
+}

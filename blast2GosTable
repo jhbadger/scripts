@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+
+ARGV.options {|opts|
+  opts.banner << " table.csv blast [...blast...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+table = ARGV.shift
+
+
+seen = Hash.new
+orfs = Hash.new
+lines = Hash.new
+ARGV.each {|file|
+  name = File.basename(file,".blastp").split("_").last
+  STDERR.printf("Handling %s...\n", name)
+  orfs[name] = []
+  seen[name] = Hash.new
+  Bio::Blast::WU::Report.open(file, "r").each {|query|
+    query.each {|hit|
+      id = hit.definition.split(" ").first
+      if (hit.evalue.to_f < 1e-9)
+	seen[name][id] = true
+	orfs[name].push(id)
+      end 
+    }
+  }
+}
+
+STDERR.printf("Processing table...\n")
+File.new(table).each {|line|
+  pep = line.split(",").first
+  seen.keys.each {|name|
+    if (seen[name][pep])
+      lines[pep] = line
+    end
+  }
+}
+
+seen.keys.each {|name|
+  out = File.new(name + ".csv", "w")
+  orfs[name].each {|orf|
+    out.print lines[orf]
+  }
+  out.close
+}

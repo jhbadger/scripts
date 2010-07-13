@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'http-access2'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s apis-report-url\n", $0)
+  exit(1)
+end
+
+url = ARGV.shift
+simpUrl = url[0..url.rindex("/")]
+
+clnt = HTTPAccess2::Client.new
+
+
+clnt.get(url).body.content.split("\n").each {|line|
+  if (line =~/(seq\/[^\"]*)[\"]/)
+   print clnt.get(simpUrl + $1).body.content
+  end
+}

@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt.level = 2
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " find-trees.csv"
+   opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+csv, rest = ARGV
+
+tot = 0
+count = Hash.new
+File.new(csv).each {|line|
+  id, tax = line.chomp.split(",", 2)
+  levels = tax.gsub("\"","").split("; ")
+  lv = levels[opt.level]
+  lv = "Mixed" if lv.nil?
+  count[lv] = 0 if count[lv].nil?
+  count[lv] += 1
+  tot += 1
+}
+
+count.keys.sort {|x,y| count[y] <=> count[x]}.each {|key|
+  printf("%d\t(%.1f%%)\t%s\n", count[key], count[key]*100.0/tot, key)
+}

@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " \"file [file...]\""
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+Dir.glob(ARGV.first).each {|file|
+  tmp = file + ".tmp"
+  out = File.new(tmp, "w")
+  File.new(file).each {|line|
+    if (line =~/(TTA1|PTET)-([^\ ]*)\ /)
+      id = $1
+      pep = $2
+      line.gsub!(id+"-"+pep, pep + "-" + id)
+    end
+    out.print line
+  }
+  out.close
+  File.unlink(file)
+  if (file =~/(TTA1|PTET)-([^\.]*)\./)
+    id = $1
+    pep = $2
+    file = file.gsub(id+"-"+pep, pep + "-" + id)
+    next
+  end
+  
+  File.rename(tmp, file)
+}

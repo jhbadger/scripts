@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+
+ARGV.options {|opts|
+  opts.banner << " rst-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+rst, rest = ARGV
+
+start = false
+oldsite = "0"
+ancestors = []
+File.new(rst).each {|line|
+  if (line =~/site   Freq   Data/)
+    start = true
+    
+    next
+  elsif (line =~/^Summary of changes/)
+    start = false
+  elsif (line == "\n")
+    next
+  end
+  if (start)
+    first, rest = line.split(":")
+    site, freq, rest = first.split(" ", 3)
+    break if (site.to_i < oldsite.to_i)
+    count = 0
+    rest.split(" ").each {|codon|
+      if (codon !~/\(/)
+	ancestors[count] = "" if (ancestors[count].nil?)
+	ancestors[count] += codon
+	count += 1
+      end
+    }
+    oldsite = site
+  end
+}
+
+
+dna = File.new("dna.fa", "w")
+prot = File.new("prot.fa", "w")
+
+count = 1
+ancestors.each {|ancestor|
+  seq = Sequence::NA.new(ancestor)
+  dna.print seq.to_fasta("ancestor_#{count}", 60)
+  prot.print seq.translate.to_fasta("ancestor_#{count}", 60)
+  count += 1
+}
+
+dna.close
+prot.close

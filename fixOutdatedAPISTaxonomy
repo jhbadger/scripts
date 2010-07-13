@@ -1,0 +1,70 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'apisdb'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " storage-name db-name"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+badPhylum = ["Bacteroidetes", "Chlorobi", "Chlamydiae", "Verrucomicrobia"]
+badClass = ["Actinobacteria (class)", "Bacteroidetes (class)", "delta/epsilon subdivisions", 
+            "Fusobacterales", "Chloroflexi (class)", "Chlorobi", "Spirochaetes (class)",
+           "unclassified Verrucomicrobia", "Verrucomicrobiae"]
+
+
+storagename, dbname = ARGV
+
+storage = MySQL.new("mysql-lan-val.jcvi.org", storagename,
+                 "jbadger", "plankton")
+
+db = MySQL.new("mysql-lan-pro.jcvi.org", dbname,
+                 "jbadger", "plankton")
+
+db.tax
+
+
+badPhylum.each {|phylum|
+  storage.query("select sequence.seq_name, sequence.dataset from sequence, classification where sequence.seq_name = classification.seq_name and sequence.dataset = classification.dataset and phylum = '#{phylum}'").each {|row|
+    seq_name, dataset = row
+    STDERRR.printf("Processing %s (%s)...\n", seq_name, dataset)
+    storage.query("select tree from tree where seq_name = '#{seq_name}' and dataset = '#{dataset}'").each {|row|
+      treeOut = File.new(seq_name + ".tree", "w")
+      treeOut.printf("%s\n", row[0])
+      treeOut.close
+    }
+    storage.createClassification(seq_name + ".tree", db.tax, seq_name, dataset)
+    File.unlink(seq_name + ".tree")
+  }
+}
+
+
+badClass.each {|cl|
+storage.query("select sequence.seq_name, sequence.dataset from sequence, classification where sequence.seq_name = classification.seq_name and sequence.dataset = classification.dataset and class = '#{cl}'").each {|row|
+    seq_name, dataset = row
+    STDERR.printf("Processing %s (%s)...\n", seq_name, dataset)
+    storage.query("select tree from tree where seq_name = '#{seq_name}' and dataset = '#{dataset}'").each {|row|
+      treeOut = File.new(seq_name + ".tree", "w")
+      treeOut.printf("%s\n", row[0])
+      treeOut.close
+    }
+    storage.createClassification(seq_name + ".tree", db.tax, seq_name, dataset)
+    File.unlink(seq_name + ".tree")
+  }
+}
+
+

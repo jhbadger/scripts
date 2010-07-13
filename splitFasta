@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s seq.fasta bin\n", $0)
+  exit(1)
+end
+
+file, bin = ARGV
+
+bin = bin.to_i
+count = 0
+num = 1
+out = nil
+FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+  if (count % bin == 0)
+    out.close if (!out.nil?)
+    out = File.new(file + "." + num.to_s, "w")
+    num += 1
+  end
+  out.print seq
+  count += 1
+}
+out.close

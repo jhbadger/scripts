@@ -1,0 +1,103 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'gchart'
+
+level = 2
+
+ARGV.options {|opts|
+  opts.banner << " stap/rdp-results.txt [stap/rdp-results.txt...]"
+  opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{level})") {|level|}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+percents = Hash.new
+
+ARGV.each {|rdp|
+  counts = Hash.new
+  total = 0
+  taxon = nil
+  File.new(rdp).each {|line|
+    if (line =~/TREE/)
+      call = line.chomp.split("\t")[-2]
+      fields = call.chomp.split("|")
+      p fields
+      taxon = fields[level].capitalize
+    else
+      next if (line !~/Root/)
+      fields = line[line.index("Root")..line.length].split("; ")
+      fields.shift
+      fields = fields - fields.grep(/%/)
+      taxon = fields[level]
+    end
+    next if taxon.nil?
+    taxon.gsub!('"',"")
+    counts[taxon] = 0 if counts[taxon].nil?
+    counts[taxon] += 1
+    total += 0.01
+  }
+  percents[rdp] = Hash.new
+  counts["Misc"] = 0
+  percents[rdp]["Misc"] = 0
+  level += 1
+  counts.keys.each {|key|
+    percents[rdp][key] = counts[key]/total if total > 0
+  }
+
+  STDERR.printf("\nCategory in #{rdp}, Counts, Percent\n")
+  percents[rdp].keys.sort {|x,y| percents[rdp][y] <=> percents[rdp][x]}.each {|key|
+    printf("%s,%d,%5.2f\n", key, counts[key], percents[rdp][key]) if (percents[rdp][key]> 0.0)
+  }
+  
+  counts.keys.each {|key|
+    if (percents[rdp][key] < 3 && key != "Misc")
+      percents[rdp]["Misc"] += percents[rdp][key]
+      counts.delete(key)
+      percents[rdp].delete(key)
+    end
+  }
+  percents[rdp].delete("Misc") if (percents[rdp]["Misc"] < 3)  
+}
+
+colors = ["90B8C0","988CA0","FF9999","99FF99", "CE0000", "000063","5A79A5", "9CAAC6", 
+          "DEE7EF", "84596B", "B58AA5", "CECFCE", "005B9A", "0191C8", "74C2E1", 
+          "8C8984", "E8D0A9", "B7AFA3", "727B84", "DF9496", "AB9496", "77DE2", "DEAAC6"]
+
+taxa = Hash.new
+percents.keys.sort.each {|rdp|
+  percents[rdp].keys.each {|taxon|
+    taxa[taxon] = 0 if taxa[taxon].nil?
+    taxa[taxon] += percents[rdp][taxon]
+  }
+}
+
+colorTaxa = Hash.new
+taxa.keys.sort {|x,y| taxa[y] <=> taxa[x]}.each {|taxon|
+  colorTaxa[taxon] = colors.shift if (colors.size > 0)
+}
+
+out = File.new(File.basename(ARGV[0], ".txt") + "_chart.html", "w")
+
+ARGV.each {|rdp|
+  url = Gchart.pie(:data => percents[rdp].values, :legend => percents[rdp].keys, 
+                   :width=>500, :title => rdp)
+  choco = ""
+  percents[rdp].keys.each {|key|
+    choco += colorTaxa[key] + "," 
+  }
+  choco.chop!
+  out.printf("<img src=\"%s&chco=#{choco}\"/>\n\n", url) 
+}
+out.close

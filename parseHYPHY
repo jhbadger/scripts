@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt.minus = false
+opt.threshold = 0
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " hyphy [hyphy..]"
+  opts.on("-m", "--minus", "report -w (for combining data)") {|t| opt.minus = t}
+  opts.on("-t ", "--threshold", Float,
+	  "threshold to report (#{opt.threshold})") {|t| opt.threshold = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+model = nil
+bestModel = nil
+bestL = -1e6
+w = []
+dnds = []
+ARGV.each {|glob|
+  files = Dir.glob(glob)
+  files = [glob] if (files.empty?)
+  files.each {|file|
+    File.new(file).each {|line|
+      if (line =~/RUNNING MODEL ([0-9]*)/)
+	model = $1
+      elsif (line =~/^[Log Likelihood = ]*(-[1-9][0-9|\.]*)/)
+	l = $1.to_f
+	if (l > bestL)
+	  bestL = l
+	  bestModel = model
+	end      
+      elsif (line =~/^Rate\/Site/)
+	w = []
+	line.split(" ").each {|field|
+	  if (field =~/=/)
+	    w.push(field.split("=").last.to_f)
+	  end
+	}
+      elsif (line =~/^[0-9]+\t/ && model == bestModel)
+	fields = line.split("\t")
+	num = fields.shift.to_i
+	dnds[num] = 0
+	0.upto(w.length - 1){|i|
+	  dnds[num] += (fields[i].to_f * w[i])
+	}
+      end
+    }
+    1.upto(dnds.length - 1) {|i|
+      if (dnds[i]>=opt.threshold)
+	if (!opt.minus)
+	  printf("%d %8.3e\n", i, dnds[i])
+	else
+	  printf("%d %8.3e\n", i, -1*dnds[i])
+	end
+      end
+    }
+  }
+}

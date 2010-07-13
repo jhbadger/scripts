@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " pattern csv-file"
+o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+pattern, csv = ARGV
+
+fields = nil
+data = Hash.new
+CSV.foreach(csv) {|row|
+  if (fields.nil?)
+    fields = row
+    print row.to_csv
+  else
+    nmi = fields.index("ORGANISM NAME")
+    data[row[nmi]] = Hash.new
+    0.upto(fields.size) {|i|
+      data[row[nmi]][fields[i]] = row[i]
+    }
+    if (!row.grep(/#{pattern}/i).empty?)
+      print row.to_csv 
+    end
+  end
+}
+

@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'Phylogeny'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s fasta-file\n", $0)
+  exit(1)
+end
+
+fasta, rest = ARGV
+
+dna = isDNA?(fasta)
+fasta2Nexus(fasta, dna)

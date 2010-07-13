@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'Newick'
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " tree1 tree2 [...tree3]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+trees = Hash.new
+
+ARGV.each {|tree|
+  tree = NewickTree.fromFile(tree)
+  tree = tree.reorder.to_s(false, false)
+  trees[tree] = 0 if (trees[tree].nil?)
+  trees[tree] += 1
+}
+
+trees.keys.sort {|x,y| trees[y] <=> trees[x]}.each {|key|
+  printf("%5d %s\n", trees[key], key)
+}

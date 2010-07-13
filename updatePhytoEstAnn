@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'DBWrapper'
+require 'FasterCSV'
+
+
+if (ARGV.size != 2)
+  STDERR.printf("Usage: %s csv-file phytoest.db\n", $0)
+  exit(1)
+end
+
+csv, db = ARGV
+
+db = SQLite.new(db)
+
+FasterCSV.foreach(csv) {|row|
+  name = row[0]
+  ann = row[3]
+  if (!ann.nil?)
+    db.query("UPDATE apis_proteins SET annotation = '#{ann}' WHERE protein_name = '#{name}'")
+  end
+}

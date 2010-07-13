@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s fasta-file blast-file\n", $0)
+  exit(1)
+end
+
+fasta, blast = ARGV
+
+seqs = Hash.new
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  name = seq.definition.split(" ").first
+  seqs[name] = seq
+}
+
+
+query = ""
+File.new(blast).each {|line|
+  query = line.split(" ")[1] if (line =~ /^Query=/)
+  if (line =~ /\*\*\* NONE \*\*\*/)
+    print seqs[query]
+  end
+}

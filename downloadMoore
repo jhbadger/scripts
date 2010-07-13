@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'http-access2'
+require 'MySQL'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " goldtable.txt"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+db = MySQL.new
+inCombo = []
+Contig.find(:all).each {|contig|
+  inCombo.push(contig.name)
+}
+
+gold, rest = ARGV
+
+ids = []
+File.new(gold).each {|line|
+  fields = line.chomp.split("\t")
+  if (fields[44] =~/Moore/ && fields[18] == "Draft")
+    id = fields[41]
+    if (inCombo.grep(/#{id[0..7]}/).empty?)
+      ids.push(id)
+    end
+  end
+}
+
+link = "http://www.ncbi.nlm.nih.gov/entrez/viewer.fcgi?db=nuccore&sendto=t&id="
+
+
+ids.each {|id|
+  web = HTTPAccess2::Client.new
+  acc = web.get(link + id).body.content
+  if (acc =~ /^WGS/ && acc =~/([A-Z]+_[A-Z|0-9]+)-([A-Z]+_[A-Z|0-9]+)/)
+    start = $1
+    stop =  $2
+    if (acc =~/^SOURCE ([^\n]*)\n/)
+      STDERR.printf("Downloading %s...\n", $1)
+    end 
+    while (start <= stop)
+      print web.get(link + start).body.content
+      sleep 0.1
+      start.succ!
+    end
+  end
+}

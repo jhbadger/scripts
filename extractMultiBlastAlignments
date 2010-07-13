@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s blast-file\n", $0)
+  exit(1)
+end
+
+file = ARGV.pop
+log = File.new(file + ".log", "w")
+
+report = Bio::Blast::WU::Report.open(file, "r").each {|query|  
+  query.each {|hit|
+    name =  hit.definition.tr(" ","_")
+    count = 1
+    hit.hsps.each {|hsp|
+      outName = name + "_" + count.to_s + ".fasta"
+      log.print outName + "\n"
+      out = File.new(outName, "w")
+      out.printf(">%s\n%s\n","fred", hsp.qseq)
+      out.printf(">%s\n%s\n", name, hsp.hseq)
+      out.close
+      count += 1
+    }
+  }
+}
+log.close

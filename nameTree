@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.keep = false
+
+ARGV.options {|opts|
+  opts.banner << " fasta tree"
+  opts.on("-k", "--keep", "keep IDs in tree") {|t| opt.keep = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, tree = ARGV
+
+ali = File.new("fred.ali","w")
+File.new(prot).each {|line|
+  if (line =~/^>/)
+    acc = line.split(" ").first
+    line =~/\{([^\}]*)\}/
+    if ($1.nil?)
+      STDERR.printf("Species not found in #{line}\n")
+      exit(1)
+    end
+    sp = $1.tr(" ","_").tr(";","").tr("()","_")
+    sp = acc[1..acc.length] + "__" + sp if (opt.keep)
+    ali.printf("%s\t%s\n", acc.tr(">",""), sp)
+  end
+}
+ali.close
+system("unAlias #{tree} fred.ali")

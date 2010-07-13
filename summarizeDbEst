@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'csv'
+require 'DBwrapper'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " gbest.gz [...gbest.gz]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+
+counts = Hash.new
+
+ARGV.each {|file|
+  STDERR.printf("Now processing %s...\n", file)
+  f = IO.popen("zcat #{file}")
+  f.each {|line|
+    if(line =~/\/db_xref=\"taxon:([0-9]*)/)
+      taxid = $1.to_i
+      counts[taxid] = 0 if counts[taxid].nil?
+      counts[taxid] += 1
+    end
+  }
+  f.close
+}
+STDERR.printf("Building taxonomies...\n")
+
+db = MySQL.new("mysql-lan-pro.jcvi.org", "combodb",
+                 "apis", "apis_user")
+
+print ["Count", "Species", "Taxonomy"].to_csv
+counts.keys.sort {|x, y| counts[y] <=> counts[x]}.each {|key|
+  taxonomy = db. buildTaxFromTaxId(key, true)
+  print [counts[key], taxonomy].to_csv
+}

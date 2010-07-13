@@ -1,0 +1,78 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+$VERBOSE=nil
+
+ARGV.options {|opts|
+  opts.banner << " pos [pos..]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+out = File.new("out.seq", "w")
+printf("name,annotation,sites,gap percent,minSize,maxSize\n")
+ARGV.each {|pos|
+  sites = Hash.new
+  File.new(pos).each {|line|
+    site, aa, val, w = line.split(" ")
+    w = w.to_f
+    next if line !~/\+\-/
+    sites[site] = aa + " " + val if (val =~/\*/ && w > 1.1) 
+  }
+  if (sites.keys.length > 2)
+    func = ""
+    File.new(pos.gsub(".pos","")).each {|line|
+      func = line.split(" ",2).last.chomp
+      break
+    }
+    num = sites.keys.size
+    size = 0
+    gaps = 0
+    name = nil
+    maxSize = 0
+    minSize = 1e9
+    sc = nil
+    FlatFile.new(FastaFormat, File.new(pos.gsub("dfa.pos","afa"))).each {|seq|
+      n = seq.entry_id
+      if (name.nil? || name =~/^ORF/)
+	name = n
+	sc = seq
+      end 
+      if (n =~/GSU/)
+	name = n
+	sc = seq
+      end
+      gaps += seq.seq.count("-")
+      size += seq.length
+      s = seq.length - seq.seq.count("-")
+      maxSize = s if s > maxSize
+      minSize = s if s < minSize
+    }
+    gapPercent = gaps*100/size
+    if (minSize / (1.0*maxSize) > 0.80)
+      id = name + "_" + func.tr(" ,\ \/", "")
+      File.link("#{pos}", "pos/#{id}.pos")
+      File.link("#{pos.gsub("dfa.pos","afa")}", "pos/#{id}.afa")
+      printf("%s,%s,%d,%d,%d,%d\n", 
+	     name, func, num, gapPercent, minSize, maxSize)
+      out.print sc
+    end 
+  end
+}
+out.close

@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'ostruct'
+opt = OpenStruct.new
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " script"
+#o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+
+ARGV.each do |script|
+  s = File.read(script)
+  if (s.index("|opt.") || s.index("require 'csv'"))
+    File.link(script, script + ".orig")
+    out = File.new(script + ".new", "w")
+    File.new(script).each do |line|
+      if (line =~/\|opt\.([A-Z|a-z]+)\|/)
+        var = $1
+        line.gsub!("|opt.#{var}|", "|t| opt.#{var} = t")
+      end
+      if (line =~/require 'csv'/)
+        line.gsub!("fastercsv", "csv")
+      end
+      if (line =~/CSV/)
+        line.gsub!("CSV", "CSV")
+      end
+      out.print line
+    end
+    out.close
+    File.rename(script + ".new", script)
+    system("chmod a+x #{script}")
+  end
+end

@@ -1,0 +1,129 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'DBwrapper'
+require 'bio'
+opt = OpenStruct.new
+
+opt.storage = "misc_apis"
+opt.host = "mysql-lan-pro.jcvi.org"
+opt.database = "compdb_apis"
+opt.verbose = false
+
+ARGV.options {|opts|
+  opts.banner << " dataset peps-with-species.fa"
+  opts.on("-d ", "--database ", String, 
+          "query database (default #{opt.database})") {|t| opt.database = t}
+  opts.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+  opts.on("-v", "--verbose", "include all datasets in database") {|t| opt.verbose = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2 )
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dataset, peps = ARGV
+
+db = MySQL.new(opt.host, opt.database, "apis", "apis_user")
+db.tax
+
+tax = Hash.new
+
+db.tax.keys.each {|contig|
+  tax[db.tax[contig]["species"]] = db.tax[contig]["taxonomy"].split("; ")
+  newsp = db.tax[contig]["species"].split(" ")[0] + " " + db.tax[contig]["species"].split(" ")[1]
+  tax[newsp] = db.tax[contig]["taxonomy"].split("; ")
+}
+db.close
+
+evolved = Hash.new
+real = Hash.new
+
+allpeps = 0
+Bio::FlatFile.new(Bio::FastaFormat, File.new(peps)).each {|seq|
+  name, rest = seq.definition.split(" ", 2)
+  sp, rest = rest.split(/ \[/, 2)
+  if (sp.index("{"))
+    sp, rest = sp.split(/ \{/, 2)
+  end
+  evolved[name] = true if rest =~/OFF/
+  if (sp.index(" ("))
+    sp, rest = sp.split(/ \(/, 2)
+  end
+  if (sp.index(" plasmid"))
+    sp, rest = sp.split(/ plasmid/, 2)
+  end
+  if (sp.index(" chromosome"))
+    sp, rest = sp.split(/ chromosome/, 2)
+  end
+  real[name] = tax[sp]
+  if (real[name].nil?)
+    newsp = sp.split(" ")[0] + " " + sp.split(" ")[1]
+    real[name] = tax[newsp]
+  end
+  if (real[name].nil? && opt.verbose)
+    STDERR.printf("Missing taxonomy for %s: %s\n", name, sp)
+    real.delete(name)
+  else
+    allpeps += 1
+  end
+}
+
+
+levels = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
+files = Hash.new
+levels.each {|lev|
+  files[lev] = File.new("APIS_Wrong_#{lev}.csv","w")
+  files[lev].printf("ORF, Correct, APIS, Annotation\n")
+}
+storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
+
+
+good = []
+total = []
+ann = Hash.new
+
+
+query = "SELECT seq_name, annotation FROM annotation WHERE dataset = '" +  dataset + "'"
+storage.query(query).each {|row|
+  name, anno = row
+  ann[name] = anno
+}
+
+classed = 0
+query = "SELECT seq_name, kingdom, phylum, class, ord, family, genus, "
+query += "species FROM classification WHERE dataset = '" +  dataset + "'"
+storage.query(query).each {|row|
+  classed += 1
+  name = row.shift
+  next if !real[name]
+  row.size.times {|i|
+    next if row[i] == "Undefined"
+    total[i] = 0 if total[i].nil?
+    good[i] = 0 if good[i].nil?
+    total[i] += 1
+    if (row[i] == real[name][i])
+      good[i] += 1
+    else
+      files[levels[i]].printf("%s,%s,%s,%s\n", name, real[name][i], row[i], ann[name])
+    end
+  }
+}
+storage.close 
+
+printf("%d of %d peptides classified (%5.1f%%)\n", classed, allpeps, classed*100.0/allpeps)
+levels.size.times {|i|
+  printf("%5.1f%% %s\n", good[i]*100.0/total[i], levels[i])
+  files[levels[i]].close
+}
+

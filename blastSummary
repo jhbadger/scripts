@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.evalue = 1e-4
+opt.maxHits = 5
+
+ARGV.options {|opts|
+  opts.banner << " blast-file [...blast-file...]"
+  opts.on("-e", "--evalue ", Float, 
+        "set BLAST evalue threshold (default #{opt.evalue})") {|t| opt.evalue = t}
+  opts.on("-m ", "--maxHits ", Integer, 
+        "number of BLAST hits to report (default #{opt.maxHits})") {|t| opt.maxHits = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+printf("Query")
+opt.maxHits.times {
+  printf(",Hit,Evalue,Annotation")
+}
+printf("\n")
+
+outLine = ""
+inHit = false
+hit = ""
+count = 0
+Dir.glob(ARGV[0]) {|file|
+  File.new(file).each {|line|
+    line = line.chomp.gsub(",","")
+    if (line =~/^Query=/)
+      outLine.gsub!("  "," ")
+      outLine.gsub!("  "," ")
+      outLine.gsub!("  "," ")
+      outLine.gsub!("  "," ")
+      print outLine + "\n" if (outLine != "")
+      outLine = line.split(" ")[1]
+      inHit = false
+      hit = ""
+      count = 0
+    elsif (line =~/^>/)
+      hit = line[1..line.length]
+      inHit = true
+    elsif (line =~/Length =/)
+      inHit = false
+    elsif inHit
+      hit += " " + line
+    elsif (line =~/Score =/)
+      if (hit.index("}"))
+        hit = hit.split("}").first + "}"
+      end
+      p = line.split("=").last.to_f
+      if (p < opt.evalue && count < opt.maxHits)
+        outLine += "," + hit.split(" ", 2).first + "," + p.to_s + "," + hit.split(" ",2).last
+        count += 1
+      end
+    end
+  }
+}
+outLine.gsub!("  "," ")
+outLine.gsub!("  "," ")
+outLine.gsub!("  "," ")
+outLine.gsub!("  "," ")
+print outLine + "\n"

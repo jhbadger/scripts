@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+verbose = false
+onlyPlus = false
+printMatch = false
+realARGV = []
+
+ARGV.each {|arg|
+  if (arg == "+")
+    onlyPlus = true
+  elsif (arg == "-v")
+    verbose = true
+  elsif (arg == "-m")
+    printMatch = true
+  else
+    realARGV.push(arg)
+  end
+}
+
+
+if (realARGV.size != 2)
+  STDERR.printf("usage %s [+] [-v] [-m] pattern file\n", $0)
+  exit(1)
+end
+
+pat, file = realARGV
+pat = pat.upcase.gsub("N",".")
+
+FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+  name, rest = seq.definition.split(" ") if (!verbose)
+  name, rest = seq.definition.split("{") if (verbose)
+  pos = -1
+  while (!pos.nil?)
+    pos = seq.seq.index(/(#{pat})/i, pos + 1)
+    if (!printMatch)
+      printf("%s\t%d\n", name, seq.length - pos) if (!pos.nil?)
+    else
+      printf("%s\t%d\t%s\n", name, seq.length - pos, $1) if (!pos.nil?)
+    end
+  end
+  next if (onlyPlus)
+  comp = Sequence::NA.new(seq.seq).complement
+  pos = -1
+  while (!pos.nil?)
+    pos = comp.index(/(#{pat})/i, pos + 1)
+    if (!printMatch)
+      printf("%s\t-%d\n", name, seq.length - pos) if (!pos.nil?)
+    else
+      printf("%s\t-%d\t%s\n", name, seq.length - pos, $1) if (!pos.nil?)
+    end
+  end
+}

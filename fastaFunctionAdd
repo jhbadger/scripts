@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta [...fasta]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|pep|
+  out = File.new(pep + ".tmp", "w")
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each {|seq|
+    id, dir, func = seq.definition.split(" ", 3)
+    func = func[0..func.index("%")]
+    func  = func.chop.chop.gsub(" ","_")
+    out.print Bio::Sequence::AA.new(seq.seq).to_fasta(seq.entry_id + "-" + func, 60)
+  }
+  out.close
+  system("mv #{pep}.tmp #{pep}")
+}

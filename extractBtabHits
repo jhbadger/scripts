@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+require 'Btab'
+
+ARGV.options {|opts|
+  opts.banner << " btab-file fasta-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+btab, fasta = ARGV
+
+seqs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  seqs[seq.entry_id] = seq
+}
+
+Btab.new(btab).each {|query|
+  query.matches.each {|match|
+    s, e = match.srange
+    header = match.name + " " + s.to_s + ":" + e.to_s
+    seq = seqs[match.name]
+    if (!seq.nil?)
+      print Bio::Sequence::AA.new(seq.seq[s - 1..e - 1]).to_fasta(header, 60)
+    end
+  }
+}

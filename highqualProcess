@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+ARGV.options {|opts|
+  opts.banner << " high-qual cds-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+qual, cds = ARGV
+
+File.new(qual).each {|line|
+  id, gapped, ungapped, consensus, depth = line.split(" ")
+  pos = ungapped.to_i
+  frame = nil
+  File.new(cds).each {|line|
+    id, start, stop = line.split(" ")
+    start = start.to_i
+    stop = stop.to_i
+    if ((pos >= start && pos <= stop) || (pos >= stop && pos <= start))
+      frame = 1 + ((start - pos).abs % 3)
+      printf("%d is in frame %d of %d %d\n", pos, frame, start, stop)
+    end
+  }
+  if (frame.nil?)
+    printf("%d is not in any cds\n", pos)
+  end
+}
+
+

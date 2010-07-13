@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+desc = nil
+name = nil
+oldName = nil
+oldDesc = nil
+realName = nil
+
+Dir.glob("/export/bac-blast/blast/*.blastx").sort.each {|blastx|
+  report = Bio::Blast::WU::Report.open(blastx, "r").each {|query|
+    name, contig, realGen, realSpec = query.query_def.split(" ")
+    realName = realGen
+    realName += (" " + realSpec.tr(",","")) if !realSpec.nil? 
+    query.each {|hit|
+      next if hit.identity.nil?
+      ident = 1.0 * hit.identity / hit.overlap
+      if (ident < 1)
+	hit.definition =~ /\{([^\{]*)\}/
+	if (!$1.nil?)
+	  genus, spec = $1.split(" ")
+	  desc = genus + " " + spec
+	  break
+	else
+	  desc = "Unknown"
+	  break
+	end
+      end
+      }
+    name, rest = File.basename(blastx,".blastx").split("_")
+    if (name == oldName && !oldDesc.nil?)
+      printf("%s\t%s\t%s\t%s\n", name, realName, desc, oldDesc)
+      oldDesc = nil
+      oldName = nil
+    end
+    oldName = name
+    oldDesc = desc
+  }
+}

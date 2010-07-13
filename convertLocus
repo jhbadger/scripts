@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " gb list"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+list = ARGV.pop
+
+want = Hash.new
+
+File.new(list).each {|line|
+  want[line.chomp] = true
+}
+locus = ""
+pid = ""
+ARGV.each {|gb|
+  File.new(gb).each {|line|
+    if line =~/locus_tag=\"([^\"]*)\"/
+      locus= $1
+    elsif line =~/protein_id=\"([^\"]*)\"/ && want[$1]
+      printf("%s\t%s\n", $1, locus)
+      want[$1] = false
+    end
+  }
+}
+
+want.keys.each {|key|
+  printf("%s not found\n", key) if (want[key])
+}

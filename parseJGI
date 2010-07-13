@@ -1,0 +1,104 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " species taxon_id taxonomy transcripts proteins [ec]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 5 && ARGV.size != 6)
+  STDERR << o
+  exit(1)
+end
+
+name = nil
+species, taxon_id, taxonomy, transcripts, proteins, ec = ARGV
+
+prot, orfs = nil 
+
+prots = Hash.new
+
+ann = Hash.new
+
+ann = Hash.new
+if (ec)
+  ZFile.new(ec).each {|line|
+    fields = line.chomp.split("\t")
+    num, ec, func = fields
+    ann[num] = " " + func + " [EC:"+ ec + "]"
+  }
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(proteins)).each {|seq|
+  if (seq.definition =~/\|([^\|]*)\|([0-9]*)/)
+    name, num = $1, $2
+    id = "ORF" + num + "-" + name
+    ann[id] = ann[num]
+    seq.definition = id + " {" + species + "}"
+    prots[id] = seq
+  else
+    STDERR.printf("Can't parse %s\n", seq.definition)
+  end
+}
+
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(transcripts)).each {|seq|
+  if (seq.definition =~/\|([^\|]*)\|([0-9]*)/)
+    name = $1
+    id = "ORF" + $2 + "-" + name
+    seq.definition = id  + " {" + species + "}"
+    found = false
+    1.upto(5) {|i|
+      p = seq.naseq.translate(i, 11).seq
+      if (prots[id].nil?)
+	if p.count("*") < 2
+	  prots[id] = Sequence::AA.new(p)
+	  print "hi\n"
+	else
+	  STDERR.printf("No protein for %s\n", id)
+	  next
+	end
+      end
+      protseq = prots[id].seq
+      if (p.index(protseq))
+        start = (p.index(protseq)*3) + i
+        stop = 2 + start + (protseq.length - 1)*3
+        s = seq.naseq.subseq(start,stop).upcase
+	header = id  + ann[id].to_s + " {" + species + "}"
+        s = Bio::Sequence::AA.new(s).to_fasta(header, 60)
+        orfs = File.new(name + ".cds", "w") if (orfs.nil?)
+        prot = File.new(name + ".pep", "w") if (prot.nil?)
+        orfs.print s
+        prot.print Bio::Sequence::AA.new(prots[id].seq).to_fasta(header, 60)
+        found = true
+      end
+    } 
+    if (!found)
+      STDERR.printf("%s has bad transcript!\n", id)
+      next
+    end
+  else
+    STDERR.printf("Can't parse %s\n", seq.definition)
+  end
+}
+
+prot.close
+orfs.close
+
+
+att = File.new(name + ".att", "w")
+[name, 0, species, "",taxon_id, taxonomy, "Chromosome", prots.size, 0, 
+   0, 0].each {|field|
+    att.printf("%s\t", field)
+  }
+att.close

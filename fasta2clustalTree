@@ -1,0 +1,10 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s fasta-file [fasta-file...]\n", $0)
+  exit(1)
+end
+
+ARGV.each {|file|
+  system("clustalw -tree -infile='#{file}'")
+}

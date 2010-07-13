@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'http-access2'
+require 'FastaDB'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+link = "http://www.ncbi.nlm.nih.gov/entrez/viewer.fcgi?val="
+clnt = HTTPAccess2::Client.new
+
+fasta, rest = ARGV
+
+FastaDB.new(fasta).each {|seq|
+  if (seq.definition  =~ /gi([0-9]*)/)
+    num = $1
+    sp = nil
+    sleep(1)
+    clnt.get(link + num).body.content.split("\n").each {|line|
+      if (line =~/\/organism=\"([^\"]*)\"/)
+        sp = $1
+        seq.definition="gi#{num}__#{sp.tr(" ","_")}"
+      end
+    }
+  end
+  print seq
+}
+

@@ -1,0 +1,107 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'Newick'
+opt = OpenStruct.new
+
+opt.target = nil
+opt.ingroup = nil
+
+ARGV.options {|opts|
+  opts.banner << " spreadsheet.csv"
+  opts.on("-i ", "--ingroup ", String, "ingroup taxa") {|t| opt.ingroup = t}
+  opts.on("-t ", "--target ", String, "target taxon") {|t| opt.target = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+sheet, rest = ARGV
+
+dir = File.dirname(sheet)
+taxName = Hash.new
+taxSp = Hash.new
+
+File.new(dir + "/contig.att").each {|line|
+  name, size, species, strain, id, tax = line.split("\t")
+  taxName[name] = tax
+  taxSp[species] = tax
+}
+
+
+plus50 = []
+plus75 = []
+plus90 = []
+total = 0
+File.new(sheet).each {|line|
+  orf, rest = line.split(",")
+  tree = dir + "/trees/" + orf + ".tree"
+  if (File.exists?(tree))
+    tree = NewickTree.fromFile(tree)
+    targets = []
+    tree.taxa.each {|taxon|
+      tname = taxon.split(/-|__/)[1]
+      if (taxName[tname] =~/#{opt.target}/)
+        targets.push(taxon)
+      end
+    }
+    if (targets.empty?)
+      STDERR.printf("Hey, %s doesn't have any targets!\n", orf)
+      next
+    end
+    query = tree.findNode(orf)
+    if (!query.nil?)
+      found = false
+      ingroup = true
+      only = true
+      boot = ""
+      count = 0
+      while (!found && count < 5)
+        while (query != tree.root)
+          query.taxa.each {|taxon|
+            tname = taxon.split(/-|__/)[1]
+            ingroup = false if (opt.ingroup && taxName[tname] !~/#{opt.ingroup}/)
+            if (taxName[tname] =~/#{opt.target}/ && query.name != "")
+              found = true
+              boot = query.name.to_i
+            elsif (taxName[tname] !~/#{opt.ingroup}/)
+              only = false
+            end
+          }
+          break if (found && only)
+          query = query.parent
+        end
+        if (found)
+          plus50.push(orf) if (boot > 50)
+          plus75.push(orf) if (boot > 75)
+          plus90.push(orf) if (boot > 90)
+          total += 1
+        else
+          x = targets[rand(targets.size)]
+          tree = tree.reroot(tree.findNode(x))
+          query = tree.findNode(orf)
+          count += 1
+          STDERR.printf("Giving up on %s\n", orf) if (count > 4)
+        end
+      end
+    end
+  end
+}
+
+printf("%3d of %3d (%4.1f%%) trees connected Pt with Bacteria bootstrap 50+\n",
+       plus50.size, total, plus50.size*100.0/total)
+printf("%3d of %3d (%4.1f%%) trees connected Pt with Bacteria bootstrap 75+\n",
+       plus75.size, total, plus75.size*100.0/total)
+printf("%3d of %3d (%4.1f%%) trees connected Pt with Bacteria bootstrap 90+\n",
+       plus90.size, total, plus90.size*100.0/total)
+ 
+p plus90

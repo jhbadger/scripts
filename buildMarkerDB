@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'Hmm'
+
+ARGV.options {|opts|
+  opts.banner << " fasta-file hmm [hmm...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta = ARGV.shift
+
+ARGV.each {|hmm|
+  name = File.basename(hmm, ".hmm")
+  out = File.new(name + ".fasta", "w")
+  Hmm.search(hmm, fasta).each {|seq|
+    next if (seq.nil? || seq.species.nil?)
+    header = seq.name + "__" + seq.species.tr('()[] ",', "_") + " " +
+                                    seq.function
+    out.print seq.seq.to_fasta(header, 60)
+  }
+  out.close
+}

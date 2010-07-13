@@ -1,0 +1,18 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s \"glob\"\n", $0)
+  exit(1)
+end
+
+glob, rest  = ARGV
+
+files = Dir.glob(glob)
+report = 10
+
+count = 0
+files.each {|file|
+  File.unlink(file)
+  printf("%s (%5.2f%%)\n", file, count*1e2/files.size) if (count % report == 0)
+  count += 1
+}

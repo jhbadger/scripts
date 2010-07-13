@@ -1,0 +1,98 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.fasta = false
+opt.other = false
+opt.special = false
+opt.sum = false
+
+ARGV.options {|opts|
+  opts.banner << " new.csv cat-start cat-end"
+  opts.on("-s", "--summarize", "Only have three main taxa") {|t| opt.sum = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+sheet, s, e = ARGV
+s = s.to_i
+e = e.to_i
+categories = []
+cat = Hash.new
+File.new(sheet).each {|line|
+  orf, rest = line.chomp.split(",")
+  break if line =~/^No Trees/
+  if (categories.empty?)
+    categories = line.chomp.split(",")[s..e]
+    categories.each {|c|
+      cat[c] = []
+    }
+  else
+    values = line.split(",")[s..e]
+    next if values.nil?
+    num = 0
+    values.each {|v|
+      cat[categories[num]].push(orf) if (v=~/X/)
+      num += 1
+    }
+  end  
+}
+
+if (opt.sum)
+  categories = ["Proteobacteria","Cyanobacteria","Other"]
+  cat["Proteobacteria"] = []
+  cat["Other"] = [] if (cat["Other"].nil?)
+  cat.keys.each {|key|
+    if key =~/Diaz/
+      cat["Cyanobacteria"] += cat[key]
+    elsif key =~/proteobacteria/
+      cat["Proteobacteria"] += cat[key]
+    elsif (key !~/Other/)
+      cat["Other"] += cat[key]
+    end
+  }
+end
+
+categories.each {|cat1|
+  printf(",%s", cat1)
+}
+printf("\n")
+uniq = Hash.new
+categories.each {|cat1|
+  uniq[cat1] = cat[cat1].dup
+  printf("%s", cat1)
+  categories.each {|cat2|
+    printf(",%d", (cat[cat1]&cat[cat2]).size)
+    uniq[cat1] -= cat[cat2] if (cat1 != cat2)
+  }
+  printf("\n")
+}
+categories.each {|cat1|
+  printf(",%d", uniq[cat1].size)
+}
+printf("\n")
+
+if (categories.size == 3)
+  a = cat[categories[0]]
+  b = cat[categories[1]]
+  c = cat[categories[2]]
+  printf("abc = %d\n", (a&b&c).size)
+  printf("ab!c = %d\n", ((a&b)-c).size)
+  printf("ac!b = %d\n", ((a&c)-b).size)
+  printf("bc!a = %d\n", ((b&c)-a).size)
+  p a&b&c
+end

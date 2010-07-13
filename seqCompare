@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s fasta-file\n", $0)
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+  seqs[seq.definition] = seq.seq
+}
+
+
+seqNames = seqs.keys.sort
+seqNames.size.times {|i|
+  (i+1).upto(seqNames.size - 1) {|j|
+    if (seqs[seqNames[i]] == seqs[seqNames[j]])
+      printf("%s and %s are the same sequence\n", seqNames[i], seqNames[j]);
+    end
+  }
+}

@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+def loadList(fileName)
+  starts = Hash.new
+  stops = Hash.new
+  File.new(fileName).each {|line|
+    name, start, stop, strand = line.split(" ")
+    if (!strand.nil? && strand == "-")
+      start, stop = stop, start
+    end
+    stops[start.to_i] = stop.to_i
+    starts[stop.to_i] = start.to_i
+  }
+  return starts, stops
+end
+
+ARGV.options {|opts|
+  opts.banner << " list1 list2"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+list1, list2 = ARGV
+
+starts1, stops1 = loadList(list1)
+starts2, stops2 = loadList(list2)
+
+
+starts1.values.sort.each {|start|
+  if (stops1[start] != stops2[start])
+    printf("%8d\t%8d\n",start, stops1[start])
+  end
+}

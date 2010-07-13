@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " proteins.tab genes.tab"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+prot, gene = ARGV
+
+header = Hash.new
+prots = File.new("aclame.pep","w")
+genes = File.new("aclame.cds","w")
+File.new(prot).each {|line|
+  fields = line.chomp.split("\t")
+  id, d, ann, fam, cross, seq = fields
+  next if id !~/^protein:/
+  id.gsub!("protein:","")
+  header[id] = id + " " + ann + " [" + fam + " " + cross.split(";").first + "]"
+  prots.print Bio::Sequence::AA.new(seq).to_fasta(header[id], 60)
+}
+prots.close
+
+File.new(gene).each {|line|
+  fields = line.chomp.split("\t")
+  id, d, d, d, seq = fields
+  next if id !~/^gene:/
+  id.gsub!("gene:","")
+  next if (header[id].nil?)
+  genes.print Bio::Sequence::NA.new(seq).to_fasta(header[id], 60)
+}
+genes.close

@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+comp = false
+if (ARGV.first == "-v")
+  ARGV.shift
+  comp = true
+end
+
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s [-v] list fasta\n", $0)
+  exit(1)
+end
+
+list, fasta = ARGV
+
+seen = Hash.new
+File.new(list).each {|line|
+  seen[line.chomp] = true
+}
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  seen.keys.each {|term|
+    if (!comp)
+      print seq if (seq.definition =~ /^#{term} /i)
+    else
+      print seq if (seq.definition !~ /^#{term} /i)
+  end
+  }
+  
+}

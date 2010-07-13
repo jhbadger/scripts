@@ -1,0 +1,94 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 4)
+  STDERR.printf("usage: %s profile taxonomy.csv taxonomic-level target-db\n", 
+                File.basename($0))
+  exit(1)
+else
+  profile, tax, level, fixdb = ARGV
+end
+
+# get phylogenetic level
+
+level = level.downcase
+levels = ["kingdom", "phylum", "class", "order", "family"]
+if (levels.index(level).nil?)
+  STDERR.printf("fatal error: Invalid level: %s\n", level)
+  exit(1)
+else
+  level = levels[levels.index(level)]
+end
+
+# load taxonomy
+
+info = Hash.new
+fname = ["db", "org", "kingdom", "phylum", "class", "order", "family"]
+File.new(tax).each {|line|
+  next if (line =~/^DB/)
+  fields = line.split(",")
+  db = fields.first
+  info[db] = Hash.new
+  0.upto(fields.size) {|i|
+    info[db][fname[i]] = fields[i]
+  }
+}
+
+
+# load profile
+
+value = Hash.new
+orgs = Hash.new
+
+
+File.new(profile).each {|line|
+  genome, val = line.split(" ")
+  if (info[genome].nil?)
+    STDERR.printf("%s not in taxonomy file. Skipping!\n", genome)
+    next
+  end
+  group = info[genome][level]
+  orgs[group] = [] if (orgs[group].nil?)
+  orgs[group].push(genome)
+  value[genome] = val
+  
+}
+
+
+# define shuffle method for array
+class Array
+  def shuffle!
+    self.size.downto(1) { |i| push delete_at(rand(i)) }
+    return self
+  end
+end
+
+
+# create random profile
+
+
+orgs.keys.each {|group|
+  ones = 0
+  zeros = 0
+  orgs[group].each {|org|
+    ones += 1 if value[org] == "1"
+    zeros += 1 if value[org] == "0"
+  }
+  if (orgs[group].include?(fixdb))
+    printf("%s\t%s\n", fixdb, value[fixdb])
+    if (value[fixdb] == "1")
+      ones -= 1
+    else
+      zeros -= 1
+    end
+    orgs[group].delete(fixdb)
+  end
+  orgs[group].shuffle!
+  ones.times {
+    org = orgs[group].shift
+    printf("%s\t%s\n", org, 1) 
+  }
+  zeros.times {
+    org = orgs[group].shift
+    printf("%s\t%s\n", org, 0) 
+  }
+}

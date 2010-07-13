@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'apis'
+require 'bio'
+
+@host = "mysql-lan-pro.jcvi.org"
+
+ARGV.options {|opts|
+  opts.banner << " database"
+  opts.on("-h ", "--host ", String, "database host (default #{@host})")
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+database, rest = ARGV
+
+db = MySQL.new(@host, database, "jbadger", "plankton")
+
+db.query("SELECT name, LENGTH(seq) FROM contigs").each {|row|
+  name, len = row
+  len = len.to_i
+  #next if name =~/^JGI/ || name=~/^TG/
+  if (len == 65535)
+    #db.query("UPDATE contigs SET seq='' WHERE name = '#{name}'")
+  end
+}
+

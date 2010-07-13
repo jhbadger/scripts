@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'apis'
+require 'csv'
+require 'fpdf'
+
+all = false
+storage = "misc_apis"
+host = "mysql-lan-pro"
+
+
+ARGV.options {|opts|
+  opts.banner << " [dataset... dataset...]"
+  opts.on("-a", "--all", "reprocess all datasets") {|all|}
+  opts.on("-h ", "--host ", String, "database host (default #{host})") {|host|}
+  opts.on("-s ", "--storage ", String, "storage database (default #{storage})") {|storage|}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1 && !all)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+db = MySQL.new(host, storage, "apis", "apis_user")
+
+if (all)
+  db.query("select dataset from dataset").each {|dataset|
+    ARGV.push(dataset[0])
+  }
+end
+
+ARGV.each {|dataset|
+  good = 0
+  bad = []
+  db.query("SELECT seq_name, tree FROM tree WHERE dataset = '#{dataset}'").each {|row|
+    name, tree = row
+    begin
+      t = NewickTree.new(tree)
+      pdf = t.draw("/dev/null")
+      good += 1
+    rescue
+      bad.push(name)
+    end
+  }
+  STDERR.printf("%d of %d bad in %s\n", bad.size, good+bad.size, dataset)
+  bad.sort.each {|name|
+    printf("%s\t%s\n", name,  dataset)
+  }
+}

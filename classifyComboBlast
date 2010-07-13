@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+require 'apis'
+require 'Btab'
+opt = OpenStruct.new
+
+opt.host = "mysql-lan-pro"
+opt.database = "combodb"
+
+ARGV.options {|opts|
+  opts.banner << " blast-file"
+  opts.on("-d ", "--database ", String, 
+          "query database (default #{opt.database})") {|t| opt.database = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+db = MySQL.new(opt.host, opt.database, "apis", "apis_user")
+
+tax = db.tax
+
+pcount = Hash.new
+scount = Hash.new
+anns = Hash.new
+taxs = Hash.new
+specs = Hash.new
+qname = ""
+hname = ""
+File.new(ARGV.first).each {|line|
+  if line =~/Query=/
+    qname = line.chomp.split(" ")[1]
+    hname = ""
+  elsif line =~/^>/ && hname == ""
+    hname, ann = line.chomp.split(" ", 2)
+    ann = "" if ann.nil?
+    hname.gsub!(">","")
+    ann = ann.split("{").first
+    name, contig = hname.split("-",2)
+    if (taxs[contig].nil?)
+      taxs[contig] = tax[contig]["taxonomy"].gsub(",","")
+      specs[contig] = tax[contig]["species"]
+    end
+    taxs[hname] = taxs[contig]
+    specs[hname] = specs[contig]
+    ann = "" if ann.nil?
+    anns[hname] = ann.gsub(",","")
+    pcount[hname] = 0 if (pcount[hname].nil?)
+    scount[specs[hname]] = 0 if (scount[specs[hname]].nil?)
+    pcount[hname] += 1
+    scount[specs[hname]] += 1
+  end
+}
+printf("Protein Count, Protein, Annotation, Species, Taxonomy, Species Count\n")
+pcount.keys.sort {|x,y| pcount[y] <=> pcount[x]}.each {|key|
+  printf("%d, %s, %s, %s, %s, %d\n", pcount[key], key, anns[key],
+         specs[key], taxs[key], scount[specs[key]])
+}

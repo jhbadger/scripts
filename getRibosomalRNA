@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'Phylogeny'
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: %s [-speciesMax n] id/file [id/file..]\n", $0)
+  exit(1)
+end
+
+maxSpec = 1e6
+if (ARGV.index("-speciesMax"))
+  maxSpec = ARGV.delete_at(ARGV.index("-speciesMax") + 1).to_i
+  ARGV.delete("-speciesMax")
+end
+
+outFile = "rRNA.fasta"
+
+seqs = Hash.new
+
+
+def processArgs(list)
+  results = []
+  seqFileName =  Hash.new
+  list.each {|member|
+    if File.exist?(member)
+      results.push(member)
+      seqFileName[member] = member
+    else
+      `getdb -x #{member}`.each {|line|
+	field, rest = line.chomp.split(": ", 2)
+	if (field == "organism")
+	  orgfields = rest.split(" ")
+	  sp = orgfields[0] + "_" + orgfields[1]
+	  results.push(sp) if (!results.include?(sp))
+	elsif (field == "directory")
+	  seqFileName[results.last] = Dir.glob(rest + "*.1con").first
+	end
+      }
+    end
+  }
+  return results, seqFileName
+end
+
+
+list, seqFileName = processArgs(ARGV)
+
+out = File.new(outFile, "w")
+
+rdp = "/export/rdp.fasta"
+FlatFile.new(FastaFormat, File.new(rdp)).each {|seq|
+  name, rest = seq.definition.split(" ")
+  if list.include?(name)
+    out.print seq.seq.to_fasta(name, 60)
+    list.delete(name)
+  end
+}
+out.close
+
+if (!list.empty?)
+  list.each {|member|
+    STDERR.printf("%s not found!\n", member)
+  }
+end

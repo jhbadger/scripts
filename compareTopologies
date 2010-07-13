@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'Stats'
+
+if (ARGV.size < 1)
+  STDERR.printf("usage: tree-type\n")
+  exit(1)
+end
+
+type = ARGV.shift
+methods = Hash.new
+
+Dir.glob("*.tree").each {|tree|
+  name, rest = tree.split("_")
+  c_type, rest  = rest.split(".tree")
+  methods[c_type] = [] if (methods[c_type].nil?)
+  shared = 0
+  total = 0
+  `newick_compare #{tree} #{name}_#{type}.tree`.each {|line|
+    if (line =~ /([0-9]*) edges/)
+      num = $1.to_i
+      if (line =~ /shared/)
+	shared = num
+	total = shared
+      else
+	total += num
+      end
+    end
+  }
+  percent =  (100 * shared) / total
+  methods[c_type].push(percent)
+}
+
+methods.keys.sort.each {|method|
+  printf("%10s %d\n", method, methods[method].average)
+}

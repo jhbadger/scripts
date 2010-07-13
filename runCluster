@@ -1,0 +1,51 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio    
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " fasta blast-table"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta, blast = ARGV
+
+java = "java -Xms32m -Xmx2048m"
+force = "/home/jbadger/Force"
+seqs = Hash.new
+
+name = ENV["PWD"] + "/" + File.basename(fasta)
+sfasta = name + ".spep"
+out = File.new(sfasta, "w")
+
+FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+  out.print seq.seq.to_fasta(seq.entry_id, 60)
+}
+out.close
+
+matrix = name + ".mat"
+cluster = name + ".clusters"
+blast = ENV["PWD"] + "/" + File.basename(blast)
+
+Dir.mkdir(matrix) if (!File.exists?(matrix))
+
+system("cd #{force};#{java} Force -mode 2 -input #{blast} -output #{matrix} -inputFasta #{sfasta} -cutoff m3.4 -costModel 0")
+
+system("cd #{force};#{java} Force -mode 0 -input #{matrix} -output #{cluster} -training TRUE")
+
+system("rm -rf #{matrix};rm #{sfasta}")

@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require'bio'
+include Bio    
+
+if (ARGV.size < 2)
+  STDERR.printf("usage: %s gb contig [contig...]\n", $0)
+  exit(1)
+end
+
+gb = ARGV.shift
+FlatFile.new(GenBank, File.new(gb)).each {|seq|
+  ARGV.each {|name|
+    if (seq.locus.entry_id == name)
+      print seq.seq.to_fasta(name, 60)
+    end
+  }
+}

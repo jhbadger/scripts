@@ -1,0 +1,88 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+opt.level = 2
+
+ARGV.options {|opts|
+  opts.banner << " rdp-class.txt fasta"
+   opts.on("-l ", "--level ", Integer,
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+rdp, fasta = ARGV
+
+seqs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+  seqs[seq.entry_id] = seq
+}
+
+
+ranks  = ["kingdom", "phylum", "class", "order", "family", "genus"] 
+good = File.new("good_#{ranks[opt.level]}.csv", "w")
+good.printf("Read,Length")
+ranks.each {|rank|
+  good.printf(",%s, %s confidence",rank, rank)
+}
+good.printf("\n")
+bad = File.new("bad_#{ranks[opt.level]}.csv", "w")
+bad.printf("Read,Length")
+ranks.each {|rank|
+  bad.printf(",%s,%s confidence",rank, rank)
+}
+bad.printf("\n")
+prev = nil
+pdesc = nil
+pline = nil
+pairs = 0
+same = 0
+File.new(rdp).each {|line|
+  next if (line !~/^[0-9]/)
+  line.gsub!(",","")
+  line.gsub!('"',"")
+  line.gsub!("; ",",")
+  line.gsub!(",-,Root,1.0","")
+  line.gsub!(", ,Root,1.0","")
+  name, rest = line.split(",", 2)
+  line = name + "," + seqs[name].length.to_s + "," + rest
+  fields = line.chomp.split(",")
+  if (fields[0] =~ /ACA([0-9]*)T1[R|F]/)
+    num = $1
+  else
+    STDERR.printf("I Can't interpret %s\n", fields[0])
+  end
+  desc = fields[4 + ((opt.level-1)*2)]
+  if (prev == num)
+    pairs += 1
+    if (desc == pdesc)
+      same += 1
+      good.print pline
+      good.print line
+    else
+      bad.print pline
+      bad.print line
+    end
+  end
+  pline = line
+  prev = num
+  pdesc = desc
+}
+
+printf("At %s level, %d pairs, %d same\n", ranks[opt.level], pairs, same)
+good.close
+bad.close

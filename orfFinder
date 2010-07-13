@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.minSize = 150
+
+ARGV.options {|opts|
+  opts.banner << " fasta"
+  opts.on("-m ", "--minSize ", Integer, 
+          "minimum size of ORF (in nt -- default #{opt.minSize})") {|t| opt.minSize = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+dna = ARGV.shift
+
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(dna)).each do |seq|
+  next if seq.length < opt.minSize*3
+  [1, 2, 3, -1, -2, -3].each do |frame|
+    num = "_0001"
+    orfName = seq.entry_id + "_" + frame.to_s + num
+    prot = seq.naseq.translate(frame, 11)
+    prot.seq.split("*").each do |orf|
+      if (orf.length >= opt.minSize)
+	      print Bio::Sequence.new(orf).to_fasta(orfName, 60)
+	      orfName.succ!
+      end
+    end
+  end
+end

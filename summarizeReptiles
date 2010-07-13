@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " gb-file [..gb-file...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+counts = Hash.new
+nuc = Hash.new
+mito = Hash.new
+tax = Hash.new
+prods = Hash.new
+pspecies = Hash.new
+spproduct = Hash.new
+
+ARGV.each {|gb|
+  Bio::FlatFile.new(Bio::GenBank, File.new(gb)).each {|seq|
+    id, organism, taxonomy = seq.gi, seq.source["organism"], seq.taxonomy
+    next if organism == ""
+    nuclear = true
+    product = nil
+    organism.gsub!(",","")
+    seq.features.each {|feature|
+      position = feature.position
+      hash = feature.assoc
+      if hash["organelle"]
+        nuclear = false
+      end
+      if hash["product"]
+        product = hash["product"].gsub(",","")
+      end
+    }  
+    if (product)
+      if (nuclear)
+        product = "nuclear " + product
+      else
+        product = "mitochondrial " + product
+      end
+    end
+    pspecies[product] = Hash.new if pspecies[product].nil? 
+    spproduct[organism] = Hash.new if spproduct[organism].nil?
+    counts[organism] = 0 if counts[organism].nil?
+    nuc[organism] = 0 if nuc[organism].nil?
+    mito[organism] = 0 if mito[organism].nil?
+    prods[product] = 0 if prods[product].nil?
+    pspecies[product][organism] = true
+    spproduct[organism][product] = true
+    counts[organism] += 1
+    prods[product] += 1
+    if (nuclear)
+      nuc[organism] += 1
+    else
+      mito[organism] += 1
+    end
+    tax[organism] = taxonomy.gsub("Eukaryota; Metazoa; Chordata; Craniata; Vertebrata; ","")
+  }
+}
+
+out = File.new("org_summary.csv", "w")
+out.printf("Organism,Taxonomy,Total,Nuclear,Mitochondrial, Unique Proteins\n")
+counts.keys.sort {|x,y| counts[y] <=> counts[x]}.each {|org|
+  out.printf("%s,%s,%d,%d,%d,%d\n", org, tax[org], counts[org],
+             nuc[org], mito[org], spproduct[org].keys.size)
+}
+out.close
+
+out = File.new("product_summary.csv", "w")
+out.printf("Product,Total,Species\n")
+prods.keys.sort {|x,y| prods[y] <=> prods[x]}.each {|p|
+  out.printf("%s,%d,%d\n", p, prods[p], pspecies[p].keys.size) if !p.nil?
+}
+out.close

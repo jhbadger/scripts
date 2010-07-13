@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+
+ARGV.options {|opts|
+  opts.banner << " cluster.txt fasta [...fasta] [seq ...seq]"
+  
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+cluster = ARGV.shift
+fasta = ARGV.grep(/.fasta/)
+dna = ARGV.grep(/.seq/)
+
+matrix = Hash.new
+
+seqs = Hash.new
+STDERR.printf("Loading peps...\n")
+fasta.each{|file|
+  FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+    seqs[seq.entry_id] = seq
+  }
+}
+
+dnas = Hash.new
+STDERR.printf("Loading dnas...\n")
+dna.each{|file|
+  FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+    dnas[seq.entry_id] = seq
+  }
+}
+
+
+list = File.new("list.txt", "w")
+
+File.new(cluster).each {|line|
+  orfs = line.split(" ")
+  if (!File.exists?(orfs.first + ".aln"))
+    pFile = File.new(orfs.first + ".pep", "w")
+    sFile = File.new(orfs.first + ".seq", "w")
+    orfs.each {|orf|
+      pFile.print seqs[orf]
+      sFile.print dnas[orf]
+    }
+    pFile.close
+    sFile.close
+    list.printf("%s\n", orfs.first)
+    system("muscle -clwstrict -in #{orfs.first}.pep -out #{orfs.first}.aln")
+  end
+}
+list.close
+

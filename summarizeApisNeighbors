@@ -1,0 +1,7 @@
+#!/usr/bin/env ruby
+
+Dir.glob("neighbors/*.nei").sort.each {|nei|
+  name = File.basename(nei,".nei")
+  tax = File.new(nei).read.split("\n").first
+  printf("%s\t%s\n", name, tax)
+}

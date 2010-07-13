@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " results"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+results, rest = ARGV
+
+
+inClust = false
+printf("Cluster,Desc,Sites,Size,Unique\n")
+count = 0
+cn = ""
+File.new(results).each {|line|
+  if (line =~/(^[0-9]*): ([^\n]*)\n/)
+    inClust = true
+    count = 0
+    cn = $1
+    printf("%d, %s,", $1, $2.tr(",",""))
+  elsif (line =~/[0-9]* [A-Z]/)
+    count += 1
+  else
+    uniq = []
+    aln = Dir.glob("#{cn}.*_prot.aln").first
+    FlatFile.new(FastaFormat, File.new(aln)).each {|seq|
+      if (seq.entry_id =~/TG_([^_]*)_/)
+	uniq.push($1)
+      end
+    }
+    printf("%d, %d, %d\n", count, uniq.size, uniq.uniq.size) if (inClust)
+    inClust = false  
+  end  
+}

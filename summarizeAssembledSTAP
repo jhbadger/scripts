@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.meta = nil
+opt.header = "assembled"
+
+ARGV.options {|opts|
+  opts.banner << " dir [...dir...]"
+  opts.on("-m ", "--metadata ", String, "supply metadata") {|t| opt.meta = t}    
+  opts.on("-h ", "--header ", String, 
+          "header (default (#{opt.header})") {|t| opt.header = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+meta = Hash.new
+if (opt.meta)
+  File.new(opt.meta).each {|line|
+    sample, data = line.chomp.split("\t")
+    meta[sample] = data
+  }
+end
+
+
+printf("Sample,Description,# of Assembled Seqs,# of OTUs,Taxonomy\n")
+
+ARGV.each {|dir|
+  seqs = File.read("#{dir}/#{opt.header}.fa").split("\n").grep(/>/).size
+  otus = File.read("#{dir}/#{opt.header}.cdhit").split("\n").grep(/>/).size
+  printf("%s,%s,%d,%d,", dir, meta[dir], seqs, otus)
+  if File.exists?("#{dir}/#{opt.header}.fa.assignment_detail.txt")
+    counts = Hash.new
+    total = 0
+    File.new("#{dir}/#{opt.header}.fa.assignment_detail.txt").each {|line|
+      levels = line.split("; ")
+      classl = levels[8]
+      next if classl.nil?
+      counts[classl] = 0 if (counts[classl].nil?)
+      counts[classl] += 1
+      total += 1
+    }
+    counts.keys.sort{|x,y| counts[y]<=>counts[x]}.each {|key|
+      val = counts[key]*100/total
+      printf("%3d%% %s; ", val, key) if val > 2
+    }
+  end
+  printf("\n")
+}

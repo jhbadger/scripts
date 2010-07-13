@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s data-file test-fraction\n", $0)
+  exit(1)
+end
+
+
+class Array
+  def shuffle
+    10*self.size.times {
+      x = rand(self.size)
+      y = rand(self.size)
+      self[x], self[y] = self[y], self[x]
+    }
+    return self
+  end
+end
+
+data, fract = ARGV
+fract = fract.to_f
+
+classes = Hash.new
+File.new(data).each {|line|
+  cl=line.chop.split("\t").last
+  classes[cl]=[] if (classes[cl].nil?)
+  classes[cl].push(line)
+}
+
+train = []
+test = []
+classes.keys.each {|cl|
+  classes[cl].shuffle
+  fnum = (classes[cl].size*fract).round
+  test  += classes[cl][0..fnum]
+  train += classes[cl][fnum+1..classes[cl].size - 1]
+}
+
+trainFile = File.new("train.txt", "w")
+testFile = File.new("test.txt", "w")
+
+train.shuffle.each {|line|
+  trainFile.print line
+}
+
+
+test.shuffle.each {|line|
+  testFile.print line
+}
+
+trainFile.close
+testFile.close
+

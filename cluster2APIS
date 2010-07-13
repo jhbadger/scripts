@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'rubygems'
+require 'dm-core'
+require 'optparse'
+opt = OpenStruct.new
+
+class ApisTable
+  include DataMapper::Resource
+  property :peptide, String, :key => true
+  property :sample, String
+  property :size, Integer
+  property :apis_annotation, String
+  property :taxonomy, String
+  property :hmm, String
+  property :hmm_annotation, String
+  property :directory, String
+  property :gene_ontology, String
+  property :gene_ontology_annotation, String
+  property :ec, String
+  property :ec_annotation, String
+end
+
+DataMapper.setup(:default, "sqlite3:////home/jbadger/gosii/jbadger/table.db")
+#ApisTable.auto_migrate!
+
+
+
+$VERBOSE = nil
+ARGV.options {|opts|
+  opts.banner << " cluster.csv [cluster.csv...]"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+ARGV.each {|csv|
+  out = File.new("APIS_" + csv, "w")
+  ids = []
+  File.new(csv).each {|line|
+    id = line.split(" ")[0]
+    row = ApisTable.first(:peptide => id)
+    if (row)
+      [row.peptide, row.sample, row.size, row.apis_annotation, row.taxonomy, row.hmm, 
+       row.hmm_annotation, row.directory, row.gene_ontology, row.gene_ontology_annotation, 
+       row.ec, row.ec_annotation].each {|field|
+        out.printf("%s,", field)
+      }
+      out.printf("\n")
+    end
+  }
+  out.close
+}

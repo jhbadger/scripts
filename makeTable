@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.sep = ","
+ARGV.options {|opts|
+  opts.banner << " file"
+  opts.on("-s ", "--separator ", String, 
+          "field separator (default '#{opt.sep}')") {|t| opt.sep = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+file = ARGV.pop
+
+cols = 0
+header = true
+
+File.new(file).each {|line|
+  fields = line.split(opt.sep)
+  cols = fields.size if fields.size > cols
+}
+printf("\\begin{longtable}{%s}\n", "l"*cols)
+printf("\\hline\\hline\n")
+File.new(file).each {|line|
+  line.chomp!
+  fields = line.split(opt.sep)
+  if (fields.size == 1)
+    printf("\\hline\\multicolumn{%d}{c}{%s}%s\\hline\n", cols, line,"\\\\")
+  else
+    0.upto(fields.size - 2) {|i|
+      printf("%s & ", fields[i])
+    }
+    printf("%s%s\n", fields.last, "\\\\")
+  end
+  if (header)
+    printf("\\hline\n")
+    header = false
+  end
+}
+printf("\\hline\\hline\n")
+printf("\\end{longtable}\n")

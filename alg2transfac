@@ -1,0 +1,166 @@
+#!/usr/local/bin/perl
+# AUTHOR: Timothy L. Bailey
+# CREATE DATE: 4-30-03
+
+$PGM = $0;			# name of program
+$PGM =~ s#.*/##;                # remove part up to last slash
+@args = @ARGV;			# arguments to program
+$| = 1;				# flush after all prints
+$SIG{'INT'} = 'cleanup(1,"")';	# interrupt handler
+# Note: so that interrupts work, always use for system calls:
+# 	if ($status = system("$command", "")) {&cleanup($status)}
+
+# requires
+push(@INC, split(":", $ENV{'PATH'}));	# look in entire path
+
+# defaults
+
+$usage = <<USAGE;		# usage message
+  USAGE:
+	$PGM
+
+	Convert an alignment file to TRANSFAC format.
+
+	Input is 
+		ID <id1>
+		<seq1>
+		...
+		<seqn>
+		//
+		ID <id2>
+		<seq1>
+		...
+		<seqn>
+		//
+		etc.
+
+	Reads standard input.
+	Writes standard output.
+
+	Bugs: ignores letters other than acgtACGT.
+
+        Copyright
+        (2003) The University of Queensland
+        All Rights Reserved.
+        Author: Timothy L. Bailey
+USAGE
+
+$nargs = 0;			# number of required args
+if ($#ARGV+1 < $nargs) { &print_usage("$usage", 1); }
+
+# get input arguments
+while ($#ARGV >= 0) {
+  $_ = shift;
+  if ($_ eq "-h") {				# help
+    &print_usage("$usage", 0);
+  } else {
+    &print_usage("$usage", 1);
+  }
+}
+
+while (<STDIN>) {
+  if (/^ID\s/) {
+    # save ID
+    ($x, $id) = split;
+  } elsif (/^#/) {
+    # ignore comment
+  } elsif (/^\/\//) {
+    # reached end of entry, print it
+    alignment2count($id, @seqs);
+    undef @seqs;
+  } else {
+    # save sequence
+    push @seqs, $_;
+  }
+};
+
+# cleanup files
+&cleanup($status);
+ 
+################################################################################
+#                       Subroutines                                            #
+################################################################################
+
+################################################################################
+#    alignment2count
+################################################################################
+sub alignment2count {
+  my($id, @seqs) = @_;
+  my(@letters, $ncols, $i, $count, @alph, $alph_string);
+
+  @alph = ("A", "C", "G", "T"); 
+  $alph_string = join "", @alph;
+
+  # get number of columns in alignment
+  $seqs[0] =~ s/\s+//g;
+  #$ncols = split //, $seqs[0];
+  #$ncols--;
+  $ncols = length($seqs[0]);
+  print "ID $id\n";
+  #print "BF $bf\n";
+  print "P0";
+  foreach $_ (@alph) {
+    printf(" %5s", $_);
+  }
+  print "\n";
+
+  # print each column
+  for ($i=0; $i<$ncols; $i++) {
+    foreach $_ (@alph) {
+      $count{$_} = 0;
+    }
+    foreach $_ (@seqs) {
+      $letter = substr($_, $i, 1);
+      $letter =~ tr/a-z/A-Z/;
+      if ($letter =~ /[$alph_string]/) {
+        $count{$letter}++;
+      }
+    }
+    # print the column
+    if ($i < 9) {
+      printf("0%d", $i+1);
+    } else {
+      printf("%d", $i+1);
+    }
+    foreach $_ (@alph) {
+      printf " %5d", $count{$_};
+    }
+    print "\n";
+  } 
+  # end entry
+  print "XX\n";
+  print "\/\/\n";
+} # alignment2count 
+
+################################################################################
+#
+#       print_usage
+#
+#	Print the usage message and exit.
+#
+################################################################################
+sub print_usage {
+  my($usage, $status) = @_;
+ 
+  if (-c STDOUT) {			# standard output is a terminal
+    open(C, "| more");
+    print C $usage;
+    close C;
+  } else {				# standard output not a terminal
+    print STDERR $usage;
+  }
+
+  exit $status;
+}
+ 
+################################################################################
+#       cleanup
+#
+#       cleanup stuff
+#
+################################################################################
+sub cleanup {
+  my($status, $msg) = @_;
+  if ($status && "$msg") {print STDERR "$msg: $status\n";}
+  exit($status);
+}

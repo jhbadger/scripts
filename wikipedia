@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.lang = "en"
+ARGV.options {|opts|
+  opts.banner << " \"term\""
+  opts.on("-l ", "--language ", String, 
+          "set language abbreviation (default #{opt.lang})") {|t| opt.lang = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+term = ARGV.pop
+
+term = term.tr(" ","_").gsub("(","%28").gsub(")","%29")
+system("w3m -dump http://#{opt.lang}.wikipedia.org/wiki/#{term}| less")
+ 

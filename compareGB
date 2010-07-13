@@ -1,0 +1,74 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require'bio'
+include Bio
+opt = OpenStruct.new
+
+opt.both = false
+ARGV.options {|opts|
+  opts.on("-b", "--both", "only display cases where both starts are different") {|t| opt.both = t}
+  opts.banner << " genome1.gb genome2.gbk"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+gb1, gb2 = ARGV
+
+starts = Hash.new
+stops = Hash.new
+products = Hash.new
+
+FlatFile.new(GenBank, File.new(gb1)).each {|entry|
+  entry.features.each {|feat|
+    if (feat.feature == "CDS")
+      name, product = feat.assoc["protein_id"], feat.assoc["product"]
+      if (feat.position =~/[complement\(]*([0-9]*)..([0-9]*)/)
+        start, stop = $1.to_i, $2.to_i
+        start, stop = stop, start if (feat.position =~/complement/)
+        starts[name] = start
+        stops[name] = stop
+        products[name] = product
+      end
+    end
+  }
+}
+
+printf("ORF\tNew Start\tNew End\tNew Product\tOld Start\tOld End\tOld Product\n")
+
+seen = Hash.new
+FlatFile.new(GenBank, File.new(gb2)).each {|entry|
+  entry.features.each {|feat|
+    if (feat.feature == "CDS")
+      name, product  = feat.assoc["protein_id"], feat.assoc["product"]
+      seen[name] = true
+      if (feat.position =~/[complement\(]*([0-9]*)..([0-9]*)/)
+        start, stop = $1.to_i, $2.to_i
+        start, stop = stop, start if (feat.position =~/complement/)
+        if (starts[name] != start || stops[name] != stop)
+          next if (opt.both && (starts[name] == start || stops[name] == stop))
+          printf("%s\t%7d\t%7d\t%s\t%7d\t%7d\t%s\n", name, start, stop,
+                 product, starts[name], stops[name], products[name])
+        end
+      end
+    end
+  }
+}
+
+products.keys.each {|name|
+  if (!seen[name])
+    printf("%s\t%7d\t%7d\t%s\t%7d\t%7d\t%s\n", name, 0, 0,
+           "", starts[name], stops[name], products[name])
+  end
+}

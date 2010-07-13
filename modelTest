@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+ARGV.options {|opts|
+  opts.banner << " alignment tree"
+  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+alignment, tree = ARGV
+
+dir = Dir.pwd
+hyDir = "/home/jbadger/EVOL/HYPHY_Source/TemplateBatchFiles/"
+batch = "ModelTest.bf"
+
+input = "\n#{hyDir}#{batch}\n#{dir}/#{alignment}\n#{dir}/#{tree}\n4\n"
+system("echo -e '#{input}'|hyphy")

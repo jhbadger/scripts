@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'rsruby'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " fasta frac-min"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+fasta, frac = ARGV
+frac = frac.to_f
+
+r = RSRuby.instance
+
+seqs = Hash.new
+rlen = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+  seqs[seq.entry_id] = seq
+  rlen[seq.entry_id] = seq.length - seq.seq.count(".-")
+end
+
+avLen = r.mean(rlen.values)
+
+seqs.keys.sort.each do |key|
+  if (rlen[key] >= avLen*frac)
+    print seqs[key]
+  else
+    STDERR.printf("Rejecting %s -- length %d\n", key, rlen[key])
+  end
+end

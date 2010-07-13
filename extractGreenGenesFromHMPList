@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'GreenGenes'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " hmp.csv greengenes16S.txt"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+csv, aln = ARGV
+
+outFiles = Hash.new
+ids = Hash.new
+
+CSV.foreach(csv) {|row|
+  hmp, name, ncbi, phylum, project, gg, loc = row
+  next if hmp == "HMP ID" || loc.nil?
+  outFiles[loc] = File.new(loc + ".afa", "w") if outFiles[loc].nil?
+  ids[loc] = Hash.new if ids[loc].nil?
+  ids[loc][gg] = true
+}
+
+GreenGenes.new(aln).each {|record|
+  id = record["prokMSA_id"]
+  ids.keys.each {|loc|
+    if (ids[loc][id] && !record["aligned_seq"].nil? && !record["ncbi_tax_string"].nil?)
+      seq = Bio::Sequence::NA.new(record["aligned_seq"].tr(".","-"))
+      header = record["organism"].tr(" ","_")+"_HMP" + " " + record["ncbi_tax_string"].gsub(" ","") 
+      outFiles[loc].print seq.to_fasta(header, 60)
+    end
+  }
+}
+
+outFiles.keys.each {|loc|
+  outFiles[loc].close
+}
+
+

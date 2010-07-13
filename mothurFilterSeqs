@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+opt.soft = nil
+
+o.banner << " aligned.fasta"
+o.on("-s ", "--soft ", Integer, 
+  "apply soft mask to percentage unconserved") {|s| opt.soft = s}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+def cleanup(dir)
+  system("rm -rf #{dir}")	
+end
+
+fasta = ARGV.shift
+
+name = File.basename(fasta).split(".").first
+tmpdir = ENV["HOME"] + "/.tmp"
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+
+File.link(fasta, tmpdir + "/seq.align")
+batch = File.new(tmpdir + "/batch", "w")
+batch.printf("filter.seqs(fasta=seq.align")
+batch.printf(",soft=%d", opt.soft) if (opt.soft)
+batch.printf(")")
+batch.close
+system("cd #{tmpdir};mothur batch >/dev/null")
+File.new("#{tmpdir}/seq.filter.fasta").each do |line|
+  print line
+end
+cleanup(tmpdir)

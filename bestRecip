@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+
+opt.pvalue = 0.1
+opt.identity = 50
+opt.coverage = 50
+
+ARGV.options {|opts|
+  opts.banner << " blast1 blast2"
+  opts.on("-c ", "--coverage ", Integer, 
+          "Percent min coverage (default #{opt.coverage})") {|t| opt.coverage = t}    
+  opts.on("-e ", "--evalue ", Float, 
+          "evalue cutoff (default #{opt.pvalue})") {|t| opt.pvalue = t}
+  opts.on("-i ", "--identity ", Integer, 
+          "Percent min identity (default #{opt.identity})") {|t| opt.identity = t}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+blast1, blast2 = ARGV
+
+hitName = Hash.new
+hitVal = Hash.new
+names = Hash.new
+
+
+def processBlast(blast, names, hitName, hitVal)
+  names[blast] = []
+  Bio::Blast::Default::Report.open(blast, "r").each {|query|
+    qname = query.query_def.split(" ").first
+    names[blast].push(qname)
+    query.each {|hit|
+      hname =  hit.definition.split(" ").first
+      evalue = hit.evalue
+      coverage = hit.overlap / (0.01 * query.query_len)
+      identity = hit.identity / (0.01 * hit.overlap)
+      if (evalue > opt.pvalue || identity < opt.identity || coverage < opt.coverage)
+        hitName[qname] = "xxx"
+        hitVal[qname] = "xxx"
+      else
+        hitName[qname] = hname
+        hitVal[qname] = hit.evalue
+      end
+      break
+    }
+  }
+end
+
+processBlast(blast1, names, hitName, hitVal)
+processBlast(blast2, names, hitName, hitVal)
+
+names[blast1].sort.each {|name|
+  if (hitName[hitName[name]] == name)
+    bestR = "yes"
+  else
+    bestR = "no"
+  end
+  printf("%s\t%s\t%s\t%s\t%s\n", name, hitName[name], hitVal[name],
+	 hitVal[hitName[name]], bestR)  
+}
