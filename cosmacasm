@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'CDP1802'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.disassemble = false
+opt.base = 16
+
+o.banner << " asm-file|object-file"
+o.on("-b", "--binary", "use binary") {opt.base = 2}
+o.on("-d", "--disassemble", "disasemble") {opt.disassemble = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+cpu = CDP1802.new
+p opt
+if (!opt.disassemble)
+  print cpu.assemble(File.read(ARGV.first), opt.base)
+else
+  print cpu.disassemble(File.read(ARGV.first), opt.base)
+end
