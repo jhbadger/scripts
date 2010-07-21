@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'dm-core'
+require 'bio'
+require 'ComboDB'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.db = "mysql://apis:apis_user@mysql-lan-pro/phylodb"
+opt.level = 5
+
+o = OptionParser.new
+o.banner << " fasta [fasta...]"
+o.on("-d ", "--database ", String, 
+     "query database (default #{opt.db})") {|t| opt.db = t}
+o.on("-l ", "--level ", Integer,
+  "taxonomic level (default #{opt.level})") {|t| opt.level = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+seen = Hash.new
+ARGV.each do |fasta|
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+    if (seq.definition =~/SOURCE_1=\"([^\"]*)\"/)
+      sp, rest = $1.split(" {")
+      seen[sp] = true
+    end
+  end
+end
+
+DataMapper.setup(:default, opt.db)
+
+exclude = Hash.new
+seen.keys.each do |key|
+  contig = Contig.first(:species => key)
+  if (contig)
+    exclude[contig.taxonomy.split("; ")[opt.level]] = true
+  else
+    STDERR << "Can't find #{key}...\n"
+  end
+end
+
+exclude.keys.sort.each do |key|
+  print key + "|"
+end
