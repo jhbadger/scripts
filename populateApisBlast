@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'dm-core'
+require 'bio'
+require 'ostruct'
+require 'optparse'
+require 'ApisDB'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+opt.storage = "misc_apis"
+opt.host = "mysql://apis:apis_user@mysql-lan-pro"
+
+o.banner << " pep-file blast-file "
+o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+pep, blast = ARGV
+
+DataMapper.setup(:default, opt.host + "/" + opt.storage)
+
+dataset = File.basename(blast.split(".").first)
+
+if (Sequence.count(:id => dataset) == 0)
+  STDERR << "Creating Dataset...\n"
+  dat = Dataset.create(:id => dataset, :owner => ENV["user"], :date=>Date.today)
+  STDERR << "Loading seqs...\n"
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(pep)).each do |seq|
+    Sequence.create(:name => seq.entry_id, :dataset => dataset, :sequence => seq.seq, 
+      :processed => 0)
+  end
+end
+
+dat = Dataset.first(:id=>dataset)
+exit(1)
+
+Bio::Blast::Default::Report.open(blast, "r").each do |query|
+  query.each do |subject|
+    sname, sdef = subject.definition.split(" ",2)
+    subject.hsps.each do |hsp|
+      
+    end
+  end
+end
