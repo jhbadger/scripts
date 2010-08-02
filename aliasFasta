@@ -1,8 +1,7 @@
 #!/usr/bin/env ruby
  
 require 'rubygems'
-require'bio'
-include Bio    
+require 'bio'
 
 if (ARGV.size != 3)
   STDERR.printf("usage: %s fasta out-fasta alias-file\n", $0)
@@ -15,13 +14,13 @@ outFile = File.new(out, "w")
 aliFile = File.new(ali, "w")
 
 
-orfNum = "SID0000001"
-FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
+orfNum = "SID000001"
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
   aliFile.printf("%s\t%s\n", orfNum, seq.definition)
   seq.definition = orfNum
   outFile.print seq
   orfNum = orfNum.succ
-}
+end
 
 outFile.close
 aliFile.close
