@@ -61,5 +61,5 @@ end
 STDERR << "Evaluating APIS...\n"
 Classification.all(:dataset_id => dataset, :limit => 100).each do |apis|
   contig, start, stop = apis.seq_name.split("_")
-  p orgs[contig]
+  
 end

@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'Phylogeny'
+
+if (ARGV.size != 1)
+  STDERR.printf("usage: %s stockholm-file\n", $0)
+  exit(1)
+end
+
+stock, rest = ARGV
+
+stockholm2Fasta(stock.split(".").first + ".afa", stock)

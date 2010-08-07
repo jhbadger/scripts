@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require'bio'
-include Bio
+require 'bio'
+require 'FastaDB'
 
 prot = false
 if (ARGV.index("-p"))
@@ -10,67 +10,57 @@ if (ARGV.index("-p"))
   prot = true
 end
 
-if (ARGV.size != 4)
-  STDERR.printf("usage: %s [-p] tblastn-file fasta-file name abbr\n", $0)
+if (ARGV.size != 3)
+  STDERR.printf("usage: %s [-p] tblastn-file fasta-file abbr\n", $0)
   exit(1)
 end
 
-file, fasta, name, abbr = ARGV
+file, fasta, abbr = ARGV
 
-seqs = Hash.new
-FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
-  seqs[seq.definition] = seq
-}
-
-
+db = FastaDB.new(fasta)
 
 query = ""
 contig = ""
-expect = 1
-bestExpect = 1
 start = 0
 stop = 0
 orfName = abbr + "0000"
+seen = Hash.new
+
+def processHsp(db, query, contig, start, stop, orfName, prot, seen)
+  seq = db.getFasta(contig)
+  if (start < stop)
+    subseq = Bio::Sequence::NA.new(seq[start - 1 .. stop - 1])
+  else
+    subseq = Bio::Sequence::NA.new(seq[stop - 1 .. start - 1])
+    subseq = subseq.complement
+  end
+  subseq = subseq.translate(1, 11) if (prot)
+  if (subseq.length > 20)
+    orfName.succ!
+    header = sprintf("%s %s %7d %7d", orfName, contig, start, stop)
+    print subseq.to_fasta(header, 60) if (!seen[contig])
+    seen[contig] = true
+  end
+end
 
 File.new(file).each {|line|
-  if (line =~/^Query=/)
-    query = line.chomp.split("Query=  ")[1]
-    if (!query.index(" ").nil?)
-      orf, rest = query.split(" ", 2)
-      query, rest = rest.split("{")
-    end
-    bestExpect = 1
+  if (line =~/^Query=[\ ]*([^\ ]*) /)
+    query = $1
     start = 0
     stop = 0
   elsif (line =~/^>/)
-    contig = line[1..line.length].chomp
-  elsif (line =~/Expect =/)
-    line =~/Expect = ([0-9|\.]*[e-]*[0-9]*)/
-    expect = $1.to_f
-    if (expect < bestExpect)
-      bestExpect = expect
-      start = 0
-      stop = 0
-    end
-  elsif (line =~/^Sbjct:/ && expect == bestExpect)
+    processHsp(db, query, contig, start, stop, orfName, prot, seen) if (start > 0)
+    start = 0
+    stop = 0
+    h, contig = line.split(">")
+    contig.strip!
+    h, contig = contig.split("||") if (contig.index("||")) 
+  elsif (line =~/^Sbjct/)
     sb, s, al, sp = line.split(" ")
     start = s.to_i if (start == 0)
     stop = sp.to_i if (stop == 0 || (stop - sp.to_i).abs < 1000)
-  elsif (line =~/^Parameters:/)
-    subseq = nil
-    if (start < stop)
-      subseq = Sequence::NA.new(seqs[contig].seq[start - 1 .. stop - 1])
-    else
-      subseq = Sequence::NA.new(seqs[contig].seq[stop - 1 .. start - 1])
-      subseq = subseq.complement
-    end
-    subseq = subseq.translate(1, 11) if (prot)
-    
-    if (subseq.length > 20)
-      orfName.succ!
-      header = sprintf("%s %s %7d %7d %8.3e {%s}", orfName, query, start, 
-		       stop, bestExpect, name)
-      print subseq.to_fasta(header, 60) if (subseq.length > 20)
-    end
+  elsif (line =~/^Lambda/)
+    next if contig == ""
+    processHsp(db, query, contig, start, stop, orfName, prot, seen) if (start > 0)
   end
 }
