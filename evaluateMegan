@@ -1,23 +1,23 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
 require 'optparse'
 require 'rubygems'
-require 'DBwrapper'
+require 'dm-core'
+require 'ostruct'
+require 'ApisDB'
+require 'ComboDB'
+require 'ZFile'
 require 'bio'
+
 opt = OpenStruct.new
 
-opt.host = "mysql-lan-pro"
-opt.database = "compdb_apis"
-opt.verbose = false
+opt.host = "mysql://access:access@mysql-lan-pro"
+opt.proteindb = "phylodb"
 
-ARGV.options {|opts|
-  opts.banner << " megan-calls.txt reads-with-species.fa"
-  opts.on("-d ", "--database ", String, 
-          "query database (default #{opt.database})") {|t| opt.database = t}
-  opts.on("-h ", "--host ", String, 
-  "database host (default #{opt.host})") {|t| opt.host = t}
-  opts.on("-v", "--verbose", "include all datasets in database") {|t| opt.verbose = t}
+ARGV.options do |opts|
+  opts.banner << " megan-read-taxid.txt metasim-reads.fa"
+  opts.on("-p ", "--proteindb ", String, "protein database (default #{opt.proteindb})") {|t| opt.proteindb = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
   begin
     opts.parse!
   rescue
@@ -26,126 +26,62 @@ ARGV.options {|opts|
     exit(1)
   end
   if (ARGV.size != 2 )
-    STDERR.puts opts
+    STDERR << opts
     exit(1)
-  end
-}
-
-calls, peps = ARGV
-
-db = MySQL.new(opt.host, opt.database, "apis", "apis_user")
-db.tax
-
-tax = Hash.new
-
-db.tax.keys.each {|contig|
-  tax[db.tax[contig]["species"]] = db.tax[contig]["taxonomy"].split("; ")
-  newsp = db.tax[contig]["species"].split(" ")[0] + " " + db.tax[contig]["species"].split(" ")[1]
-  tax[newsp] = db.tax[contig]["taxonomy"].split("; ")
-}
-db.close
-
-evolved = Hash.new
-real = Hash.new
-
-Bio::FlatFile.new(Bio::FastaFormat, File.new(peps)).each {|seq|
-  name, rest = seq.definition.split(" ", 2)
-  sp, rest = rest.split(/ \[/, 2)
-  if (sp.index("{"))
-    sp, rest = sp.split(/ \{/, 2)
-  end
-  evolved[name] = true if rest =~/OFF/
-  if (sp.index(" ("))
-    sp, rest = sp.split(/ \(/, 2)
-  end
-  if (sp.index(" plasmid"))
-    sp, rest = sp.split(/ plasmid/, 2)
-  end
-  if (sp.index(" chromosome"))
-    sp, rest = sp.split(/ chromosome/, 2)
-  end
-  real[name] = tax[sp]
-  if (real[name].nil?)
-    newsp = sp.split(" ")[0] + " " + sp.split(" ")[1]
-    real[name] = tax[newsp]
-  end
-  if (real[name].nil? && opt.verbose)
-    STDERR.printf("Missing taxonomy for %s: %s\n", name, sp)
-    real.delete(name)
-  end
-}
-
-
-levels = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
-files = Hash.new
-levels.each {|lev|
-  files[lev] = File.new("MEGAN_Wrong_#{lev}.csv","w")
-  files[lev].printf("ORF, Correct, MEGAN\n")
-}
-
-good = []
-total = []
-
-
-
-def findTax(tax, call)
-  if (tax[call])
-    return tax[call]
-  else    
-    tax.keys.each {|key|
-      levels = []
-      tax[key].each {|value|
-        levels.push(value)
-        if (value == call)
-          return levels
-        end
-      }
-    }
-  end
-  genus, species, rest = call.split(" ", 3)
-  t = findTax(tax, genus + " " + species) if (!rest.nil?)
-  if (t.nil? && !species.nil?)
-    return findTax(tax, genus)
-  else
-    return t
   end
 end
 
-good = []
-total = []
+megan, reads = ARGV
 
+DataMapper.setup(:default, opt.host + "/" + opt.proteindb)
 
-allpeps = 0
-classed = 0
-count = 0
-File.new(calls).each {|line|
-  allpeps += 1
-  count += 1
-  if count % 100 == 0
-    STDERR.printf("Processing read %d...\n", count)
-  end
-  read, call = line.chomp.split(" ", 2)
-  next if real[read].nil?
-  taxline = findTax(tax, call)
-  next if taxline.nil?
-  classed += 1
-  taxline.size.times {|i|
-    taxline[i] = "Unknown" if taxline[i].nil?
-    total[i] = 0 if total[i].nil?
-    good[i] = 0 if good[i].nil?
-    total[i] += 1
-    if (taxline[i] == real[read][i])
-      good[i] += 1
+STDERR << "Loading Taxonomy...\n"
+tax = Hash.new
+orgs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(reads)).each do |seq|
+  if (seq.definition =~/SOURCE_1=\"([^\"]*)\"/)
+    org, rest = $1.split(" {", 2)
+    org, rest = org.split(/mega plasmid|plasmid|chromosome/, 2)
+    con = Contig.first(:species => org)
+    if (con.nil?)
+      STDERR << "Can't find taxonomy for " << org << "...\n"
+      tax[seq.entry_id] = "Unknown"
     else
-      if (!files[levels[i]].nil?)
-        files[levels[i]].printf("%s,%s,%s\n", read, real[read][i], taxline[i])
-      end
+      tax[seq.entry_id] = con.taxonomy.split("; ")
     end
-  }
-}
+  end
+end
 
-printf("%d of %d peptides classified (%5.1f%%)\n", classed, allpeps, classed*100.0/allpeps) 
-levels.size.times {|i|
-  printf("%5.1f%% %s\n", good[i]*100.0/total[i], levels[i])
-  files[levels[i]].close
-}
+p tax
+
+STDERR << "Evaluating MEGAN...\n"
+wrong = Hash.new
+taxidtax = Hash.new
+counts = 0
+File.new(megan).each do |line|
+  contig, taxid = line.chomp.split(" ")
+  ctax = tax[contig]
+  if (!taxidtax[taxid])
+    con =  Contig.first(:taxon_id => taxid)
+    next if con.nil?
+    taxidtax[taxid] = con.taxonomy.split("; ")
+  end
+  taxcall = taxidtax[taxid]
+  p ctax
+  p taxcall
+  levels = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
+  next if ctax.nil?
+  counts += 1
+  levels.size.times do |i|
+    if (ctax[i] != taxcall[i])
+      wrong[levels[i]] = File.new("MEGAN_wrong_#{levels[i]}_#{peps}.txt", "w") if (!wrong[levels[i]])
+      wrong[levels[i]].printf("%s\t%s\n", taxcall[i], ctax[i])
+    end
+  end
+end
+
+wrong.keys.each do |key|
+  wrong[key].close
+end
+
+cout << counts << " reads classified\n"
