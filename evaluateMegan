@@ -42,39 +42,40 @@ Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(reads)).each do |seq|
   if (seq.definition =~/SOURCE_1=\"([^\"]*)\"/)
     org, rest = $1.split(" {", 2)
     org, rest = org.split(/mega plasmid|plasmid|chromosome/, 2)
-    con = Contig.first(:species => org)
-    if (con.nil?)
-      STDERR << "Can't find taxonomy for " << org << "...\n"
-      tax[seq.entry_id] = "Unknown"
-    else
-      tax[seq.entry_id] = con.taxonomy.split("; ")
+    if (!tax[org])
+      con = Contig.first(:species => org)
+      if (con.nil?)
+        STDERR << "Can't find taxonomy for " << org << "...\n"
+        tax[org] = "Unknown"
+      else
+        tax[org] = con.taxonomy.split("; ")
+      end
     end
   end
+  tax[seq.entry_id] = tax[org]
 end
 
-p tax
 
 STDERR << "Evaluating MEGAN...\n"
 wrong = Hash.new
 taxidtax = Hash.new
 counts = 0
 File.new(megan).each do |line|
-  contig, taxid = line.chomp.split(" ")
+  contig, taxid = line.chomp.gsub(",","").split(" ")
   ctax = tax[contig]
+  next if taxid == "-1"
   if (!taxidtax[taxid])
     con =  Contig.first(:taxon_id => taxid)
     next if con.nil?
     taxidtax[taxid] = con.taxonomy.split("; ")
   end
   taxcall = taxidtax[taxid]
-  p ctax
-  p taxcall
   levels = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
   next if ctax.nil?
   counts += 1
   levels.size.times do |i|
     if (ctax[i] != taxcall[i])
-      wrong[levels[i]] = File.new("MEGAN_wrong_#{levels[i]}_#{peps}.txt", "w") if (!wrong[levels[i]])
+      wrong[levels[i]] = File.new("MEGAN_wrong_#{levels[i]}_#{reads}.txt", "w") if (!wrong[levels[i]])
       wrong[levels[i]].printf("%s\t%s\n", taxcall[i], ctax[i])
     end
   end
