@@ -85,4 +85,4 @@ wrong.keys.each do |key|
   wrong[key].close
 end
 
-cout << counts << " reads classified\n"
+STDOUT << counts << " reads classified\n"
