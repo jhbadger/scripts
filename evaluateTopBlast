@@ -1,20 +1,23 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
 require 'optparse'
 require 'rubygems'
-require 'DBwrapper'
+require 'dm-core'
+require 'ostruct'
+require 'ApisDB'
+require 'ComboDB'
+require 'ZFile'
 require 'bio'
+
 opt = OpenStruct.new
 
+opt.host = "mysql://access:access@mysql-lan-pro"
 opt.storage = "misc_apis"
-opt.host = "mysql-lan-pro.jcvi.org"
-opt.database = "compdb_apis"
+opt.proteindb = "phylodb"
 
-ARGV.options {|opts|
-  opts.banner << " blast-file peps-with-species.fa"
-  opts.on("-d ", "--database ", String, 
-          "query database (default #{opt.database})") {|t| opt.database = t}
+ARGV.options do |opts|
+  opts.banner << " blast-file metasim-reads.fa"
+  opts.on("-p ", "--proteindb ", String, "protein database (default #{opt.proteindb})") {|t| opt.proteindb = t}
   opts.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
   opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
   begin
@@ -25,135 +28,71 @@ ARGV.options {|opts|
     exit(1)
   end
   if (ARGV.size != 2 )
-    STDERR.puts opts
+    STDERR << opts
     exit(1)
-  end
-}
-
-blast, peps = ARGV
-
-db = MySQL.new(opt.host, opt.database, "apis", "apis_user")
-db.tax
-
-tax = Hash.new
-
-db.tax.keys.each {|contig|
-  tax[db.tax[contig]["species"]] = db.tax[contig]["taxonomy"].split("; ")
-  newsp = db.tax[contig]["species"].split(" ")[0] + " " + db.tax[contig]["species"].split(" ")[1]
-  tax[newsp] = db.tax[contig]["taxonomy"].split("; ")
-}
-db.close
-
-evolved = Hash.new
-real = Hash.new
-
-allpeps = 0
-Bio::FlatFile.new(Bio::FastaFormat, File.new(peps)).each {|seq|
-  name, rest = seq.definition.split(" ", 2)
-  sp, rest = rest.split(/ \[/, 2)
-  if (sp.index("{"))
-    sp, rest = sp.split(/ \{/, 2)
-  end
-  evolved[name] = true if rest =~/OFF/
-  if (sp.index(" ("))
-    sp, rest = sp.split(/ \(/, 2)
-  end
-  if (sp.index(" plasmid"))
-    sp, rest = sp.split(/ plasmid/, 2)
-  end
-  if (sp.index(" chromosome"))
-    sp, rest = sp.split(/ chromosome/, 2)
-  end
-  real[name] = tax[sp]
-  if (real[name].nil?)
-    newsp = sp.split(" ")[0] + " " + sp.split(" ")[1]
-    real[name] = tax[newsp]
-  end
-  if (real[name].nil? && opt.verbose)
-    STDERR.printf("Missing taxonomy for %s: %s\n", name, sp)
-    real.delete(name)
-  else
-    allpeps += 1
-  end
-}
-
-
-levels = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
-files = Hash.new
-levels.each {|lev|
-  files[lev] = File.new("BLAST_Wrong_#{lev}.csv","w")
-  files[lev].printf("ORF, Correct, BLAST, Annotation\n")
-}
-
-
-def findTax(tax, call)
-  if (tax[call])
-    return tax[call]
-  else    
-    tax.keys.each {|key|
-      levels = []
-      tax[key].each {|value|
-        levels.push(value)
-        if (value == call)
-          return levels
-        end
-      }
-    }
-  end
-  genus, species, rest = call.split(" ", 3)
-  t = findTax(tax, genus + " " + species) if (!rest.nil?)
-  if (t.nil? && !species.nil?)
-    return findTax(tax, genus)
-  else
-    return t
   end
 end
 
-good = []
-total = []
+blast, reads = ARGV
 
+DataMapper.setup(:default, opt.host + "/" + opt.storage)
+DataMapper.setup(:combodb, opt.host + "/" + opt.proteindb)
 
-allpeps = 0
-classed = 0
-count = 0
-
-Bio::Blast::Default::Report.open(blast, "r").each {|query|
-  name = query.query_def.split(" ").first
-  allpeps += 1
-  count += 1
-  if count % 100 == 0
-    STDERR.printf("Processing read %d...\n", count)
-  end
-  query.each {|hit|
-    if (hit.definition =~/\[([^\]]*)\]/)
-      taxline = findTax(tax, $1)
-      next if taxline.nil?
-      classed += 1
-      taxline.size.times {|i|
-        taxline[i] = "Unknown" if taxline[i].nil?
-        total[i] = 0 if total[i].nil?
-        good[i] = 0 if good[i].nil?
-        total[i] += 1
-        next if real[name].nil?
-        if (taxline[i] == real[name][i])
-          good[i] += 1
-        else
-          if (!files[levels[i]].nil?)
-            files[levels[i]].printf("%s,%s,%s\n", name, 
-                                    real[name][i], taxline[i])
-          end
-        end
-      }
-    else
-      STDERR.printf("Can't parse: %s\n", hit.definition)
+STDERR << "Loading Taxonomy...\n"
+tax = Hash.new
+orgs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(reads)).each do |seq|
+  if (seq.definition =~/SOURCE_1=\"([^\"]*)\"/)
+    org, rest = $1.split(" {", 2)
+    org, rest = org.split(/mega plasmid|plasmid|chromosome/, 2)
+    sp, rest = org.split(" ")
+    sp = "Ruegeria" if sp ==  "Silicibacter"
+    if (tax[sp].nil?)
+      con = repository(:combodb) {Contig.first(:species => org)}
+      if (con.nil?)
+        STDERR << "Can't find taxonomy for " << org << "...\n"
+        tax[sp] = "Unknown"
+      else
+        tax[sp] = con.taxonomy.split("; ")
+      end
     end
-    break
-  }
-}
+    orgs[seq.entry_id] = sp
+  end
+end
 
+STDERR << "Evaluating BLAST...\n"
+wrong = Hash.new
 
-printf("%d of %d peptides classified (%5.1f%%)\n", classed, allpeps, classed*100.0/allpeps) 
-levels.size.times {|i|
-  printf("%5.1f%% %s\n", good[i]*100.0/total[i], levels[i])
-  files[levels[i]].close
-}
+id = nil
+needHit = false
+
+tx = nil
+count = 0
+File.new(blast).each do |line|
+  if (line =~/Query=/)
+    q, id = line.chomp.split(" ")
+    needHit = true
+    tx = nil
+  elsif (line =~/\{([^;]*);\}/ && needHit)
+    needHit = false
+    sp, rest = $1.split(" ")
+    tx = tax[sp]
+    if (!tx.nil?)
+      count += 1
+      ctax = tax[orgs[id]]
+      levels = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
+      levels.size.times do |i|
+        if (ctax[i] != tx[i])
+          wrong[levels[i]] = File.new("wrong_#{levels[i]}_#{reads}.txt", "w") if (!wrong[levels[i]])
+          wrong[levels[i]].printf("%s\t%s\n", tx[i], ctax[i])
+        end
+      end
+    end
+  end
+end
+
+wrong.keys.each do |key|
+  wrong[key].close
+end
+
+STDERR << count << "\n"
