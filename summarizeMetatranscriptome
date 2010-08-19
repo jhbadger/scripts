@@ -1,0 +1,89 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " ali [ali..] fna [fna...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+stats = Hash.new
+
+ARGV.grep(/.ali/).each do |ali|
+  STDERR << "Loading " << ali << "\n"
+  name = File.basename(ali).split(".ali").first
+  stats[name] = Hash.new
+  ZFile.new(ali).each do |line|
+    read, aliread = line.chomp.split(" ")
+    group = aliread.split("_").first
+    stats[name][group] = 0 if stats[name][group].nil?
+    stats[name][group] += 1
+  end
+end
+
+isotigs = Hash.new
+isogroups = Hash.new
+isogroupCount = Hash.new
+processed = Hash.new
+ARGV.grep(/isotigs.fna/).each do |fna|
+  processed[fna] = true
+  STDERR << "Processing " << fna << "\n"
+  name = File.basename(fna).split(".fna").first
+  isotigs[name] = 0
+  isogroups[name] = Hash.new
+  isogroupCount[name] = 0
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fna)).each do |seq|
+    isotigs[name] += 1
+    if (seq.definition =~/isogroup([0-9]*)/)
+      if (isogroups[name][$1].nil?)
+        isogroups[name][$1] = 0
+        isogroupCount[name] += 1
+      end 
+      isogroups[name][$1] += 1
+    end
+  end
+end
+
+reads = Hash.new
+length = Hash.new
+gc = Hash.new
+ARGV.grep(/.fna/).each do |fna|
+  next if processed[fna]
+  name = File.basename(fna).split(".fna").first
+  STDERR << "Processing " << fna << "\n"
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fna)).each do |seq|
+    id, rest = seq.entry_id.split("_")
+    reads[id] = 0 if reads[id].nil?
+    length[id] = 0 if length[id].nil?
+    gc[id] = 0 if gc[id].nil?
+    reads[id] += 1
+    length[id] += seq.length
+    gc[id] += seq.seq.count("gcGC")
+  end
+end
+
+
+stats.keys.each do |key|
+  tigs = isotigs[key]
+  groups = isogroupCount[key]
+  print [key, tigs.to_s + " isotigs", groups.to_s + " isogroups"].to_csv
+  stats[key].keys.sort.each do |group|
+    print ["",group,stats[key][group].to_s + " reads", length[group]/reads[group],
+    (gc[group]/(length[group]/1000.0).to_i/10.0)].to_csv
+  end
+end

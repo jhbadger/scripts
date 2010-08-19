@@ -1,0 +1,82 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+opt = OpenStruct.new
+
+
+ARGV.options do |opts|
+  opts.banner << " result.taxa reads-with-species.fa tax-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 3 )
+    STDERR.puts opts
+    exit(1)
+  end
+end
+
+calls, reads, tax = ARGV
+
+
+taxonomy = Hash.new
+File.new(tax).each do |line|
+  sp, levels = line.chomp.split("\t", 2)
+  levels = levels.split("\t")
+  genus, sp = sp.split(" ")
+  taxonomy[genus] = levels
+end
+
+species = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(reads)).each do |seq|
+  if (seq.definition =~/SOURCE_1=\"([^\"]*)\"/)
+    org, rest = $1.split(" {", 2)
+    sp, rest = org.split(" ")
+  end
+  species[seq.entry_id] = sp
+end
+
+wrong = Hash.new
+levels = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
+results = []
+tx = []
+
+fname = File.basename(calls)
+
+count = 0
+File.new(calls).each do |line|
+  id, pfam, go, len, tax = line.chomp.split("\t")
+  id = id.split("_").first
+  results = []
+  tx = taxonomy[species[id]]
+  next if tax.nil?
+  tax.split("!").each do |rank|
+    name, rank = rank.split(/\(|\)/)
+    rank = "kingdom" if rank == "superkingdom"
+    next if rank.nil?
+    rnum = levels.index(rank.capitalize)
+    results[rnum] = name if rnum
+  end
+  count += 1
+  levels.size.times do |i|
+    next if levels[i] == "Kingdom"
+    if (!results[i].nil? && results[i] != tx[i])
+      wrong[levels[i]] = File.new("WebCarma_wrong_#{levels[i]}_#{fname}.txt", "w") if (!wrong[levels[i]])
+      wrong[levels[i]].printf("%s\t%s\n", results[i], tx[i])
+    end
+  end
+end
+
+STDERR << count << " reads classified\n"
+
+wrong.keys.each do |key|
+  wrong[key].close
+end
