@@ -1,0 +1,51 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " csv-file col1 col2"
+o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 3)
+  STDERR << o
+  exit(1)
+end
+
+csv, col1, col2 = ARGV
+
+table = Hash.new
+diffs = Hash.new
+conditions = []
+CSV.open(csv, headers: true, converters: :numeric).each do |row|
+  if (row["Annotation"].to_s !~/hypothetical/ && row["Annotation"].to_s.length > 10)
+    diff = (row[col1 + " Normalized"].to_f - row[col2 + " Normalized"].to_f).abs
+    diffs[row["Contigs"]] = diff
+    table[row["Contigs"]] = row
+    conditions = row.headers[1 + row.headers.index("Isogroup")..row.headers.index("Sum") - 1]
+  end
+end
+
+count = 0
+seen = Hash.new
+print (["Name"] + conditions).to_csv
+diffs.keys.sort {|x, y| diffs[y] <=> diffs[x]}.each do |key|
+  row = table[key]
+  next if seen[row["Annotation"]]
+  newRow = [row["Annotation"]]
+  conditions.each do |cond|
+    newRow.push(row[cond + " Normalized"])
+  end
+  print newRow.to_csv
+  seen[row["Annotation"]] = true
+  count += 1
+  break if count == 25
+end
