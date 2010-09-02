@@ -169,9 +169,10 @@ trees.each do |tree|
     end
     if (found && ((only || !opt.only) || ingroup))
       if (must || !opt.must)
-        name = name.split("-").first if opt.contig
-        print [name, tree.tree.chomp, summarizeTax(consense), boot,
-              tree.sequence.annotations.first].to_csv
+        tid = tree.seq_name
+        tid = tid.split("-").first.gsub("ORF","") if opt.contig
+        print [tid, tree.tree.chomp, summarizeTax(consense), boot,
+              tree.sequence.annotations.first(:source => "APIS")].to_csv
       end
     end
   end
