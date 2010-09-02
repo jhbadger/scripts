@@ -1,9 +1,11 @@
 #!/usr/bin/env ruby
 
+require 'rubygems'
+require 'dm-core'
 require 'Newick'
 require 'optparse'
-require 'rubygems'
-require 'DBwrapper'
+require 'ApisDB'
+require 'ComboDB'
 require 'csv'
 require 'ostruct'
 
@@ -16,19 +18,17 @@ opt.file = nil
 opt.name = false
 opt.exclude = false
 opt.must = false
-opt.host = "mysql-lan-pro"
-opt.database = "combodb"
+opt.host = "mysql://access:access@mysql-lan-pro"
+opt.database = "phylodb"
 opt.storage = "misc_apis"
 opt.verbose = false
 
 o = OptionParser.new
-o.banner << " dataset (if not using file)"
+o.banner << " dataset"
 o.on("-c", "--contig", "don't show contig (false)") {opt.contig = true}
 o.on("-d ", "--database ", String, 
      "query database (default #{opt.database})") {|d| opt.database = d}
 o.on("-e ", "--exclude ", String, "exclude from target") {|e| opt.exclude = e}
-o.on("-f ", "--file ", String, 
-     "file of trees to use instead of database") {|f| opt.file = f}
 o.on("-h ", "--host ", String, 
      "database host (default #{opt.host})") {|h| opt.host = h}
 o.on("-i ", "--ingroup ", String, "ingroup taxa") {|i| opt.ingroup = i}
@@ -47,7 +47,7 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size != 1 && !opt.file)
+if (ARGV.size < 1)
   STDERR << o
   exit(1)
 end
@@ -59,38 +59,21 @@ end
 
 dataset = ARGV.pop
 
-taxName = Hash.new
-taxSp = Hash.new
+DataMapper.setup(:default, opt.host + "/" + opt.storage)
+DataMapper.setup(:combodb, opt.host + "/" + opt.database)
 
-
-
-db = MySQL.new(opt.host, opt.database, "apis", "apis_user")
-db.tax
-db.close
-
-
-annNum = nil
-annotation = Hash.new
-trees = Hash.new
-if (opt.file)
-  CSV.foreach(opt.file) {|fields|
-    id, tree = fields
-    if (tree == "Tree")
-      annNum = fields.index("Annotation") 
-      next 
-    end
-    trees[id] = tree
-    annotation[id] = fields[annNum] if annNum
-  }
-else
-  storage = MySQL.new(opt.host, opt.storage, "apis", "apis_user")
-  query = "SELECT seq_name, tree FROM tree WHERE dataset='#{dataset}'"
-  storage.query(query).each {|row|
-    id, tree = row
-    trees[id] = tree
-  }
+trees = Array.new(Tree.all(:dataset_id=>dataset).count)
+annotation = Array.new(trees.size)
+count = 0
+Tree.all(:dataset_id => dataset).each do |tree|
+  trees[count] = NewickTree.new(tree.tree)
+  annotation[count] = tree.sequence.annotations.first
+  count += 1
+  STDERR.printf("Loaded %8.1f%%\n", count*100.0/trees.size) if count % 1000 == 0
 end
 
+p annotation
+exit(1)
 # convert non-standard groups to standard
 def convertTax(entry)
   return false if !entry
