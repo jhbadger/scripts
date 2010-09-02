@@ -59,21 +59,6 @@ end
 
 dataset = ARGV.pop
 
-DataMapper.setup(:default, opt.host + "/" + opt.storage)
-DataMapper.setup(:combodb, opt.host + "/" + opt.database)
-
-trees = Array.new(Tree.all(:dataset_id=>dataset).count)
-annotation = Array.new(trees.size)
-count = 0
-Tree.all(:dataset_id => dataset).each do |tree|
-  trees[count] = NewickTree.new(tree.tree)
-  annotation[count] = tree.sequence.annotations.first
-  count += 1
-  STDERR.printf("Loaded %8.1f%%\n", count*100.0/trees.size) if count % 1000 == 0
-end
-
-p annotation
-exit(1)
 # convert non-standard groups to standard
 def convertTax(entry)
   return false if !entry
@@ -88,9 +73,9 @@ def summarizeTax(consense)
   num = consense.first.size
   match = []
   done = false
-  num.times {|i|
+  num.times do |i|
     match[i] = ""
-    consense.each {|tax|
+    consense.each do |tax|
       tax = tax.split("; ")
       if (match[i] == "")
         match[i] = tax[i]
@@ -98,17 +83,30 @@ def summarizeTax(consense)
         done = true
         break
       end
-    }
+    end
     break if done
-  }
+  end
   summary = ""
-  match.each {|m|
+  match.each do |m|
     break if m.nil?
     summary += "; " if summary != ""
     summary += m
-  }
+  end
   return summary
 end
+
+DataMapper.setup(:default, opt.host + "/" + opt.storage)
+DataMapper.setup(:combodb, opt.host + "/" + opt.database)
+
+species = Hash.new
+taxonomy = Hash.new
+STDERR << "Loading Contig Info...\n"
+repository(:combodb) {Contig.all}.each do |contig|
+  species[contig.name] = contig.species
+  taxonomy[contig.name] = contig.taxonomy
+end
+STDERR << "Loading Trees...\n"
+trees = Tree.all(:dataset_id => dataset)
 
 opt.target = convertTax(opt.target) 
 opt.ingroup = convertTax(opt.ingroup)
@@ -117,9 +115,8 @@ opt.must = convertTax(opt.must)
 
 print ["Id", "Tree", "Target", "Bootstrap", "Annotation"].to_csv
 count = 0
-trees.keys.sort.each {|name|
-  tree = trees[name]
-  query = NewickTree.new(tree).findNode(name)
+trees.each do |tree|
+  query = NewickTree.new(tree.tree).findNode(tree.seq_name)
   count += 1
   STDERR.printf("%4.2f%% done...\n", count*100.0/trees.size) if (count % 1000 == 0)
   if (!query.nil?)
@@ -130,19 +127,10 @@ trees.keys.sort.each {|name|
     boot = 100
     while (query != nil)
       consense = []
-      query.taxa.each {|taxon|
-        next if taxon == name
+      query.taxa.each do |taxon|
+        next if taxon == tree.seq_name
         if (!opt.name)
-          nm = taxon.split(/-|__/)[1]
-          begin
-            tname = db.tax[nm]["taxonomy"]
-            if (tname && db.tax[nm]["supergroup"])
-              tname += " supergroup = " + db.tax[nm]["supergroup"]
-            end
-          rescue
-            STDERR.printf("Skipping %s (no taxonomy)\n", tname)
-            next
-          end
+          tname = taxonomy[taxon.split(/-|__/)[1]]
         else
           tname = taxon
         end
@@ -174,7 +162,7 @@ trees.keys.sort.each {|name|
             STDERR.printf("%s fails only criteron\n", tname)
           end
         end
-      }
+      end
       break if (found && (!opt.only || only))
       break if (opt.ingroup && !ingroup)
       query = query.parent
@@ -182,9 +170,9 @@ trees.keys.sort.each {|name|
     if (found && ((only || !opt.only) || ingroup))
       if (must || !opt.must)
         name = name.split("-").first if opt.contig
-        print [name, trees[name].chomp, summarizeTax(consense), boot,
-              annotation[name]].to_csv
+        print [name, tree.tree.chomp, summarizeTax(consense), boot,
+              tree.sequence.annotations.first].to_csv
       end
     end
   end
-}
+end
