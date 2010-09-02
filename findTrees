@@ -116,7 +116,9 @@ opt.must = convertTax(opt.must)
 print ["Id", "Tree", "Target", "Bootstrap", "Annotation"].to_csv
 count = 0
 trees.each do |tree|
-  query = NewickTree.new(tree.tree).findNode(tree.seq_name)
+  root =  NewickTree.new(tree.tree).root
+  alltaxa = root.taxa.size
+  query = root.findNode(tree.seq_name)
   count += 1
   STDERR.printf("%4.2f%% done...\n", count*100.0/trees.size) if (count % 1000 == 0)
   if (!query.nil?)
@@ -125,7 +127,7 @@ trees.each do |tree|
     ingroup = true
     must = false
     boot = 100
-    while (query != nil)
+    while (query != nil && query.taxa.size < alltaxa)
       consense = []
       query.taxa.each do |taxon|
         next if taxon == tree.seq_name
