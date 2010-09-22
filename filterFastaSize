@@ -1,7 +1,8 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require'bio'
+require 'bio'
+require 'ZFile'
 
 if (ARGV.size != 3)
   STDERR.printf("usage: %s seq.fasta min max\n", $0)
@@ -14,6 +15,6 @@ max = max.to_i
 
 seqs = Hash.new
 
-Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each {|seq|
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
   print seq if (seq.length >= min && seq.length <= max)
 }
