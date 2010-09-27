@@ -1,0 +1,94 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'dm-core'
+require 'ComboDB'
+begin
+  require 'fastercsv'
+rescue
+end
+
+opt = OpenStruct.new
+opt.host = "mysql://access:access@mysql-lan-pro"
+opt.proteindb = "phylodb"
+
+o = OptionParser.new
+
+o.banner << " dist-file"
+o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+o.on("-p ", "--proteindb ", String, "protein database (default #{opt.proteindb})") {|t| opt.proteindb = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+DataMapper.setup(:default, opt.host + "/" + opt.proteindb)
+
+dist, rest = ARGV
+
+STDERR << "Loading Matrix...\n"
+contigs = []
+File.new(dist).each do |line|
+  fields = line.chomp.split(" ")
+  next if fields.size == 1
+  name = fields.shift
+  contig = name.split("-").last
+  contigs.push(contig)
+end
+
+STDERR << "Loading Taxonomy...\n"
+family = Hash.new
+genus = Hash.new
+species = Hash.new
+
+Contig.all(:name => contigs).each do |contig|
+  species[contig.name] = contig.species
+  taxonomy = contig.taxonomy.split("; ")
+  family[contig.name] = taxonomy[4]
+  genus[contig.name] = taxonomy[5]
+end
+
+print ["Species", "Min Dist", "Min Family Dist", "Min Genus Dist", "Min Dist org", 
+    "Min Family Dist org", "Min Genus Dist org"].to_csv
+STDERR << "Processing Matrix...\n"
+File.new(dist).each do |line|
+  fields = line.chomp.split(" ")
+  next if fields.size == 1
+  name = fields.shift
+  contig = name.split("-").last
+  next if species[contig].nil? || species[contig] =~/Euglena/ || species[contig] =~ /Acanthamoeba/
+  minV = 1.0
+  minVname = ""
+  minGV = 1.0
+  minGVname = ""
+  minFV = 1.0
+  minFVname = ""
+  fields.size.times do |i|
+    next if species[contigs[i]].nil? || species[contigs[i]] =~/Euglena/ || species[contigs[i]] =~ /Acanthamoeba/
+    next if species[contigs[i]] == species[contig]
+    value = fields[i].to_f
+    if (value < minV)
+      minV = value 
+      minVname = species[contigs[i]] 
+    end
+    if (family[contig] == family[contigs[i]] && value < minFV)
+      minFV = value
+      minFVname = species[contigs[i]] 
+    end
+    if (genus[contig] == genus[contigs[i]] && value < minGV)
+      minGV = value
+      minGVname = species[contigs[i]] 
+    end
+  end
+  print [species[contig], minV, minFV, minGV, minVname, minFVname, minGVname].to_csv
+end
+
