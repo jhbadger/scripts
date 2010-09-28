@@ -2,6 +2,8 @@
 
 require 'ostruct'
 require 'optparse'
+
+opt = OpenStruct.new
 opt.btab = false
 opt.evalue = 1e-9
 opt.maxHits = 50
@@ -9,7 +11,7 @@ opt.project = 215011
 opt.queue = "medium"
 $VERBOSE = nil
 opt.blast = "blastp"
-opt = OpenStruct.new
+
 
 ARGV.options {|opts|
   opts.banner << " fasta [fasta...fasta...]"
