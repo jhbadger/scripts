@@ -39,7 +39,7 @@ hitVal = Hash.new
 names = Hash.new
 
 
-def processBlast(blast, names, hitName, hitVal)
+def processBlast(blast, names, hitName, hitVal, opt)
   names[blast] = []
   Bio::Blast::Default::Report.open(blast, "r").each {|query|
     qname = query.query_def.split(" ").first
@@ -61,8 +61,8 @@ def processBlast(blast, names, hitName, hitVal)
   }
 end
 
-processBlast(blast1, names, hitName, hitVal)
-processBlast(blast2, names, hitName, hitVal)
+processBlast(blast1, names, hitName, hitVal, opt)
+processBlast(blast2, names, hitName, hitVal, opt)
 
 names[blast1].sort.each {|name|
   if (hitName[hitName[name]] == name)
