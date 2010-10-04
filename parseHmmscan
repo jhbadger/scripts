@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'fastercsv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " hmm-scan-output [threshold-file]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+scan, threshold = ARGV
+
+thresholds = Hash.new
+
+if (threshold)
+  File.new(threshold).each do |line|
+    locus, model, thresh = line.chomp.split(" ")
+    thresholds[model] = thresh.to_f
+  end
+end
+
+
+query = ""
+model = ""
+desc = Hash.new
+hits = Hash.new
+File.new(scan).each do |line|
+  if (line =~/^Query:/)
+    l, query = line.chomp.split(" ")
+  elsif(line =~/^>>/)
+    l, model, des = line.chomp.split(" ", 3)
+    desc[model] = des
+  elsif (line =~/score: ([0-9|\.]*) bits/)
+    score = $1.to_f
+    if (thresholds[model].nil? || score >= thresholds[model])
+      hits[model] = [] if hits[model].nil?
+      hits[model].push(query)
+    end
+  end
+end
+
+print ["Model", "Desc", "Hits"].to_csv
+hits.keys.sort.each do |model|
+  print [model, desc[model], hits[model]].to_csv
+end

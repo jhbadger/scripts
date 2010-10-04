@@ -4,6 +4,7 @@ require 'optparse'
 require 'ostruct'
 require 'rubygems'
 require 'bio'
+require 'ZFile'
 
 #For testing in TextMate:
 #Dir.chdir("/Users/jbadger/work/hmp")
@@ -45,10 +46,14 @@ if (ARGV.size < 1)
   exit(1)
 end
 
+seen = Hash.new
 ARGV.each {|afa|
   taxinfo = Hash.new
   fullNames = Hash.new
-  Bio::FlatFile.new(Bio::FastaFormat, File.new(afa)).each {|seq|
+  name = File.basename(afa, ".afa")
+  outAfa = File.new(name + ".out", "w")
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(afa)).each {|seq|
+    next if seq.seq =~/unaligned/
     fullNames[seq.entry_id] = seq.definition.split(" ")[0] + "_" + seq.definition.split(" ")[1].to_s + "_" + seq.definition.split(" ")[2].to_s
     if (seq.definition =~/;/)
       tax = seq.definition.split(" ")[1].split(";")
@@ -57,12 +62,15 @@ ARGV.each {|afa|
         colors[taxinfo[seq.entry_id]] = generateRandomColor([255,255,255])
       end
     end
+    outAfa.print seq if (!seen[seq.entry_id])
+    seen[seq.entry_id] = true
   }
-  name = File.basename(afa, ".afa")
+  outAfa.close
   tree = name + ".tree"
   if (!File.exists?(tree))
-    system("FastTree -nt -gtr  < #{afa} > #{tree}")
+    system("FastTree -nt -gtr  < #{name}.out > #{tree}")
   end
+  File.unlink(name + ".out")
   reroot = name + "_rooted.tree"
   if (!File.exist?(reroot))
     STDERR << "Rerooting #{tree}...\n"

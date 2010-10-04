@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << "alignment.afa[.gz] SSU.tax"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+fasta, tax = ARGV
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  num, name = seq.definition.split(" ", 2)
+  fields = name.split(" ")
+  fields.pop
+  fields.pop
+  genus, species = name.split(" ")
+  name = (genus + "_" + species).gsub(/\.|\(|\)|\"|\'|\:|\;/, "")
+  cmd = "grep \"#{genus} #{species}\" #{tax} | head -1"
+  tx = `#{cmd}`.chomp.split(" ", 2)[1]
+  if (tx.nil?)
+    cmd = "grep #{genus} #{tax} | head -1"
+    tx = `#{cmd}`.chomp.split(" ", 2)[1]
+  end
+  if (tx.nil?)
+    cmd = "grep #{species} #{tax} | head -1"
+    tx = `#{cmd}`.chomp.split(" ", 2)[1]
+  end
+  if (tx.nil?)
+    STDERR.printf("Okay, I just give up on %s\n", name)
+    exit(1)
+  end
+  seq.definition = name + "_" + num + " " + tx
+  print seq
+end
