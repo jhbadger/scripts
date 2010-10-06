@@ -4,7 +4,7 @@ require 'optparse'
 require 'ostruct'
 require 'RogerBlast'
 require 'rubygems'
-require 'Fastercsv'
+require 'fastercsv'
 
 opt = OpenStruct.new
 o = OptionParser.new
