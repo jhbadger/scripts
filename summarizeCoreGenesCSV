@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'fastercsv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " csv [csv...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+counts = Hash.new
+geneCounts = Hash.new
+seen = Hash.new
+
+ARGV.each do |csv|
+  name = File.basename(csv, ".csv")
+  counts[name] = 0
+  geneCounts[name] = Hash.new
+  FasterCSV.foreach(csv) do |row|
+    next if row.first == "Model"
+    counts[name] += 1
+    seen[row[0]] = true
+    geneCounts[name][row[0]] = row[2].split(" ").size
+  end
+end
+
+
+
+print (["MDA", "Core Genes Hit"] + seen.keys.sort).to_csv
+
+counts.keys.sort {|x, y| counts[y] <=> counts[x]}.each do |name|
+  row = [name, counts[name]]
+  seen.keys.sort.each do |gene|
+    row.push(geneCounts[name][gene])
+  end
+  print row.to_csv
+end

@@ -53,5 +53,5 @@ end
 
 print ["Model", "Desc", "Hits"].to_csv
 hits.keys.sort.each do |model|
-  print [model, desc[model], hits[model]].to_csv
+  print [model, desc[model], hits[model].join(" ")].to_csv
 end
