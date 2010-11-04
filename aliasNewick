@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 
+require 'rubygems'
 require 'Newick'
 
 if (ARGV.size != 2)

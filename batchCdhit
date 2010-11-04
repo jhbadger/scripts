@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'ZFile'
+require 'bio'
+
+opt = OpenStruct.new
+opt.threshold = 0.97
+opt.program = "cd-hit-est"
+
+o = OptionParser.new
+o.banner << " fasta [...fasta...]"
+o.on("-c ", "--cluster ", Float, 
+  "cluster threshold (default #{opt.threshold})") {|t| opt.threshold = t}
+o.on("-p ", "--program ", String, 
+    "cluster program (default #{opt.program})") {|t| opt.program = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+ARGV.each do |file|
+  outName = File.basename(file).split(".").first + ".out"
+  clusterName = File.basename(file).split(".").first + "_" + opt.threshold.to_s
+  outFile = File.new(outName, "w")
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each do |seq|
+    outFile.print seq
+  end
+  outFile.close
+  system(opt.program + " -i #{outName} -o #{clusterName} -c #{opt.threshold} -d 0")
+  File.unlink(outName)
+  File.unlink(clusterName + ".bak.clstr")
+end

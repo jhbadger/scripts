@@ -2,13 +2,19 @@
 
 require 'optparse'
 require 'ostruct'
+require 'rubygems'
+require 'ZFile'
+require 'bio'
 
 opt = OpenStruct.new
 o = OptionParser.new
 
+opt.fasta = false
 opt.template=ENV["HOME"] + "/lib/mothur/silva/silva.bacteria.fasta"
 opt.taxonomy=ENV["HOME"] + "/lib/mothur/silva/silva.rdp.taxonomy"
-o.banner << " fasta"
+
+o.banner << " fasta [...fasta...[]]"
+o.on("-f", "--fasta", "output as fasta (default #{opt.fasta})") {opt.fasta = true}
 o.on("-t ", "--template ", String, 
   "template for classification (#{opt.template})") {|t| opt.template = t}
 o.on("-x ", "--taxonomy ", String, 
@@ -20,7 +26,7 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size != 1)
+if (ARGV.size < 1)
   STDERR << o
   exit(1)
 end
@@ -29,21 +35,55 @@ def cleanup(dir)
   system("rm -rf #{dir}")	
 end
 
-fasta = ARGV.shift
-
-name = File.basename(fasta).split(".").first
-tmpdir = ENV["HOME"] + "/.tmp"
-Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
-tmpdir += "/" + name + "_" + Time.now.to_f.to_s
-Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
-
-File.link(fasta, tmpdir + "/seq.fasta")
-batch = File.new(tmpdir + "/batch", "w")
-batch.printf("classify.seqs(fasta=seq.fasta, template=#{opt.template}, taxonomy=#{opt.taxonomy}, processors=2)")
-batch.close
-system("cd #{tmpdir};mothur batch >/dev/null")
-tax = Dir.glob("#{tmpdir}/*.taxonomy").first
-File.new(tax).each do |line|
-  print line
+def parseTax(tax)
+  levels = tax.split(";")
+  tx = ""
+  levels.each do |level|
+    rank, num = level.gsub('"',"").split("(")
+    num = num.to_i
+    if (num > 80)
+      tx += rank + ";"
+    else
+      break
+    end
+  end
+  tx.chop!
+  return tx
 end
-cleanup(tmpdir)
+
+ARGV.each do |fasta|
+  name = File.basename(fasta).split(".").first
+  tmpdir = ENV["HOME"] + "/.tmp"
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  out = File.new(tmpdir + "/seq.fasta", "w")
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+    out.print seq
+  end
+  out.close
+  batch = File.new(tmpdir + "/batch", "w")
+  batch.printf("classify.seqs(fasta=seq.fasta, template=#{opt.template}, taxonomy=#{opt.taxonomy}, processors=2)")
+  batch.close
+  system("cd #{tmpdir};mothur batch >/dev/null")
+  tax = Dir.glob("#{tmpdir}/*.taxonomy").first
+  if (opt.fasta)
+    taxinfo = Hash.new
+    out = File.new(fasta.gsub(".afa","") + "_class.afa", "w")
+    File.new(tax).each do |line|
+      name, tx = line.chomp.split(" ", 2)
+      taxinfo[name] = parseTax(tx)
+    end
+    Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+      if (taxinfo[seq.entry_id])
+        out.print seq.seq.gsub(".","-").to_fasta(seq.entry_id + " " + taxinfo[seq.entry_id], 60)
+      end
+    end
+    out.close
+  else
+    File.new(tax).each do |line|
+      print line
+    end
+  end
+  cleanup(tmpdir)
+end
