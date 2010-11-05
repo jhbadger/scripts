@@ -168,8 +168,8 @@ printfooter();
 sub calcscaleparams() {
   #Calculate scale parameters
   $numtax = getnumtaxa($rootnode);
-  $viewwidth = 30000;
-  $viewheight = 30000;
+  $viewwidth = 300000;
+  $viewheight = 300000;
   $maxfont = $viewheight/100;
   $minfont = $viewheight/1000;
   $maxx = getmaxx($rootnode, $rootdist);

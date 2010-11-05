@@ -10,15 +10,27 @@ require 'ZFile'
 #Dir.chdir("/Users/jbadger/work/hmp")
 #ARGV.push("Airways_all_trim.afa")
 
-colors = {"Bacteria; Firmicutes" =>"red", 
-  "Bacteria; Bacteroidetes" => "green", "Bacteria; Proteobacteria" => "lightgrey",
-  "Bacteria; Verrucomicrobia" => "purple", 
-  "Bacteria; Lentisphaerae" => "orange", 
-  "Bacteria; Actinobacteria" => "yellow",
-  "Bacteria; Fusobacteria" => "pink", "Bacteria; Spirochaetes" => "brown",
-  "Archaea; Euryarchaeota" => "cyan", "Bacteria; Chlamydiae" => "darkgrey",
-  "Bacteria; Tenericutes" => "lightgreen", "Bacteria; Cyanobacteria" => "darkgreen",
-  "Bacteria; Acidobacteria" => "lavender"}
+
+defaultcolors = {
+  "Bacteria; Proteobacteria" => "lightgrey", 
+  "Bacteria; Firmicutes" => "red", 
+  "Bacteria; Actinobacteria" => "yellow", 
+  "Bacteria; Bacteroidetes" => "green",
+  "Bacteria; Fusobacteria" => "fuschia", 
+  "Bacteria; Spirochaetes" => "aqua",
+  "Bacteria; Tenericutes" => "olive", 
+  "Bacteria; Deinococcus-Thermus" => "lime",
+  "Bacteria; Chloroflexi" => "teal",
+  "Bacteria; Chlorobi" => "purple",
+  "Bacteria; Synergistetes" => "maroon",
+  "Bacteria; Verrucomicrobia" => "brown",
+  "Bacteria; Thermotogae" => "cyan",
+  "Bacteria; Chlamydiae" => "darkorange", 
+  "Bacteria; Aquificae" => "orange",
+  "Bacteria; Planctomycetes" => "darkgrey", 
+  "Bacteria; Acidobacteria" => "silver",
+  "Bacteria; Nitrospirae" => "grey"
+}
 
 def generateRandomColor(mix) 
   red = rand(256)
@@ -47,52 +59,53 @@ if (ARGV.size < 1)
 end
 
 seen = Hash.new
+colors = Hash.new
 ARGV.each {|afa|
   taxinfo = Hash.new
-  fullNames = Hash.new
   name = File.basename(afa, ".afa")
   outAfa = File.new(name + ".out", "w")
-  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(afa)).each {|seq|
-    next if seq.seq =~/unaligned/
-    fullNames[seq.entry_id] = seq.definition.split(" ")[0] + "_" + seq.definition.split(" ")[1].to_s + "_" + seq.definition.split(" ")[2].to_s
-    if (seq.definition =~/;/)
-      tax = seq.definition.split(" ")[1].split(";")
-      taxinfo[seq.entry_id] = tax[0] + "; " + tax[1]
-      if (!colors[taxinfo[seq.entry_id]])
-        colors[taxinfo[seq.entry_id]] = generateRandomColor([255,255,255])
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(afa)).each do |seq|
+    sname = seq.entry_id
+    tax = seq.definition.split(" ")[1]
+    next if tax =~/^unclassified/
+    if (tax)
+      tax = tax.split(";")
+      taxinfo[sname] = tax[0] + "; " + tax[1]
+      if (defaultcolors[taxinfo[sname]])
+        colors[taxinfo[sname]] = defaultcolors[taxinfo[sname]]
+      else
+        colors[taxinfo[sname]] = generateRandomColor([255,255,255])
       end
     end
-    outAfa.print seq if (!seen[seq.entry_id])
-    seen[seq.entry_id] = true
-  }
+    outAfa.print seq.seq.to_fasta(seq.definition.gsub(seq.entry_id, sname), 60) if (!seen[sname])
+    seen[sname] = true
+  end
   outAfa.close
   tree = name + ".tree"
   if (!File.exists?(tree))
     system("FastTree -nt -gtr  < #{name}.out > #{tree}")
   end
   File.unlink(name + ".out")
-  reroot = name + "_rooted.tree"
-  if (!File.exist?(reroot))
-    STDERR << "Rerooting #{tree}...\n"
-    system("newickReroot #{tree} > #{reroot}")
-  end
-  infotmp = name + ".info.tmp"
-  system("treeinfo.pl #{reroot} > #{infotmp}")
+  infotmp = name + ".infotmp"
+  system("treeinfo.pl #{tree} > #{infotmp}")
   info = name + ".info"
   infof = File.new(info, "w")
   File.new(infotmp).each {|line|
     fields = line.split(" ", 4)
     num, dist, type, sp = line.chomp.split("\t")
-    if (type == "r")
+    if (line =~/^font/)
+      line = "font\t1.0\tVerdana\t#000000\n"
+    elsif (type == "r")
       if (taxinfo[sp])
         line = num + "\t" + dist + "\t" + type + "\t" + sp + "\t" + taxinfo[sp] + "\n"
       else
-        line = num + "\t" + dist + "\t" + "q" + "\t" + fullNames[sp] + "\n"
+        line = num + "\t" + dist + "\t" + "q" + "\t" + sp + "\n"
       end
     end
     infof.print line
   }
   infof.printf("ttclr\tq\torange\tblue\n")
+  
   colors.keys.each {|key|
     infof.printf("htax\t%s\t%s\n", key, colors[key])
   }
@@ -102,13 +115,13 @@ ARGV.each {|afa|
   system("treeinfo2svg.pl #{info} > #{svgtmp}")
   svg = name + ".svg"
   svgf = File.new(svg, "w")
-  y = -150
+  y = -1500
   File.new(svgtmp).each {|line|
     if line =~/<\/svg>/
       colors.keys.each {|key|
-        y += 210
-        svgf.printf("<rect x=\"100\" y=\"#{y}\" width=\"6000\"  height=\"300\" fill=\"#{colors[key]}\"/>
-        <text x=\"100\" y=\"#{y+200}\" font-size=\"290\" font-weight=\"bold\" font-family=\"Verdana\" fill=\"black\">#{key}</text>\n")
+        y += 2100
+        svgf.printf("<rect x=\"1000\" y=\"#{y}\" width=\"60000\"  height=\"3000\" fill=\"#{colors[key]}\"/>
+        <text x=\"1000\" y=\"#{y+2000}\" font-size=\"2900\" font-weight=\"bold\" font-family=\"Verdana\" fill=\"black\">#{key}</text>\n")
       }
     else
       svgf.print line

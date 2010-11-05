@@ -13,7 +13,7 @@ opt.fasta = false
 opt.template=ENV["HOME"] + "/lib/mothur/silva/silva.bacteria.fasta"
 opt.taxonomy=ENV["HOME"] + "/lib/mothur/silva/silva.rdp.taxonomy"
 
-o.banner << " fasta [...fasta...[]]"
+o.banner << " fasta [...fasta...]"
 o.on("-f", "--fasta", "output as fasta (default #{opt.fasta})") {opt.fasta = true}
 o.on("-t ", "--template ", String, 
   "template for classification (#{opt.template})") {|t| opt.template = t}
@@ -52,7 +52,7 @@ def parseTax(tax)
 end
 
 ARGV.each do |fasta|
-  name = File.basename(fasta).split(".").first
+  name = File.basename(fasta).split(/\.[A-Z|a-z]/).first
   tmpdir = ENV["HOME"] + "/.tmp"
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
   tmpdir += "/" + name + "_" + Time.now.to_f.to_s
