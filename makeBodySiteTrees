@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " Dirk-aln.bz2 [Dirk-aln.bz2...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+ARGV.each do |aln|
+  clstr = aln.split(".bz2").first + ".clstr"
+  name = File.basename(aln).split("DNA_").last.split("_0").first
+  if (!File.exists?(name + "_trim.afa"))
+    if (!File.exists?(name + ".afa"))
+      system("bzcat #{aln} ../sequenced_genomes+hmp.afa.bz2 > #{name}.afa")
+    end
+    if (!File.exists?(name + "_trim.afa"))
+      system("trimAlignment #{name}.afa 0.2")
+    end
+  end
+  system("cp #{clstr} #{name}_trim.clstr")
+  csv = name + "_trim.csv"
+  if (!File.exists?(csv))
+    cmd = "runGrid -m 4 -p 215011 \"makeHMPFastTree #{name}_trim.afa\" &"
+    system(cmd)
+  end
+end

@@ -211,4 +211,9 @@ ARGV.each {|afa|
     end
     out.close
   end
+  rooted = name + "_root.tree"
+  if (!File.exists?(rooted))
+    STDERR << "Rooting #{tree}...\n"
+    system("newickReroot #{tree} > #{rooted}")
+  end
 }
