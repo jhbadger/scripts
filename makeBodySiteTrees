@@ -29,7 +29,7 @@ ARGV.each do |aln|
       system("trimAlignment #{name}.afa 0.2")
     end
   end
-  system("cp #{clstr} #{name}_trim.clstr")
+  system("cp #{clstr} #{name}_trim.clstr") if !File.exists?("#{name}_trim.clstr")
   csv = name + "_trim.csv"
   if (!File.exists?(csv))
     cmd = "runGrid -m 4 -p 215011 \"makeHMPFastTree #{name}_trim.afa\" &"
