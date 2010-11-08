@@ -5,6 +5,7 @@ require 'ostruct'
 require 'rubygems'
 require 'bio'
 require 'ZFile'
+require 'fastercsv'
 
 #For testing in TextMate:
 #Dir.chdir("/Users/jbadger/work/hmp")
@@ -16,7 +17,7 @@ defaultcolors = {
   "Bacteria; Firmicutes" => "red", 
   "Bacteria; Actinobacteria" => "yellow", 
   "Bacteria; Bacteroidetes" => "green",
-  "Bacteria; Fusobacteria" => "fuschia", 
+  "Bacteria; Fusobacteria" => "lavender", 
   "Bacteria; Spirochaetes" => "aqua",
   "Bacteria; Tenericutes" => "olive", 
   "Bacteria; Deinococcus-Thermus" => "lime",
@@ -29,7 +30,7 @@ defaultcolors = {
   "Bacteria; Aquificae" => "orange",
   "Bacteria; Planctomycetes" => "darkgrey", 
   "Bacteria; Acidobacteria" => "silver",
-  "Bacteria; Nitrospirae" => "grey"
+  "Bacteria; Nitrospirae" => "pink"
 }
 
 def generateRandomColor(mix) 
@@ -86,52 +87,128 @@ ARGV.each {|afa|
     system("FastTree -nt -gtr  < #{name}.out > #{tree}")
   end
   File.unlink(name + ".out")
-  infotmp = name + ".infotmp"
-  system("treeinfo.pl #{tree} > #{infotmp}")
   info = name + ".info"
-  infof = File.new(info, "w")
-  File.new(infotmp).each {|line|
-    fields = line.split(" ", 4)
-    num, dist, type, sp = line.chomp.split("\t")
-    if (line =~/^font/)
-      line = "font\t1.0\tVerdana\t#000000\n"
-    elsif (type == "r")
-      if (taxinfo[sp])
-        line = num + "\t" + dist + "\t" + type + "\t" + sp + "\t" + taxinfo[sp] + "\n"
+  if (!File.exists?(info))
+    STDERR.printf("Making info...\n")
+    infotmp = name + ".infotmp"
+    system("treeinfo.pl #{tree} > #{infotmp}")
+    infof = File.new(info, "w")
+    File.new(infotmp).each {|line|
+      fields = line.split(" ", 4)
+      num, dist, type, sp = line.chomp.split("\t")
+      if (line =~/^font/)
+        line = "font\t1.0\tVerdana\t#000000\n"
+      elsif (type == "r")
+        if (taxinfo[sp])
+          line = num + "\t" + dist + "\t" + type + "\t" + sp + "\t" + taxinfo[sp] + "\n"
+        else
+          line = num + "\t" + dist + "\t" + "q" + "\t" + sp + "\n"
+        end
+      end
+      infof.print line
+    }
+    infof.printf("ttclr\tq\torange\tblue\n")
+  
+    colors.keys.each {|key|
+      infof.printf("htax\t%s\t%s\n", key, colors[key])
+    }
+    infof.close
+    File.unlink(infotmp)
+  end
+  svg = name + ".svg"
+  if (!File.exists?(svg))
+    STDERR.printf("Making svg...\n")
+    svgtmp = name + ".svgtmp"
+    system("treeinfo2svg.pl #{info} > #{svgtmp}")
+  
+    svgf = File.new(svg, "w")
+    y = -1500
+    File.new(svgtmp).each {|line|
+      if line =~/<\/svg>/
+        colors.keys.each {|key|
+          y += 2100
+          svgf.printf("<rect x=\"1000\" y=\"#{y}\" width=\"60000\"  height=\"3000\" fill=\"#{colors[key]}\"/>
+          <text x=\"1000\" y=\"#{y+2000}\" font-size=\"2900\" font-weight=\"bold\" font-family=\"Verdana\" fill=\"black\">#{key}</text>\n")
+        }
       else
-        line = num + "\t" + dist + "\t" + "q" + "\t" + sp + "\n"
+        svgf.print line
+      end
+    }
+    svgf.printf("<text x=\"7300\" y=\"700\" font-size=\"500\" font-weight=\"bold\" font-family=\"Verdana\" 
+    fill=\"black\">#{name}</text>")
+    svgf.printf("</svg>\n")
+    svgf.close
+    File.unlink(svgtmp)
+  end
+  pdf = name + ".pdf"
+  if (!File.exists?(pdf))
+    STDERR.printf("Making pdf...\n")
+    begin
+      system("svg2pdf  #{svg} > #{pdf}")
+    rescue
+      STDERR.printf("Can't make pdf...\n")
+    end
+  end
+  dist = name + ".dist"
+  if (!File.exists?(dist))
+    STDERR.printf("Making distance Matrix...\n")
+    system("newickDist #{tree} > #{dist}")
+  end
+  csv = name + ".csv"
+  if (!File.exists?(csv))
+    STDERR << "Processing distance...\n"
+    out = File.new(csv, "w")
+    out.print ["Dirk's ID", "Closest Sequenced or HMP", "Phylum", "Closest Tree Distance", 
+      "Frequency of 97% Cluster","Cluster Representative Sequence"].to_csv
+    taxa = []
+    File.new(dist).each do |line|
+      fields = line.chomp.split(" ")
+      next if fields.size == 1
+      sp = fields.shift
+      taxa.push(sp)
+    end
+    STDERR << "Loading Sequences...\n"
+    seqs = Hash.new
+    Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(afa)).each do |seq|
+      if (!taxinfo[seq.entry_id])
+        seqs[seq.entry_id] = seq.seq.gsub("-","").gsub(".","").upcase
       end
     end
-    infof.print line
-  }
-  infof.printf("ttclr\tq\torange\tblue\n")
-  
-  colors.keys.each {|key|
-    infof.printf("htax\t%s\t%s\n", key, colors[key])
-  }
-  infof.close
-  File.unlink(infotmp)
-  svgtmp = name + ".svgtmp"
-  system("treeinfo2svg.pl #{info} > #{svgtmp}")
-  svg = name + ".svg"
-  svgf = File.new(svg, "w")
-  y = -1500
-  File.new(svgtmp).each {|line|
-    if line =~/<\/svg>/
-      colors.keys.each {|key|
-        y += 2100
-        svgf.printf("<rect x=\"1000\" y=\"#{y}\" width=\"60000\"  height=\"3000\" fill=\"#{colors[key]}\"/>
-        <text x=\"1000\" y=\"#{y+2000}\" font-size=\"2900\" font-weight=\"bold\" font-family=\"Verdana\" fill=\"black\">#{key}</text>\n")
-      }
-    else
-      svgf.print line
+    STDERR << "Loading Cluster...\n"
+    clstr = name + ".clstr"
+    clst = Hash.new
+    ccount = Hash.new
+    num = 0
+    File.new(clstr).each do |line|
+      if (line =~/^>Cluster ([0-9]*)/)
+        num = $1.to_i
+        ccount[num] = 0
+      else 
+        entry = line.split(" ")[2].split("...").first.gsub(">","")
+        clst[entry] = num
+        ccount[num] += 1
+      end
     end
-  }
-  svgf.printf("<text x=\"7300\" y=\"700\" font-size=\"500\" font-weight=\"bold\" font-family=\"Verdana\" 
-  fill=\"black\">#{name}</text>")
-  svgf.printf("</svg>\n")
-  svgf.close
-  File.unlink(svgtmp)
-  pdf = name + ".pdf"
-  system("svg2pdf  #{svg} > #{pdf}")
+    ctot = ccount.values.reduce(:+)
+    File.new(dist).each do |line|
+      fields = line.chomp.split(" ")
+      sp = fields.shift
+      if (!taxinfo[sp])
+        min = 1e6
+        minTax = ""
+        fields.size.times do |i|
+          field = fields[i].to_f
+          if (taxinfo[taxa[i]] && field < min)
+            min = field
+            minTax = taxa[i]
+          end
+        end
+        if (min < 1e6 && seqs[sp])
+          out.print [sp, minTax, taxinfo[minTax], min, ccount[clst[sp]].to_s + "/" + ctot.to_s, 
+            seqs[sp]].to_csv
+        end
+      end
+    end
+    out.close
+  end
 }
