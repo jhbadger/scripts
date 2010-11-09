@@ -60,7 +60,7 @@ out = File.new(outName, "w")
 STDERR.printf("Loading Genomes...\n")
 ARGV.each {|pep|
   Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each {|seq|
-    key = seq.entry_id + "__" + pep
+    key = seq.entry_id + "_%_" + pep
     score[key] = Hash.new
     score[key][key] = 10
     plen[key] = seq.length
@@ -90,8 +90,8 @@ ARGV.each {|pep1|
     end
     File.new(vs + ".recip").each {|line|
       x, y, p1, p2, orth = line.chomp.split("\t")
-      x = x + "__" + pep1
-      y = y + "__" + pep2
+      x = x + "_%_" + pep1
+      y = y + "_%_" + pep2
       if (orth == "yes")
         score[x][y] = -Math.log(p1.to_f + 1e-300)
         score[x][y] = 200 if score[x][y] > 200
@@ -131,7 +131,7 @@ def processmcl(out, score, plen, genomes, reps, globalSeen)
         fields.delete(field)
         next
       end
-      pep, genome = field.split("__")
+      pep, genome = field.split("_%_")
       if (seen[genome])
         if (averageScore(score[seen[genome]]) > averageScore(score[field]))
           bad.push(field)
@@ -149,11 +149,11 @@ def processmcl(out, score, plen, genomes, reps, globalSeen)
     }
     if (!fields.empty?)
       longest = fields.first
-      reps[longest.split("__").first] = true
-      printf("%s", longest.split("__").first)
+      reps[longest.split("_%_").first] = true
+      printf("%s", longest.split("_%_").first)
       genomes.each {|genome|
         if (seen[genome] && !globalSeen[seen[genome]])
-          printf(",%s", seen[genome].split("__").first)
+          printf(",%s", seen[genome].split("_%_").first)
           globalSeen[seen[genome]] = true
         else
           printf(",")

@@ -83,6 +83,9 @@ ARGV.each {|afa|
   end
   outAfa.close
   tree = name + ".tree"
+  if (File.exists?(name + "_rooted.tree"))
+    tree = name + "_rooted.tree"
+  end
   if (!File.exists?(tree))
     system("FastTree -nt -gtr  < #{name}.out > #{tree}")
   end
@@ -150,6 +153,7 @@ ARGV.each {|afa|
     end
   end
   dist = name + ".dist"
+  dist += ".bz2" if (!File.exists?(dist) && File.exists?(dist + ".bz2"))
   if (!File.exists?(dist))
     STDERR.printf("Making distance Matrix...\n")
     system("newickDist #{tree} > #{dist}")
@@ -159,7 +163,7 @@ ARGV.each {|afa|
     STDERR << "Processing distance...\n"
     out = File.new(csv, "w")
     taxa = []
-    File.new(dist).each do |line|
+    ZFile.new(dist).each do |line|
       fields = line.chomp.split(" ")
       next if fields.size == 1
       sp = fields.shift
@@ -192,7 +196,7 @@ ARGV.each {|afa|
       "Size of 97% Cluster (out of #{ctot})","Cluster Representative Sequence"].to_csv
     lines = Hash.new
     min = Hash.new
-    File.new(dist).each do |line|
+    ZFile.new(dist).each do |line|
       fields = line.chomp.split(" ")
       sp = fields.shift
       if (!taxinfo[sp])

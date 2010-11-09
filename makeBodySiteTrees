@@ -21,7 +21,7 @@ end
 ARGV.each do |aln|
   clstr = aln.split(".bz2").first + ".clstr"
   name = File.basename(aln).split("DNA_").last.split("_0").first
-  if (!File.exists?(name + "_trim.afa"))
+  if (!File.exists?(name + "_trim.afa") && !File.exists?(name + "_trim.afa.bz2"))
     if (!File.exists?(name + ".afa"))
       system("bzcat #{aln} ../sequenced_genomes+hmp.afa.bz2 > #{name}.afa")
     end
