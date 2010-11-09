@@ -158,8 +158,6 @@ ARGV.each {|afa|
   if (!File.exists?(csv))
     STDERR << "Processing distance...\n"
     out = File.new(csv, "w")
-    out.print ["Dirk's ID", "Closest Sequenced or HMP", "Phylum", "Closest Tree Distance", 
-      "Frequency of 97% Cluster","Cluster Representative Sequence"].to_csv
     taxa = []
     File.new(dist).each do |line|
       fields = line.chomp.split(" ")
@@ -190,24 +188,30 @@ ARGV.each {|afa|
       end
     end
     ctot = ccount.values.reduce(:+)
+    out.print ["Dirk's ID", "Closest Sequenced or HMP", "Phylum", "Closest Tree Distance", 
+      "Size of 97% Cluster (out of #{ctot})","Cluster Representative Sequence"].to_csv
+    lines = Hash.new
+    min = Hash.new
     File.new(dist).each do |line|
       fields = line.chomp.split(" ")
       sp = fields.shift
       if (!taxinfo[sp])
-        min = 1e6
+        min[sp] = 1e6
         minTax = ""
         fields.size.times do |i|
           field = fields[i].to_f
-          if (taxinfo[taxa[i]] && field < min)
-            min = field
+          if (taxinfo[taxa[i]] && field < min[sp])
+            min[sp] = field
             minTax = taxa[i]
           end
         end
-        if (min < 1e6 && seqs[sp])
-          out.print [sp, minTax, taxinfo[minTax], min, ccount[clst[sp]].to_s + "/" + ctot.to_s, 
-            seqs[sp]].to_csv
+        if (min[sp] < 1e6 && seqs[sp])
+          lines[sp] = [sp, minTax, taxinfo[minTax], min[sp], ccount[clst[sp]], seqs[sp]]
         end
       end
+    end
+    lines.keys.sort {|x, y| min[y] <=> min[x]}.each do |sp|
+      out.print lines[sp].to_csv
     end
     out.close
   end
