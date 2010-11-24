@@ -44,7 +44,7 @@ end
 
 ARGV.each {|file|
   bout = File.basename(file) + "_vs_" + File.basename(db)
-  bout =+ ".#{opt.blast}" if (!opt.btab)
+  bout += ".#{opt.blast}" if (!opt.btab)
   bout += ".btab" if (opt.btab)
   if (!File.exists?(file))
     STDERR.printf("File %s does not exist!\n", file)
