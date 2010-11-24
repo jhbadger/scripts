@@ -3,7 +3,7 @@
 require 'optparse'
 require 'ostruct'
 require 'rubygems'
-require 'csv'
+require 'fastercsv'
 require 'Btab'
 require 'DBwrapper'
 require 'ZFile'
@@ -14,7 +14,7 @@ o = OptionParser.new
 opt.database = false
 opt.verbose = false
 
-o.banner << " read.ali posmap fna btab"
+o.banner << " fna btab [read.ali posmap]"
 o.on("-d", "--database", "use database") {opt.database = true}
 o.on("-v", "--verbose", "be verbose") {opt.verbose = true}
 begin
@@ -24,12 +24,12 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size != 4)
+if (ARGV.size != 2 && ARGV.size != 4)
   STDERR << o
   exit(1)
 end
 
-ali, posmap, fna, btab = ARGV
+fna, btab, ali, posmap = ARGV
 
 lib = Hash.new
 
@@ -92,38 +92,42 @@ end
 
 
 
-STDERR << "Loading aliases...\n"
-ZFile.new(ali).each do |line|
-  read, alname = line.chomp.split(" ")
-  lib[read] = alname.split("_").first
+if (ali)
+  STDERR << "Loading aliases...\n"
+  ZFile.new(ali).each do |line|
+    read, alname = line.chomp.split(" ")
+    lib[read] = alname.split("_").first
+  end
 end
 
 libcounts = Hash.new
 totcounts = Hash.new
-STDERR << "Loading posmap...\n"
-ZFile.new(posmap).each do |line|
-  contig, read = line.chomp.split(" ")
-  libcounts[contig] = Hash.new if libcounts[contig].nil?
-  lread = lib[read]
-  if (lread.nil?)
-    STDERR << "No library for " << read << "\n" if (opt.verbose)
-    next
+
+if (posmap)
+  STDERR << "Loading posmap...\n"
+  ZFile.new(posmap).each do |line|
+    contig, read = line.chomp.split(" ")
+    libcounts[contig] = Hash.new if libcounts[contig].nil?
+    lread = lib[read]
+    if (lread.nil?)
+      STDERR << "No library for " << read << "\n" if (opt.verbose)
+      next
+    end
+    libcounts[contig][lread] = 0 if libcounts[contig][lread].nil?
+    libcounts[contig][lread] += 1
+    totcounts[lread] = 0 if totcounts[lread].nil?
+    totcounts[lread] += 1
   end
-  libcounts[contig][lread] = 0 if libcounts[contig][lread].nil?
-  libcounts[contig][lread] += 1
-  totcounts[lread] = 0 if totcounts[lread].nil?
-  totcounts[lread] += 1
 end
 
-isogroup = Hash.new
-seen = Hash.new
-STDERR << "Loading Isogroup Info...\n"
+contigs = Hash.new
+STDERR << "Loading DNA Info...\n"
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fna)).each do |seq|
   seen[seq.entry_id] = true
   if (seq.definition =~/(isogroup[0-9]*)/)
-    isogroup[seq.entry_id] = $1
+    contigs[seq.entry_id] = $1
   else
-    isogroup[seq.entry_id] = ""  
+    contigs[seq.entry_id] = ""  
   end
 end
 
@@ -143,7 +147,6 @@ header.push("JCVI Match ID", "GenBank ID (if present)", "Annotation", "Species",
 print header.to_csv
 
 libcounts.keys.sort.each do |contig|
-  next if (!seen[contig])
   line = [contig, isogroup[contig]]
   sum = 0
   totcounts.keys.sort.each do |key|

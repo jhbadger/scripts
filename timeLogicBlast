@@ -1,0 +1,64 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.evalue = 1e-9
+opt.blast = "blastp"
+opt.maxHits = 50
+opt.btab = false
+$VERBOSE = nil
+
+
+ARGV.options {|opts|
+  opts.banner << " db fasta [fasta...]"
+  opts.on("-b ", "--blast ", String, 
+          "choose BLAST to use (default #{opt.blast})") {|t| opt.blast = t}
+  opts.on("-e", "--evalue ", Float, 
+          "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
+  opts.on("-m ", "--maxHits ", Integer, 
+          "max number of BLAST hits (default #{opt.maxHits})") {|t| opt.maxHits = t}
+  opts.on("-t", "--tab", "use btab format (#{opt.btab})") {|t| opt.btab = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+
+db = ARGV.shift
+
+if (opt.blast !~ /^blast[n|p|x]/ && opt.blast !~/tblastn/)
+  STDERR.printf("Only blastn, blastp, blastx, and tblastn are valid grid BLAST programs\n")
+  exit(1)
+end
+
+ARGV.each {|file|
+  bout = File.basename(file) + "_vs_" + File.basename(db)
+  bout =+ ".#{opt.blast}" if (!opt.btab)
+  bout += ".btab" if (opt.btab)
+  if (!File.exists?(file))
+    STDERR.printf("File %s does not exist!\n", file)
+    next
+  end
+  STDERR << "Processing #{file}....\n"
+  cmd = "dc_run -parameters tera-#{opt.blast} -database #{db} -threshold significance=#{opt.evalue} "
+  cmd += "-max_alignments #{opt.maxHits} -query #{file} "
+  if (opt.btab)
+    cmd += "-output_format tab "
+    cmd += "-field querytext queryaccession querylength algorithm userid targetaccession "
+    cmd += "querystart queryend targetstart targetend alignmentlength matches score score targetdescription "
+    cmd += "queryframe queryframe queryframe significance significance "
+  end
+  cmd += "> #{bout}"
+  system(cmd)
+}
