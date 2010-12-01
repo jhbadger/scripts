@@ -193,7 +193,7 @@ ARGV.each {|afa|
         clst[entry] = num
         ccount[num] += 1
         id, patient = entry.split("|")
-        patients[num].push(patient) if patients[num].include?(patient)
+        patients[num].push(patient) if !patients[num].include?(patient)
       end
     end
     ctot = ccount.values.reduce(:+)
