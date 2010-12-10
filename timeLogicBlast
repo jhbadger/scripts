@@ -52,10 +52,10 @@ ARGV.each {|file|
   end
   STDERR << "Processing #{file}....\n"
   cmd = "dc_run -parameters tera-#{opt.blast} -database #{db} -threshold significance=#{opt.evalue} "
-  cmd += "-max_alignments #{opt.maxHits} -query #{file} "
+  cmd += "-max_alignments #{opt.maxHits} -max_scores #{opt.maxHits} -query #{file} "
   if (opt.btab)
     cmd += "-output_format tab "
-    cmd += "-field querytext queryaccession querylength algorithm userid targetaccession "
+    cmd += "-field querytext queryaccession querylength algorithm userid targetlocus "
     cmd += "querystart queryend targetstart targetend alignmentlength matches score score targetdescription "
     cmd += "queryframe queryframe queryframe significance significance "
   end
