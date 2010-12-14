@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+require 'rubygems'
+require 'dm-core'
+
+if (ARGV.size != 1)
+  STDERR << "need list\n"
+  exit(1)
+end
+
+DataMapper.setup(:default, "mysql://access:access@mysql-lan-pro/phylodb_annotation")
+
+
+
+File.new(ARGV.first).each do |line|
+  id = line.chomp
+  query = "SELECT ncbi FROM ncbi WHERE jcvi='#{id}' LIMIT 1"
+  value = repository(:default).adapter.select(query)
+  if (id =~/gi([0-9]+)/)
+    value = $1
+  end
+  print value.to_s + "\n"
+end
+ 

@@ -63,7 +63,7 @@ seen = Hash.new
 colors = Hash.new
 ARGV.each {|afa|
   taxinfo = Hash.new
-  name = File.basename(afa, ".afa")
+  name = File.basename(afa.gsub(".bz2",""), ".afa")
   outAfa = File.new(name + ".out", "w")
   Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(afa)).each do |seq|
     sname = seq.entry_id
@@ -172,28 +172,34 @@ ARGV.each {|afa|
     STDERR << "Loading Sequences...\n"
     seqs = Hash.new
     Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(afa)).each do |seq|
-      if (!taxinfo[seq.entry_id])
-        seqs[seq.entry_id] = seq.seq.gsub("-","").gsub(".","").upcase
+      sname = seq.definition.split(" ").first
+      if (!taxinfo[sname])
+        seqs[sname] = seq.seq.gsub("-","").gsub(".","").upcase
       end
     end
     STDERR << "Loading Cluster...\n"
     clstr = name + ".clstr"
     clst = Hash.new
+    patients = Hash.new
     ccount = Hash.new
     num = 0
     File.new(clstr).each do |line|
       if (line =~/^>Cluster ([0-9]*)/)
         num = $1.to_i
         ccount[num] = 0
+        patients[num] = []
       else 
         entry = line.split(" ")[2].split("...").first.gsub(">","")
         clst[entry] = num
         ccount[num] += 1
+        id, patient = entry.split("|")
+        patients[num].push(patient) if !patients[num].include?(patient)
       end
     end
     ctot = ccount.values.reduce(:+)
     out.print ["Dirk's ID", "Closest Sequenced or HMP", "Phylum", "Closest Tree Distance", 
-      "Size of 97% Cluster (out of #{ctot})","Cluster Representative Sequence"].to_csv
+      "Size of 97% Cluster (out of #{ctot})","Number of Patients with Cluster",
+      "Cluster Representative Sequence"].to_csv
     lines = Hash.new
     min = Hash.new
     ZFile.new(dist).each do |line|
@@ -210,7 +216,8 @@ ARGV.each {|afa|
           end
         end
         if (min[sp] < 1e6 && seqs[sp])
-          lines[sp] = [sp, minTax, taxinfo[minTax], min[sp], ccount[clst[sp]], seqs[sp]]
+          lines[sp] = [sp, minTax, taxinfo[minTax], min[sp], ccount[clst[sp]], 
+          patients[clst[sp]].size, seqs[sp]]
         end
       end
     end
