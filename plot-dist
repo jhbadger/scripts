@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size == 1)
+  names = []
+  matrix = []
+  num = nil
+  i = 0
+  j = -1
+  File.new(ARGV.first).each do |line|
+    fields = line.split(" ")
+    if (fields.size > 1)
+      if (line !~/^ /)
+        names.push(fields.shift)
+        j += 1
+        i = 0
+        matrix[j] = []
+      end
+      fields.each do |field|
+        matrix[j][i] = field
+        i += 1
+      end 
+    elsif (num.nil?)
+      num = line.to_i
+    end
+  end
+  0.upto(num - 1) do |i|
+    (i + 1).upto(num -1 ) do |j|
+      STDOUT << matrix[i][j] << "\t" << names[i] << "\t" << names[j] << "\n"
+    end
+  end
+else
+  STDERR << "Usage: #{File.basename($0)} dist-file\n" 
+end
