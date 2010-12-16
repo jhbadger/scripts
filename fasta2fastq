@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.qual = "z"
+
+o = OptionParser.new
+o.banner << " seq.fasta"
+o.on("-q ", "--quality ", "quality character (#{opt.qual})") {|t| opt.qual = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
+  printf("@%s\n%s\n+%s\n%s\n", seq.definition, seq.seq.upcase, seq.definition, opt.qual*seq.length)
+}
