@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+
+require 'ftools' # routines for copying files, etc.
+
+# copies files into a common directory structure 
+# example: files like  a b c into /usr/local/blarg/a/nuc.fasta /usr/local/blarg/b/nuc.fasta etc. 
+# copyNestedFiles /usr/local/blarg nuc.fasta a b c
+
+if (ARGV.size > 2) 
+  dir, name = ARGV.shift, ARGV.shift
+  ARGV.each do |file|
+    baseName = File.basename(file).split(".").first
+    subDir = nil
+    subDir = dir + "/" + baseName + "/" + name.split("/").first if (name.index("/"))
+    if (!File.exists?(dir + "/" + baseName))
+      STDERR.printf("No such directory: %s\n", dir + "/" + baseName)
+    elsif (subDir && !File.exists?(subDir))
+      Dir.mkdir(subDir)
+    end
+    File.copy(file, dir + "/" + baseName + "/" + name)
+  end
+else
+  STDERR.printf("Usage: dir name file [...file...]\n", File.basename($0))
+end
