@@ -1,24 +1,45 @@
 #!/usr/bin/env ruby
 
+require 'optparse'
+require 'ostruct'
 require 'ftools' # routines for copying files, etc.
+
+opt = OpenStruct.new
+opt.cut = nil
 
 # copies files into a common directory structure 
 # example: files like  a b c into /usr/local/blarg/a/nuc.fasta /usr/local/blarg/b/nuc.fasta etc. 
 # copyNestedFiles /usr/local/blarg nuc.fasta a b c
 
-if (ARGV.size > 2) 
-  dir, name = ARGV.shift, ARGV.shift
-  ARGV.each do |file|
-    baseName = File.basename(file).split(".").first
-    subDir = nil
-    subDir = dir + "/" + baseName + "/" + name.split("/").first if (name.index("/"))
-    if (!File.exists?(dir + "/" + baseName))
-      STDERR.printf("No such directory: %s\n", dir + "/" + baseName)
-    elsif (subDir && !File.exists?(subDir))
-      Dir.mkdir(subDir)
-    end
-    File.copy(file, dir + "/" + baseName + "/" + name)
+ARGV.options {|opts|
+  opts.banner << " dir name file [...file...]"
+  opts.on("-c ", "--cut ", String, "string to cut off file") {|t| opt.cut = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
   end
-else
-  STDERR.printf("Usage: dir name file [...file...]\n", File.basename($0))
+  if (ARGV.size < 3)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+dir, name = ARGV.shift, ARGV.shift
+ARGV.each do |file|
+  baseName = File.basename(file).split(".").first
+  baseName = baseName.split(opt.cut).first if (opt.cut)
+  subDir = nil
+  subDir = dir + "/" + baseName + "/" + name.split("/").first if (name.index("/"))
+  if (!File.exists?(dir + "/" + baseName))
+    STDERR.printf("No such directory: %s\n", dir + "/" + baseName)
+    next
+  elsif (subDir && !File.exists?(subDir))
+    Dir.mkdir(subDir)
+  end
+  STDERR.printf("Copying %s to %s...\n", file, dir + "/" + baseName + "/" + name)
+  File.copy(file, dir + "/" + baseName + "/" + name)
 end
