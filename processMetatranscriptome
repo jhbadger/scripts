@@ -33,8 +33,6 @@ fna, btab, ali, posmap = ARGV
 
 lib = Hash.new
 
-
-
 db = MySQL.new("mysql-lan-pro","phylodb", "apis", "apis_user")
 annotation = Hash.new
 matches = Hash.new
@@ -142,12 +140,12 @@ totcounts.keys.sort.each do |key|
 end
 header.push("JCVI Match ID", "GenBank ID (if present)", "Annotation", "Species", "Taxon Id", "Taxonomy", 
 "GOS Cluster", "Phytax Cluster", "Kegg Ortholog", "Kegg Pathway", "SwissProt", 
-"SwissProt Ann", "COG", "COG Ann", "In Plant?", "In Animal?","PFAM","PFAM Ann", "TIGRFAM", 
+"SwissProt Ann", "COG", "COG Ann","PFAM","PFAM Ann", "TIGRFAM", 
 "TIGRFAM Ann", "GO")
 print header.to_csv
 
 libcounts.keys.sort.each do |contig|
-  line = [contig, isogroup[contig]]
+  line = [contig, contigs[contig]]
   sum = 0
   totcounts.keys.sort.each do |key|
     line.push(libcounts[contig][key].to_i)
@@ -162,8 +160,8 @@ libcounts.keys.sort.each do |contig|
     ann.go = (pfam["'#{ann.pfam}'"].to_a + tigrfam["'#{ann.tigrfam}'"].to_a).sort.uniq.join("; ")
     ann.annotation = "" if (ann.annotation.nil? || ann.annotation[0] == "{")
     line.push(matches[contig], ann.ncbi, ann.annotation, ann.species, ann.taxid, ann.taxonomy, 
-      ann.gos, ann.phytax,ann.ko, ann.pathway, ann.swiss, ann.swiss_ann, ann.cog, ann.cog_ann, ann.plant, 
-      ann.animal, ann.pfam,ann.pfamAnn, ann.tigrfam, ann.tigrfamAnn, ann.go)
+      ann.gos, ann.phytax,ann.ko, ann.pathway, ann.swiss, ann.swiss_ann, ann.cog, ann.cog_ann, 
+      ann.pfam,ann.pfamAnn, ann.tigrfam, ann.tigrfamAnn, ann.go)
   end
   print line.to_csv
 end
