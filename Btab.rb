@@ -138,8 +138,9 @@ class Btab
     oldQ = nil
     @file.each {|line|
       query, date, qlen, program, database, subject, qleft, qright, 
-      sleft, sright, percentId, percentSim, dummy, score, dummy,
+      sleft, sright, percentId, percentSim, dummy, score, dummy2,
       desc, frame, strand, slen, evalue = line.chomp.split("\t")
+      desc = dummy2 if (desc.length < 10) # fix timelogic btab
       @date = date if (!@date)
       @program = program if (!@program)
       @database = database if (!@database)

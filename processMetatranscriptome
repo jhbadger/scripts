@@ -1,22 +1,24 @@
 #!/usr/bin/env ruby
 
+require 'rubygems'
+require 'dm-core'
 require 'optparse'
 require 'ostruct'
-require 'rubygems'
-require 'fastercsv'
-require 'Btab'
-require 'dm-core'
-require 'ZFile'
 require 'bio'
+require 'Btab'
+require 'ZFile'
+require 'fastercsv'
 
 opt = OpenStruct.new
 o = OptionParser.new
 opt.database = false
-opt.verbose = false
+opt.posmap = false
+opt.ali = false
 
 o.banner << " fna btab [read.ali posmap]"
 o.on("-d", "--database", "use database") {opt.database = true}
-o.on("-v", "--verbose", "be verbose") {opt.verbose = true}
+o.on("-a ", "--alias ", String, "alias file ") {|t| opt.ali = t}
+o.on("-p ", "--posmap ", String, "posmap file ") {|t| opt.posmap = t}
 begin
   o.parse!
 rescue
@@ -24,78 +26,65 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size != 2 && ARGV.size != 4)
+if (ARGV.size != 2)
   STDERR << o
   exit(1)
 end
 
-fna, btab, ali, posmap = ARGV
-
+fna, btab = ARGV
 lib = Hash.new
-
-DataMapper.setup(:default, "mysql://access:access@mysql-lan-pro/phylodb")
-db = repository(:default).adapter
+DataMapper.setup(:default, "mysql://access:access@mysql-lan-pro/phylodb_annotation")
 
 annotation = Hash.new
 matches = Hash.new
-mapq =  "SELECT phylodb_seq_id, contigs.taxon_id, contigs.species, taxonomy, annotation,"
-mapq += "gos_cluster_id, swiss, swiss.definition as swiss_def, cog_definitions.cog, " 
-mapq += "cog_definitions.definition, phytax_cluster_id, map.ko, pathway, "
-mapq += "map.pfam,pfam.definition as pfam_def, map.tigrfams, "
-mapq += "tigrfams.definition as tigrfams_def FROM phylodb_annotation.map "
-mapq += "LEFT JOIN phylodb_annotation.pathways USING(ko) "
-mapq += "LEFT JOIN phylodb_annotation.pfam USING(pfam) " 
-mapq += "LEFT JOIN phylodb_annotation.tigrfams USING(tigrfams) " 
-mapq += "LEFT JOIN proteins ON phylodb_seq_id = proteins.name " 
-mapq += "LEFT JOIN contigs ON contig_name = contigs.name "
-mapq += "LEFT JOIN phylodb_annotation.blast ON blast.query = phylodb_seq_id "
-mapq += "LEFT JOIN phylodb_annotation.swiss ON blast.hit = swiss "
-mapq += "LEFT JOIN phylodb_annotation.cog_proteins ON blast.hit = protein "
-mapq += "LEFT JOIN phylodb_annotation.cog_definitions ON cog_definitions.cog = cog_proteins.cog"
 seen = Hash.new
 pfam = Hash.new
 tigrfam = Hash.new
 STDERR << "Loading Btab...\n"
 Btab.new(btab).each do |query|
+  name = query.name.split(" ").first
   match = query.matches.first
-  matches[query.name] = match.name
+  matches[name] = match.name
   annotation[match.name] = OpenStruct.new
   if (match.desc =~/(\S+)([^\{]*)\{([^\}]*)/)
     annotation[match.name].species = $3.strip
     annotation[match.name].annotation = $2.strip
   end
-  seen["'#{match.name}'"] = true
+  seen[match.name] = true
 end
+
+
 if (opt.database)
   STDERR << "Fetching data from database...\n"
   list = seen.keys.reduce(:+)
-  query = mapq + " WHERE phylodb_seq_id IN (#{seen.keys.join(",")})"
-  db.select(query).each do |row|
+  query = "SELECT * FROM summary_ann WHERE phylodb_seq_id IN ('#{seen.keys.join("','")}')"
+  repository(:default).adapter.select(query).each do |row|
+    row = row.to_a
     name = row.shift
     ann = annotation[name]
     ann.taxid, ann.species, ann.taxonomy, ann.annotation, ann.gos, swiss, swiss_ann, cog, cog_ann, ann.phytax, 
     ann.ko, ann.pathway, ann.pfam, ann.pfamAnn, ann.tigrfam, ann.tigrfamAnn = row
     ann.swiss, ann.swiss_ann = swiss, swiss_ann if (!swiss.nil?)
     ann.cog, ann.cog_ann = cog, cog_ann if (!cog.nil?)
-    pfam["'#{ann.pfam}'"] = [] if (ann.pfam && !pfam["'#{ann.pfam}'"])
-    tigrfam["'#{ann.tigrfam}'"] = [] if (ann.tigrfam && !pfam["'#{ann.tigrfam}'"])
+    pfam[ann.pfam] = [] if (ann.pfam && !pfam[ann.pfam])
+    tigrfam[ann.tigrfam] = [] if (ann.tigrfam && !pfam[ann.tigrfam])
   end
-  db.select("SELECT pfam, go FROM pfam2go WHERE pfam IN (#{pfam.keys.join(",")})").each do |row|
-    pfam["'#{row[0]}'"].push(row[1])
+  repository(:default).adapter.select("SELECT pfam, go FROM pfam2go WHERE pfam IN ('#{pfam.keys.join("','")}')").each do |row|
+    pfam[row[0]].push(row[1])
   end
-  db.select("SELECT tigrfams, go FROM tigrfams2go WHERE tigrfams IN (#{tigrfam.keys.join(",")})").each do |row|
-    tigrfam["'#{row[0]}'"].push(row[1])
+  repository(:default).adapter.select("SELECT tigrfams, go FROM tigrfams2go WHERE tigrfams IN ('#{tigrfam.keys.join("','")}')").each do |row|
+    tigrfam[row[0]].push(row[1])
   end
-  db.select("SELECT jcvi, ncbi FROM ncbi WHERE jcvi IN (#{seen.keys.join(",")})").each do |row|
+  repository(:default).adapter.select("SELECT jcvi, ncbi FROM ncbi WHERE jcvi IN ('#{seen.keys.join("','")}')").each do |row|
     jcvi, ncbi = row
-    annotation[jcvi].ncbi = ncbi
+    annotation[jcvi]["ncbi"] = ncbi if (annotation[jcvi])
   end
 end
 
 
-if (ali)
+if (opt.ali)
   STDERR << "Loading aliases...\n"
-  ZFile.new(ali).each do |line|
+  ZFile.new(opt.ali).each do |line|
     read, alname = line.chomp.split(" ")
     lib[read] = alname.split("_").first
   end
@@ -104,14 +93,18 @@ end
 libcounts = Hash.new
 totcounts = Hash.new
 
-if (posmap)
+if (opt.posmap)
   STDERR << "Loading posmap...\n"
-  ZFile.new(posmap).each do |line|
+  ZFile.new(opt.posmap).each do |line|
     contig, read = line.chomp.split(" ")
     libcounts[contig] = Hash.new if libcounts[contig].nil?
-    lread = lib[read]
+    if (opt.ali)
+      lread = lib[read]
+    else
+      lread = read.split("_").first
+    end
     if (lread.nil?)
-      STDERR << "No library for " << read << "\n" if (opt.verbose)
+      STDERR << "No library for " << read << "\n"
       next
     end
     libcounts[contig][lread] = 0 if libcounts[contig][lread].nil?
@@ -160,7 +153,7 @@ libcounts.keys.sort.each do |contig|
   end
   ann = annotation[matches[contig]]
   if (!ann.nil?)
-    ann.go = (pfam["'#{ann.pfam}'"].to_a + tigrfam["'#{ann.tigrfam}'"].to_a).sort.uniq.join("; ")
+    ann.go = (pfam[ann.pfam].to_a + tigrfam[ann.tigrfam].to_a).sort.uniq.join("; ")
     ann.annotation = "" if (ann.annotation.nil? || ann.annotation[0] == "{")
     line.push(matches[contig], ann.ncbi, ann.annotation, ann.species, ann.taxid, ann.taxonomy, 
       ann.gos, ann.phytax,ann.ko, ann.pathway, ann.swiss, ann.swiss_ann, ann.cog, ann.cog_ann, 
