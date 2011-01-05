@@ -15,7 +15,7 @@ opt.database = false
 opt.posmap = false
 opt.ali = false
 
-o.banner << " fna btab [read.ali posmap]"
+o.banner << " fna btab"
 o.on("-d", "--database", "use database") {opt.database = true}
 o.on("-a ", "--alias ", String, "alias file ") {|t| opt.ali = t}
 o.on("-p ", "--posmap ", String, "posmap file ") {|t| opt.posmap = t}
