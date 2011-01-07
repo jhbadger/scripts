@@ -9,10 +9,12 @@ require 'ZFile'
 opt = OpenStruct.new
 opt.remove = false
 opt.header = false
+opt.noambig = false
 
 o = OptionParser.new
 o.banner << " seq.fasta"
 o.on("-r", "--remove", "remove alignment (#{opt.remove})") {opt.remove = true}
+o.on("-n", "--noambig", "remove N's, X's (#{opt.noambig})") {opt.noambig = true}
 o.on("-h", "--header", "keep header (#{opt.header})") {opt.header = true}
 begin
   o.parse!
@@ -32,6 +34,7 @@ seqs = Hash.new
 
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
   seq.seq.gsub!(/-|\./,"") if (opt.remove)
+  seq.seq.gsub!(/N|n|X|x/,"") if (opt.noambig)
   seq.definition = seq.entry_id if (!opt.header)
   print seq.seq.upcase.to_fasta(seq.definition, 60)
 }

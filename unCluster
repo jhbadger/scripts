@@ -1,0 +1,51 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.remove = false
+
+o.banner << " fasta clstr"
+o.on("-r", "--remove", "remove Ns and alignment") {opt.remove = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+fasta, clstr = ARGV
+
+clusters = Hash.new
+member = Hash.new
+num = nil
+
+File.new(clstr).each do |line|
+  if (line =~/^>Cluster ([0-9]*)/)
+    num = $1.to_i
+    clusters[num] = []
+  else 
+    entry = line.split(" ")[2].split("...").first.gsub(">","")
+    clusters[num].push(entry)
+    member[entry] = num
+  end
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  if (cl = clusters[member[seq.definition]])
+    cl.each do |name|
+      seq.seq.gsub!(/\.|n|N|-/, "") if (opt.remove)
+      print seq.seq.to_fasta(name, 60)
+    end
+  end
+end
