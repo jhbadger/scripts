@@ -1,0 +1,120 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+require 'FasterCSV'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+o.banner << " fasta clstr .csv class.txt"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 4)
+  STDERR << o
+  exit(1)
+end
+
+fasta, clstr, csv, classtxt = ARGV
+
+patients = Hash.new
+seqs = Hash.new
+
+Dir.glob("*_trim.clstr").each do |clst|
+  site = clstr.split("_trim").first
+  ebin = []
+  pbin = []
+  File.new(clst).each do |line|
+    if (line =~/^>Cluster/)
+      ebin.each do |e|
+        patients[e] = pbin
+        seqs[e] = ebin
+      end
+      ebin = []
+      pbin = []
+    else
+      entry = line.split(" ")[2].split("...").first.gsub(">","")
+      number, patient, site = entry.split("|")
+      dummy, site = site.split("DNA_")
+      ebin.push(entry)
+      pbin.push(patient) if (!pbin.include?(patient))
+    end
+  end
+  ebin.each do |e|
+    patients[e] = pbin
+    seqs[e] = ebin
+  end
+end
+
+
+clusters = Hash.new
+member = Hash.new
+pats = Hash.new
+sites = Hash.new
+seqs2 = Hash.new
+num = nil
+
+File.new(clstr).each do |line|
+  if (line =~/^>Cluster ([0-9]*)/)
+    num = $1.to_i
+    pats[num] = Hash.new
+    seqs2[num] = Hash.new
+    sites[num] = Hash.new
+  else 
+    entry = line.split(" ")[2].split("...").first.gsub(">","")
+    number, patient, site = entry.split("|")
+    dummy, site = site.split("DNA_")
+    seqs[entry].each do |seq|
+      seqs2[num][seq] = 1
+    end
+    patients[entry].each do |pat|
+      pats[num][pat] = 1
+    end
+    sites[num][site] = 1 
+    member[entry] = num
+  end
+end
+
+
+seqEntries = Hash.new
+closest = Hash.new
+phy = Hash.new
+dist = Hash.new
+
+FasterCSV.foreach(csv) do |row|
+  entry, clo, ph, d, size, npats, seq = row
+  seqEntries[entry] = seq.gsub("N","")
+  closest[entry] = clo
+  phy[entry] = ph
+  dist[entry] = d
+end
+
+classification = Hash.new
+File.new(classtxt).each do |line|
+  entry, tax = line.chomp.split("\t")
+  classification[entry] = tax
+end
+
+header = ["Dirk's ID", "Number of Sites", "Sites", "Closest Sequenced or HMP", 
+  "Phylum", "Closest Tree Distance", "Cluster Size", "Number of Patients with Cluster", 
+  "Cluster Representative Sequence", "Representative Classification"]
+
+
+print header.to_csv
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  if (num = member[seq.definition])
+    line = [seq.definition, sites[num].keys.size, sites[num].keys.sort.join(" "), 
+    closest[seq.definition], phy[seq.definition], dist[seq.definition], seqs2[num].keys.size,
+    pats[num].keys.size, seqEntries[seq.definition], classification[seq.definition]]
+    print line.to_csv if (pats[num].keys.size > 1)
+  end
+end

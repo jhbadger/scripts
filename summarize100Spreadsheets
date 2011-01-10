@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Stats'
+require 'Mothur'
+require 'rubygems'
+require 'fastercsv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " csv [csv...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+header = ["Dirk's ID", "Site", "Closest Sequenced or HMP", "Phylum", "Closest Tree Distance", "Cluster Size", 
+"Number of Patients with Cluster", "Cluster Representative Sequence", "Representative Classification"]
+STDOUT << header.to_csv 
+
+ARGV.each do |csv|
+  dists = []
+  rows = []
+  name = csv.split(".").first.gsub("_trim","")
+  FasterCSV.foreach(csv) do |row|
+    next if row[0] =~ /^Dirk/
+    row.insert(1, name)
+    row[4]  = row[4].to_f
+    dist = row[4]
+    rows.push(row)
+    dists.push(dist)
+  end
+  tx = Mothur.classify(rows.collect {|x| x.last})
+  threshold = dists.median + dists.stdDev
+  rows.each do |row|
+    cl = tx.shift
+    if (row[4] > threshold)
+      row.push(cl)
+      STDOUT << row.to_csv
+    end 
+  end
+end

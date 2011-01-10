@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+require 'ftools' # routines for copying files, etc.
+
+# rename (actually copies as the original files are untouched) files within a common directory structure
+# example: files like /usr/local/blarg/a/nuc.fasta /usr/local/blarg/b/nuc.fasta to: a.fasta b.fasta by 
+# renameNestedFiles blarg /usr/local/blarg/*/nuc.fasta
+
+
+if (ARGV.size > 1) # has at least common part and at least one file to work on
+  common = ARGV.shift # first argument is common directory
+  ARGV.each do |file| # loop over all files given to command
+    dirs = file.split("/") # split file name into directories
+    if (dirs.include?(common))
+      name = dirs[dirs.index(common) + 1] # name is directory after common
+      ext = file.split(".").last # save file extension for renamed file
+      STDERR.printf("Copying %s to %s...\n", file, name + "." + ext)
+      File.copy(file, name + "." + ext)
+    else
+      STDERR.printf("Error: %s is not part of %s\n", common, file)
+    end
+  end
+else
+  STDERR.printf("Usage: %s common-name file [...file...]\n", File.basename($0))
+end

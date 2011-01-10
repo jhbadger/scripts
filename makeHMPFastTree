@@ -63,7 +63,7 @@ seen = Hash.new
 colors = Hash.new
 ARGV.each {|afa|
   taxinfo = Hash.new
-  name = File.basename(afa, ".afa")
+  name = File.basename(afa.gsub(".bz2",""), ".afa")
   outAfa = File.new(name + ".out", "w")
   Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(afa)).each do |seq|
     sname = seq.entry_id
@@ -83,6 +83,9 @@ ARGV.each {|afa|
   end
   outAfa.close
   tree = name + ".tree"
+  if (File.exists?(name + "_rooted.tree"))
+    tree = name + "_rooted.tree"
+  end
   if (!File.exists?(tree))
     system("FastTree -nt -gtr  < #{name}.out > #{tree}")
   end
@@ -150,6 +153,7 @@ ARGV.each {|afa|
     end
   end
   dist = name + ".dist"
+  dist += ".bz2" if (!File.exists?(dist) && File.exists?(dist + ".bz2"))
   if (!File.exists?(dist))
     STDERR.printf("Making distance Matrix...\n")
     system("newickDist #{tree} > #{dist}")
@@ -158,10 +162,8 @@ ARGV.each {|afa|
   if (!File.exists?(csv))
     STDERR << "Processing distance...\n"
     out = File.new(csv, "w")
-    out.print ["Dirk's ID", "Closest Sequenced or HMP", "Phylum", "Closest Tree Distance", 
-      "Frequency of 97% Cluster","Cluster Representative Sequence"].to_csv
     taxa = []
-    File.new(dist).each do |line|
+    ZFile.new(dist).each do |line|
       fields = line.chomp.split(" ")
       next if fields.size == 1
       sp = fields.shift
@@ -170,45 +172,63 @@ ARGV.each {|afa|
     STDERR << "Loading Sequences...\n"
     seqs = Hash.new
     Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(afa)).each do |seq|
-      if (!taxinfo[seq.entry_id])
-        seqs[seq.entry_id] = seq.seq.gsub("-","").gsub(".","").upcase
+      sname = seq.definition.split(" ").first
+      if (!taxinfo[sname])
+        seqs[sname] = seq.seq.gsub("-","").gsub(".","").upcase
       end
     end
     STDERR << "Loading Cluster...\n"
     clstr = name + ".clstr"
     clst = Hash.new
+    patients = Hash.new
     ccount = Hash.new
     num = 0
     File.new(clstr).each do |line|
       if (line =~/^>Cluster ([0-9]*)/)
         num = $1.to_i
         ccount[num] = 0
+        patients[num] = []
       else 
         entry = line.split(" ")[2].split("...").first.gsub(">","")
         clst[entry] = num
         ccount[num] += 1
+        id, patient = entry.split("|")
+        patients[num].push(patient) if !patients[num].include?(patient)
       end
     end
     ctot = ccount.values.reduce(:+)
-    File.new(dist).each do |line|
+    out.print ["Dirk's ID", "Closest Sequenced or HMP", "Phylum", "Closest Tree Distance", 
+      "Size of 97% Cluster (out of #{ctot})","Number of Patients with Cluster",
+      "Cluster Representative Sequence"].to_csv
+    lines = Hash.new
+    min = Hash.new
+    ZFile.new(dist).each do |line|
       fields = line.chomp.split(" ")
       sp = fields.shift
       if (!taxinfo[sp])
-        min = 1e6
+        min[sp] = 1e6
         minTax = ""
         fields.size.times do |i|
           field = fields[i].to_f
-          if (taxinfo[taxa[i]] && field < min)
-            min = field
+          if (taxinfo[taxa[i]] && field < min[sp])
+            min[sp] = field
             minTax = taxa[i]
           end
         end
-        if (min < 1e6 && seqs[sp])
-          out.print [sp, minTax, taxinfo[minTax], min, ccount[clst[sp]].to_s + "/" + ctot.to_s, 
-            seqs[sp]].to_csv
+        if (min[sp] < 1e6 && seqs[sp])
+          lines[sp] = [sp, minTax, taxinfo[minTax], min[sp], ccount[clst[sp]], 
+          patients[clst[sp]].size, seqs[sp]]
         end
       end
     end
+    lines.keys.sort {|x, y| min[y] <=> min[x]}.each do |sp|
+      out.print lines[sp].to_csv
+    end
     out.close
+  end
+  rooted = name + "_root.tree"
+  if (!File.exists?(rooted))
+    STDERR << "Rooting #{tree}...\n"
+    system("newickReroot #{tree} > #{rooted}")
   end
 }

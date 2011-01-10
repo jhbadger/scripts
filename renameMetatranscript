@@ -10,7 +10,7 @@ require 'ZFile'
 $VERBOSE = nil
 opt = OpenStruct.new
 o = OptionParser.new
-o.banner << " fasta [blast]"
+o.banner << " fasta [fasta...]"
 begin
   o.parse!
 rescue
@@ -18,48 +18,27 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size != 1 && ARGV.size != 2)
+if (ARGV.size < 1)
   STDERR << o
   exit(1)
 end
 
-fasta, blast = ARGV
 
-name = File.basename(fasta).split(".").first
-ali = File.new(name + ".ali", "w")
-system("cp #{fasta} #{fasta}.orig")
-fa = File.new(name + ".fna", "w")
+ARGV.each do |fasta|
+  name = File.basename(fasta).split(".").first
+  ali = File.new(name + ".ali", "w")
+  system("cp #{fasta} #{fasta}.orig")
+  fa = File.new(name + ".fna", "w")
 
-aliH = Hash.new
-number = "_0000000"
-Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta + ".orig")).each {|seq|
-  number.succ!
-  newName = name + number
-  aliH[seq.entry_id] = newName
-  ali.printf("%s\t%s\n",seq.entry_id, newName)
-  fa.print Bio::Sequence::NA.new(seq.seq).to_fasta(newName, 60)
-}
-ali.close
-fa.close
-
-if (blast)
-  if (blast.index(".btab"))
-    system("cp #{blast} #{blast}.orig")
-    out = File.new(name + ".btab", "w")
-    Btab.new(blast).each {|query|
-      line = query.lines.first
-      out.printf(line.gsub(query.name + "\t", aliH[query.name] + "\t"))
-    }
-  else
-    system("cp #{blast} #{blast}.orig")
-    out = File.new(blast, "w")
-    ZFile.new(blast + ".orig").each {|line|
-      if line =~/Query= ([A-Z|0-9]*)/
-        out.print line.gsub($1, aliH[$1])
-      else
-        out.print line
-      end
-    }
-    out.close
-  end
+  aliH = Hash.new
+  number = "_0000000"
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta + ".orig")).each {|seq|
+    number.succ!
+    newName = name + number
+    aliH[seq.entry_id] = newName
+    ali.printf("%s\t%s\n",seq.entry_id, newName)
+    fa.print Bio::Sequence::NA.new(seq.seq).to_fasta(newName, 60)
+  }
+  ali.close
+  fa.close
 end
