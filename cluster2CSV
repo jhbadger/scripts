@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'fastercsv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+o.banner << " clstr-file"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+clstr, rest = ARGV
+
+row = []
+rep = nil
+print ["Representative", "Cluster Members"].to_csv
+File.new(clstr).each do |line|
+  if (line =~/^>Cluster ([0-9]*)/)
+    if (rep)
+      print [rep, row].flatten.to_csv
+    end
+    row = []
+    rep = nil
+  else 
+    entry = line.split(" ")[2].split("...").first.gsub(">","")
+    row.push(entry)
+    rep = entry if line =~/\*/
+  end
+end
+if (rep)
+  print [rep, row].flatten.to_csv
+end

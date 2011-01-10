@@ -115,6 +115,6 @@ Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
     line = [seq.definition, sites[num].keys.size, sites[num].keys.sort.join(" "), 
     closest[seq.definition], phy[seq.definition], dist[seq.definition], seqs2[num].keys.size,
     pats[num].keys.size, seqEntries[seq.definition], classification[seq.definition]]
-    print line.to_csv if (pats[num].keys.size > 1)
+    print line.to_csv #if (pats[num].keys.size > 1)
   end
 end
