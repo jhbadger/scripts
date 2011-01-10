@@ -1,0 +1,68 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'FasterCSV'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+o.banner << " csv [csv...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+ARGV.each do |csv|
+  name = File.basename(csv,".csv")
+  seqs = File.new(name + ".fa", "w")
+  headers = nil
+  rows = Hash.new
+  sorder = []
+  FasterCSV.foreach(csv) do |row|
+    if (headers.nil?)
+      headers = row + ["Representative Classification"]
+    else
+      seq = nil
+      rows[row.first] = row
+      sorder.push(row.first)
+      row.each do |field|
+        if (field.length > 20 && field.upcase.count("AGCTUN").to_f/field.length > 0.9)
+          seq = field
+          break
+        end
+      end
+      if (seq.nil?)
+        STDERR.printf("Warning: No sequence for %s...\n", row.first)
+      else
+        seqs.printf(">%s\n%s", row.first, seq.gsub(Regexp.new(".{1,60}"), "\\0\n"))
+      end
+    end
+  end
+  seqs.close
+  STDERR.printf("Classifying %s...\n", name)
+  system("mothurClassifySeqs #{name + ".fa"} > #{name + "_class.txt"}")
+  File.unlink(name + ".fa")
+  tx = Hash.new
+  File.new(name + "_class.txt").each do |line|
+    s, tax = line.chomp.split("\t")
+    tx[s] = tax
+  end
+  File.unlink(name + "_class.txt")
+  out = File.new(name + "_class.csv", "w")
+  out.print headers.to_csv
+  sorder.each do |key|
+    row = rows[key] + tx[key].to_a
+    out.print row.to_csv
+  end
+  out.close
+end
+
