@@ -66,8 +66,18 @@ ARGV.each {|file|
   Dir.mkdir(opt.tmpdir) if !File.exists?(opt.tmpdir)
   bdir = opt.tmpdir + "/blastdir/"
   Dir.mkdir(bdir) if !File.exists?(bdir)
-  File.chmod(0777, bdir)
-  File.chmod(0755, Dir.pwd)	
+  begin
+    File.chmod(0777, bdir)
+  rescue
+    STDERR << "User " < ENV["USER"] < "does not have permissions for " << bdir << "\n"
+   exit(1) 
+  end
+  begin
+    File.chmod(0755, Dir.pwd)
+  rescue
+    STDERR << "User " < ENV["USER"] < "does not have permissions for " << Dir.pwd << "\n"
+   exit(1) 
+  end	
   seqName = bdir + bout + "_000001"
   seqs = []
   out = nil
