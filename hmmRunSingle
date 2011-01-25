@@ -2,7 +2,6 @@
 
 $VERBOSE=nil
 
-require 'MySQL'
 
 if (ARGV.size !=4)
   STDERR.printf("Usage: hmmRunSingle name hmm fasta cutoff\n")
@@ -14,9 +13,7 @@ name, hmm, pep, cutoff = ARGV
 
 
 start = false
-db = nil
 
-outPep = File.new(name + ".pep", "w")
 outCSV =File.new(name + ".csv", "w")
 `hmmsearch #{hmm}.HMM #{pep} -T #{cutoff}`.split("\n").each{|line|
   next if (line =~ /^---/ || line == "")
@@ -27,12 +24,10 @@ outCSV =File.new(name + ".csv", "w")
     evalue = fields[-2]
     outCSV.printf("%s,%s,%s,%s\n", File.basename(hmm, ".HMM"), 
                   name, fields[0], evalue)
-    outPep.print db.fetchProtID(fields[0])
+    #outPep.print db.fetchProtID(fields[0])
   end
   if (line =~ /Sequence/ && line =~/Description/)
     start = true 
-    db = MySQL.new
   end
 }
-outPep.close
 outCSV.close
