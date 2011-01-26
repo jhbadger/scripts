@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " fna-file [fna-file...] btab-file [btab-file...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+btabs = ARGV.grep(/btab/)
+fnas = ARGV - btabs
+
+btabs.each do |btab|
+  hits = Hash.new
+  ZFile.new(btab).each do |line|
+    query, qacc, qlen, alg, user, match = line.chomp.split("\t")
+    hits[query] = true
+  end
+  fna = btab.split("_vs_").first
+  good = File.new(File.basename(fna, ".fna") + "_good.fna", "w")
+  rna = File.new(File.basename(fna, ".fna") + "_16S.fna", "w")
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fna)).each do |seq|
+    if (hits[seq.entry_id])
+      rna.print seq
+    else
+      good.print seq
+    end
+  end
+  good.close
+  rna.close
+end
