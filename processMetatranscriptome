@@ -92,7 +92,7 @@ if (opt.database)
   header.push("Pfam", "Pfam-Def", "pfam2go", "Tigrfams", "Tigrfams-Def", "tigrfams2go")
   query =  "SELECT phylodb_seq_id, annotation, taxon_id, taxonomy, swiss, swiss_def, "
   query += "gos_cluster_id, phytax_cluster_id, ko, pathway, "
-  query += "pfam, pfam_def, 'pfam2go', tigrfams, tigrfams_def, 'tigrfams2go' "
+  query += "pfam, pfam_def, NULL, tigrfams, tigrfams_def, NULL "
   query += "FROM summary_ann WHERE phylodb_seq_id IN ('"
   query += total.keys.join("','") + "')"
   DataMapper.setup(:default, "mysql://access:access@mysql-lan-pro/phylodb_annotation")
@@ -120,7 +120,7 @@ end
 print header.to_csv
 
 STDERR.printf("Writing spreadsheet...\n")
-total.keys.sort {|x, y| total[y] <=> total[x]}[0..10].each do |prot|
+total.keys.sort {|x, y| total[y] <=> total[x]}.each do |prot|
   sp = species[prot]
   row = [prot, sp]
   conditions.each do |condition|
@@ -146,16 +146,14 @@ total.keys.sort {|x, y| total[y] <=> total[x]}[0..10].each do |prot|
     row.push(speciesHits[sp][condition])
   end
   if (opt.database)
-    if (dbvalues[prot] && dbvalues[prot].index("tigrfams2go"))
-      t = dbvalues[prot].grep(/TIGR/)
+    if (dbvalues[prot])
+      t = dbvalues[prot][12]
       if (t)
-        field = dbvalues[prot].index("tigrfams2go")
-        dbvalues[prot][field] = tigrfams2go[t.first]
+        dbvalues[prot][14] = tigrfams2go[t]
       end
-      t = dbvalues[prot].grep(/PFAM/)
+      t = dbvalues[prot][9]
       if (t)
-        field = dbvalues[prot].index("pfam2go")
-        dbvalues[prot][field] = pfam2go[t.first]
+        dbvalues[prot][11] = pfam2go[t]
       end
       row += dbvalues[prot]
     end
