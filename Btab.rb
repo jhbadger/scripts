@@ -20,14 +20,20 @@ class BtabMatch
   attr_reader :frame
   # strand +/-
   attr_reader :strand
-  # subject length
-  attr_reader :len
+  # query match length
+  attr_reader :qlen
+  # subject match length
+  attr_reader :slen
   # evalue
   attr_reader :evalue
+  # species of match
+  attr_reader :species
+  # annotation of match
+  attr_reader :annotation
 
   def initialize(name, qleft, qright, sleft, sright,
                  percentId, percentSim, score, desc, frame,
-                 strand, slen, evalue)
+                 strand, evalue)
     @name = name
     @qrange = [qleft.to_i, qright.to_i]
     @srange = [sleft.to_i, sright.to_i]
@@ -37,12 +43,18 @@ class BtabMatch
     @desc = desc
     @frame = frame
     @strand = strand
-    @len = slen.to_i
+    @slen = (srange.last - srange.first).abs + 1
+    @qlen = (qrange.last - qrange.first).abs + 1
     $VERBOSE = nil
     @evalue = evalue.to_f
     $VERBOSE = true
+    if (@desc =~/\{([^\}]*)/)
+      @species = $1.strip
+    end
+    if (@species && @desc.index("{") > 0)
+      @annotation = @desc[0..@desc.index("{") - 2]
+    end
   end
-
 end
 
 # Represents result for a single query in Btab format
@@ -65,10 +77,10 @@ class BtabQuery
 
   # add a match to the query
   def addMatch(subject, qleft, qright, sleft, sright, percentId, 
-               percentSim, score, desc, frame, strand, slen, evalue, line)
+               percentSim, score, desc, frame, strand, evalue, line)
     match = BtabMatch.new(subject, qleft, qright, sleft, sright,
                           percentId, percentSim, score, desc, frame,
-                          strand, slen, evalue)
+                          strand, evalue)
     @matches.push(match)
     @lines.push(line)
   end
@@ -150,7 +162,7 @@ class Btab
       end
       @query.addMatch(subject, qleft, qright, sleft, sright,
                       percentId, percentSim, score, desc,
-                      frame, strand, slen, evalue, line)
+                      frame, strand, evalue, line)
       oldQ = query
     }
     yield @query if (!@query.nil?)

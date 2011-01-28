@@ -9,16 +9,14 @@ require 'Btab'
 require 'ZFile'
 require 'fastercsv'
 
+ARGV.flatten!
+
 opt = OpenStruct.new
 o = OptionParser.new
 opt.database = false
-opt.posmap = false
-opt.ali = false
 
-o.banner << " fna btab"
+o.banner << " btab [btab...] [fna...]"
 o.on("-d", "--database", "use database") {opt.database = true}
-o.on("-a ", "--alias ", String, "alias file ") {|t| opt.ali = t}
-o.on("-p ", "--posmap ", String, "posmap file ") {|t| opt.posmap = t}
 begin
   o.parse!
 rescue
@@ -26,147 +24,144 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size != 2)
+if (ARGV.size < 1)
   STDERR << o
   exit(1)
 end
 
-fna, btab = ARGV
-lib = Hash.new
 DataMapper.setup(:default, "mysql://access:access@mysql-lan-pro/phylodb_annotation")
 
+btabs = ARGV.grep(/btab/)
+
+protHits = Hash.new
 annotation = Hash.new
-matches = Hash.new
-seen = Hash.new
-pfam = Hash.new
-tigrfam = Hash.new
-STDERR << "Loading Btab...\n"
-Btab.new(btab).each do |query|
-  name = query.name.split(" ").first
-  match = query.matches.first
-  matches[name] = match.name
-  annotation[match.name] = OpenStruct.new
-  if (match.desc =~/(\S+)([^\{]*)\{([^\}]*)/)
-    annotation[match.name].species = $3.strip
-    annotation[match.name].annotation = $2.strip
+species = Hash.new
+speciesHits = Hash.new
+geneHits = Hash.new
+conditions = []
+total = Hash.new
+condTot = Hash.new
+
+btabs.each do |btab|  
+  name = File.basename(btab.split("_vs_").first, ".fna")
+  conditions.push(name)
+  condTot[name] = 0
+  STDERR << "Loading #{btab}...\n"
+  Btab.new(btab).each do |query|
+    match = query.matches.first
+    protHits[match.name] = Hash.new if (protHits[match.name].nil?)
+    protHits[match.name][name] = 0 if (protHits[match.name][name].nil?)
+    protHits[match.name][name] += 1
+    speciesHits[match.species] = Hash.new if (speciesHits[match.species].nil?)
+    speciesHits[match.species][name] = 0 if (speciesHits[match.species][name].nil?)
+    speciesHits[match.species][name] += 1
+    species[match.name] = match.species
+    annotation[match.name] = match.annotation
+    total[match.name] = 0 if total[match.name].nil?
+    total[match.name] += 1
+    condTot[name] += 1
+    geneHits[match.species] = Hash.new if (geneHits[match.species].nil?)
+    geneHits[match.species][name] = Hash.new if (geneHits[match.species][name].nil?)
+    geneHits[match.species][name][match.name] = true
   end
-  seen[match.name] = true
 end
 
+header = ["Protein", "Species"] + conditions + ["Total"]
+conditions.each do |condition|
+  header.push(condition + ".by.station") 
+end
+conditions.each do |condition|
+  header.push(condition + ".by.species") 
+end
+conditions.each do |condition|
+  header.push("Taxon.Gene." + condition) 
+end
+conditions.each do |condition|
+  header.push("Taxon.Count." + condition) 
+end
+
+header.push("Annotation")
+
+dbvalues = Hash.new
+pfam2go = Hash.new
+tigrfams2go = Hash.new
 
 if (opt.database)
-  STDERR << "Fetching data from database...\n"
-  list = seen.keys.reduce(:+)
-  query = "SELECT * FROM summary_ann WHERE phylodb_seq_id IN ('#{seen.keys.join("','")}')"
-  repository(:default).adapter.select(query).each do |row|
-    row = row.to_a
-    name = row.shift
-    ann = annotation[name]
-    ann.taxid, ann.species, ann.taxonomy, ann.annotation, ann.gos, swiss, swiss_ann, cog, cog_ann, ann.phytax, 
-    ann.ko, ann.pathway, ann.pfam, ann.pfamAnn, ann.tigrfam, ann.tigrfamAnn = row
-    ann.swiss, ann.swiss_ann = swiss, swiss_ann if (!swiss.nil?)
-    ann.cog, ann.cog_ann = cog, cog_ann if (!cog.nil?)
-    pfam[ann.pfam] = [] if (ann.pfam && !pfam[ann.pfam])
-    tigrfam[ann.tigrfam] = [] if (ann.tigrfam && !pfam[ann.tigrfam])
+  header.push("Taxon-ID", "Taxonomy", "Swiss-ID", "Swiss-Def", "GOS Cluster")
+  header.push("Phytax Cluster", "KO", "Pathway")
+  header.push("Pfam", "Pfam-Def", "pfam2go", "Tigrfams", "Tigrfams-Def", "tigrfams2go")
+  query =  "SELECT phylodb_seq_id, annotation, taxon_id, taxonomy, swiss, swiss_def, "
+  query += "gos_cluster_id, phytax_cluster_id, ko, pathway, "
+  query += "pfam, pfam_def, 'pfam2go', tigrfams, tigrfams_def, 'tigrfams2go' "
+  query += "FROM summary_ann WHERE phylodb_seq_id IN ('"
+  query += total.keys.join("','") + "')"
+  DataMapper.setup(:default, "mysql://access:access@mysql-lan-pro/phylodb_annotation")
+  STDERR.printf("Loading annotation...\n")
+  repository(:default).adapter.select(query).each do |line|
+    row =  line.to_a
+    tigrfams2go[line.tigrfams.to_s] = ""
+    pfam2go[line.pfam.to_s] = ""
+    dbvalues[row.shift] = row
   end
-  repository(:default).adapter.select("SELECT pfam, go FROM pfam2go WHERE pfam IN ('#{pfam.keys.join("','")}')").each do |row|
-    pfam[row[0]].push(row[1])
+  STDERR.printf("Loading tigrfams...\n")
+  query = "SELECT tigrfams, go FROM tigrfams2go WHERE tigrfams IN ('"
+  query += tigrfams2go.keys.join("','") + "')"
+  repository(:default).adapter.select(query).each do |line|
+    tigrfams2go[line.tigrfams] += line.go + " "
   end
-  repository(:default).adapter.select("SELECT tigrfams, go FROM tigrfams2go WHERE tigrfams IN ('#{tigrfam.keys.join("','")}')").each do |row|
-    tigrfam[row[0]].push(row[1])
-  end
-  repository(:default).adapter.select("SELECT jcvi, ncbi FROM ncbi WHERE jcvi IN ('#{seen.keys.join("','")}')").each do |row|
-    jcvi, ncbi = row
-    annotation[jcvi]["ncbi"] = ncbi if (annotation[jcvi])
-  end
-end
-
-
-if (opt.ali)
-  STDERR << "Loading aliases...\n"
-  ZFile.new(opt.ali).each do |line|
-    read, alname = line.chomp.split(" ")
-    lib[read] = alname.split("_").first
+  STDERR.printf("Loading pfams...\n")
+  query = "SELECT pfam, go FROM pfam2go WHERE pfam IN ('"
+  query += pfam2go.keys.join("','") + "')"
+  repository(:default).adapter.select(query).each do |line|
+    pfam2go[line.pfam] += line.go + " "
   end
 end
 
-libcounts = Hash.new
-totcounts = Hash.new
-
-if (opt.posmap)
-  STDERR << "Loading posmap...\n"
-  ZFile.new(opt.posmap).each do |line|
-    contig, read = line.chomp.split(" ")
-    libcounts[contig] = Hash.new if libcounts[contig].nil?
-    if (opt.ali)
-      lread = lib[read]
-    else
-      lread = read.split("_").first
-    end
-    if (lread.nil?)
-      STDERR << "No library for " << read << "\n"
-      next
-    end
-    libcounts[contig][lread] = 0 if libcounts[contig][lread].nil?
-    libcounts[contig][lread] += 1
-    totcounts[lread] = 0 if totcounts[lread].nil?
-    totcounts[lread] += 1
-  end
-end
-
-contigs = Hash.new
-STDERR << "Loading DNA Info...\n"
-Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fna)).each do |seq|
-  seen[seq.entry_id] = true
-  if (seq.definition =~/(isogroup[0-9]*)/)
-    contigs[seq.entry_id] = $1
-  else
-    contigs[seq.entry_id] = ""  
-  end
-end
-
-STDERR << "Writing Spreadsheet...\n"
-header = ["Contigs", "Isogroup"]
-totcounts.keys.sort.each do |key|
-  header.push(key)
-end
-header.push("Sum")
-totcounts.keys.sort.each do |key|
-  header.push(key + " Normalized")
-end
-header.push("JCVI Match ID", "GenBank ID (if present)", "Annotation", "Species", "Taxon Id", "Taxonomy", 
-"GOS Cluster", "Phytax Cluster", "Kegg Ortholog", "Kegg Pathway", "SwissProt", 
-"SwissProt Ann", "COG", "COG Ann","PFAM","PFAM Ann", "TIGRFAM", 
-"TIGRFAM Ann", "GO")
 print header.to_csv
 
-libcounts.keys.sort.each do |contig|
-  line = [contig, contigs[contig]]
-  sum = 0
-  totcounts.keys.sort.each do |key|
-    line.push(libcounts[contig][key].to_i)
-    sum += libcounts[contig][key].to_i
+STDERR.printf("Writing spreadsheet...\n")
+total.keys.sort {|x, y| total[y] <=> total[x]}[0..10].each do |prot|
+  sp = species[prot]
+  row = [prot, sp]
+  conditions.each do |condition|
+    row.push(protHits[prot][condition])
   end
-  line.push(sum)
-  totcounts.keys.sort.each do |key|
-    line.push(libcounts[contig][key].to_i/totcounts[key].to_f)
+  row.push(total[prot])
+  conditions.each do |condition|
+    protHits[prot][condition] = 0 if (!protHits[prot][condition])
+    row.push(protHits[prot][condition]/condTot[condition].to_f)
   end
-  ann = annotation[matches[contig]]
-  if (!ann.nil?)
-    ann.go = (pfam[ann.pfam].to_a + tigrfam[ann.tigrfam].to_a).sort.uniq.join("; ")
-    ann.annotation = "" if (ann.annotation.nil? || ann.annotation[0] == "{")
-    line.push(matches[contig], ann.ncbi, ann.annotation, ann.species, ann.taxid, ann.taxonomy, 
-      ann.gos, ann.phytax,ann.ko, ann.pathway, ann.swiss, ann.swiss_ann, ann.cog, ann.cog_ann, 
-      ann.pfam,ann.pfamAnn, ann.tigrfam, ann.tigrfamAnn, ann.go)
+  conditions.each do |condition|
+    speciesHits[sp][condition] = 0 if speciesHits[sp][condition].nil?
+    row.push(protHits[prot][condition]/speciesHits[sp][condition].to_f)
   end
-  print line.to_csv
+  conditions.each do |condition|
+    if (geneHits[sp][condition])
+      row.push(geneHits[sp][condition].keys.size)
+    else
+      row.push(0)
+    end
+  end
+  conditions.each do |condition|
+    row.push(speciesHits[sp][condition])
+  end
+  if (opt.database)
+    if (dbvalues[prot])
+      t = dbvalues[prot].grep(/TIGR/)
+      if (t)
+        dbvalues[prot].gsub!("tigrfams2go", tigrfams2go[t.first])
+      end
+      t = dbvalues[prot].grep(/PFAM/)
+      if (t)
+        dbvalues[prot].gsub!("pfam2go", pfam2go[t.first])
+      end
+      row += dbvalues[prot]
+    end
+  else
+    row.push(annotation[prot])
+  end
+  print row.to_csv
 end
 
-line = [nil, nil]
-allTot = 0
-totcounts.keys.sort.each do |key|
-  line.push(totcounts[key])
-  allTot += totcounts[key]
-end
-line.push(allTot)
-print line.to_csv
+
+
