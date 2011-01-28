@@ -146,14 +146,16 @@ total.keys.sort {|x, y| total[y] <=> total[x]}[0..10].each do |prot|
     row.push(speciesHits[sp][condition])
   end
   if (opt.database)
-    if (dbvalues[prot])
+    if (dbvalues[prot] && dbvalues[prot].index("tigrfams2go"))
       t = dbvalues[prot].grep(/TIGR/)
       if (t)
-        dbvalues[prot].gsub!("tigrfams2go", tigrfams2go[t.first])
+        field = dbvalues[prot].index("tigrfams2go")
+        dbvalues[prot][field] = tigrfams2go[t.first]
       end
       t = dbvalues[prot].grep(/PFAM/)
       if (t)
-        dbvalues[prot].gsub!("pfam2go", pfam2go[t.first])
+        field = dbvalues[prot].index("pfam2go")
+        dbvalues[prot][field] = pfam2go[t.first]
       end
       row += dbvalues[prot]
     end
