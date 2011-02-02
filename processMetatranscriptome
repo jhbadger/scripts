@@ -88,10 +88,10 @@ tigrfams2go = Hash.new
 
 if (opt.database)
   header.push("Taxon-ID", "Taxonomy", "Swiss-ID", "Swiss-Def", "GOS Cluster")
-  header.push("Phytax Cluster", "KO", "KO Definition", "Pathway")
+  header.push("Phytax Cluster", "Kegg-ID", "Kegg Definition", "KO", "Pathway")
   header.push("Pfam", "Pfam-Def", "pfam2go", "Tigrfams", "Tigrfams-Def", "tigrfams2go")
   query =  "SELECT phylodb_seq_id, annotation, taxon_id, taxonomy, swiss, swiss_def, "
-  query += "gos_cluster_id, phytax_cluster_id, ko, ko_def, pathway, "
+  query += "gos_cluster_id, phytax_cluster_id, kegg, kegg_def, ko, pathway, "
   query += "pfam, pfam_def, NULL, tigrfams, tigrfams_def, NULL "
   query += "FROM summary_ann WHERE phylodb_seq_id IN ('"
   query += total.keys.join("','") + "')"
