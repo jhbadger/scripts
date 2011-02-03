@@ -30,7 +30,7 @@ ARGV.each do |blast|
     next if hit.length < opt.threshold
     num, sample, rest = hit.query.split("_")
     samples[sample] = Hash.new if (!samples[sample])
-    if (hit.query =~/T1F/)
+    if (hit.query =~/T1F/ || hit.query =~/_F_/)
       dir = "f"
     else
       dir = "r"
