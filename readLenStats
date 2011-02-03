@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'Stats'
+require 'ZFile'
+require 'optparse'
+require 'ostruct'
+require 'fastercsv'
+
+opt = OpenStruct.new
+opt.iso = false
+o = OptionParser.new
+o.banner << " fasta [..fasta...]"
+o.on("-i", "--isogroups", "pick longest isogroup") {opt.iso = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+header = ["File", "Sequences", "Min Length", "Mean Length", "Median Length", "Max Length"]
+header[1] = "Isogroups" if opt.iso
+print header.to_csv
+
+ARGV.each do |fasta|
+  lens = []
+  isogroups = Hash.new
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+    if (opt.iso && seq.definition =~/(isogroup[0-9]*)/)
+      isogroups[$1] = 0 if (!isogroups[$1])
+      isogroups[$1] = seq.length if (seq.length > isogroups[$1])
+    else
+      lens.push(seq.length)
+    end
+  end
+  lens += isogroups.values if (opt.iso)
+  print [fasta, lens.size, lens.min, lens.average.to_i, lens.median.to_i, lens.max].to_csv
+end
+

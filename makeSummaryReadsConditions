@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'fastercsv'
+require 'bio'
+require 'ZFile'
+require 'Stats'
+
+opt = OpenStruct.new
+opt.sizes = false
+o = OptionParser.new
+o.banner << " csv file [fasta...fasta...]"
+o.on("-s", "--size", "include read sizes") {opt.sizes = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+csv = ARGV.shift
+
+reads = Hash.new
+isogroups = Hash.new
+contigs = Hash.new
+conditions = nil 
+assembly = File.basename(csv, ".csv").split("_isotigs").first
+greads = Hash.new
+greadMed = Hash.new
+greadMean = Hash.new 
+ 
+FasterCSV.foreach(csv, :headers => true, :converters => :numeric) do |row|
+  contig = row["Contigs"]
+  isogroup = row["Isogroup"]
+  conditions = row.headers.grep(/Normalized/).collect{|x| x.split(" ").first} if (!conditions)
+  conditions.each do |condition|
+    if (!greads[condition])
+      greads[condition] = 0
+      greadMean[condition] = 0
+      greadMed[condition] = 0
+      if (opt.sizes)
+        lens = []
+        STDERR.printf("Counting reads for %s...\n", condition)
+        Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(condition + ".fna.bz2")).each do |read|
+          greads[condition] += 1
+          lens.push(read.length)
+        end
+        greadMean[condition] = lens.median.to_i
+        greadMed[condition] = lens.average.to_i
+      end
+    end
+    reads[condition] = 0 if (!reads[condition])
+    contigs[condition] = Hash.new if (!contigs[condition])
+    isogroups[condition] = Hash.new if (!isogroups[condition])
+    reads[condition] += row[condition]
+    contigs[condition][contig] = true if (row[condition] > 0)
+    isogroups[condition][isogroup] = true if (row[condition] > 0)
+  end
+end
+
+headers = ["Conditions", "Reads in Assembly", "Reads Generated", "Mean Read Len", "Median Read Len", 
+  "Assembly", "Isogroups", "Contigs"]
+
+print headers.to_csv
+conditions.each do |condition|
+  print [condition, reads[condition], greads[condition], greadMean[condition], greadMed[condition],
+    assembly, isogroups[condition].keys.size, contigs[condition].keys.size].to_csv
+end

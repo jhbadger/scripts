@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'ZFile'
+require 'rubygems'
+require 'fastercsv'
+
+if (ARGV.size != 2)
+  STDERR.printf("Usage: %s posmap contigs [fna..fna...]\n", File.basename($0))
+  exit(1)
+end
+
+posmap, contigs = ARGV
+
+
+seenasm = Hash.new
+
+STDERR.printf("Loading posmap...\n")
+
+ZFile.new(posmap).each do |line|
+  contig, read = line.chomp.split("\t")
+  condition, num = read.split("_")
+  seenasm[condition] = Hash.new if (!seenasm[condition])
+  seenasm[condition][read] = true
+end
+
+seen = Hash.new
+seenasm.keys.each do |key|
+  dna = key + ".fna.bz2"
+  STDERR.printf("Loading %s...\n", dna)
+  ZFile.new(dna).each do |line|
+    if (line =~/^>/)
+      condition, num = line.chomp.gsub(">","").split("_")
+      seen[condition] = Hash.new if (!seen[condition])
+      seen[condition][line.chomp.gsub(">","")] = true
+    end
+  end
+end
+
+print ["Conditions", "Reads in Assembly", "Reads Generated"].to_csv
+seen.keys.sort.each do |condition|
+  print [condition, seenasm[condition].size, seen[condition].size].to_csv
+end

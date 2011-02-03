@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+
+datasets = Hash.new
+
+if (ARGV.size != 1)
+  STDERR.printf("Usage: %s csv-file\n", File.basename($0))
+  exit(1)
+end
+
+File.new(ARGV.first).each do |line|
+  next if line =~/^library/
+  lib, dataset, database = line.chomp.split(",")
+  datasets[database] = [] if !datasets[database]
+  datasets[database].push(dataset)
+end
+
+datasets.keys.sort.each do |dataset|
+  print "ruby /home/jbadger/Projects/APIS/createApisCSV  -b -c -d -r -t -s "
+  print dataset + " "
+  print datasets[dataset].join(" ")
+  printf("\n\n")
+end
