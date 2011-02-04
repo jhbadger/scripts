@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+   STDERR.printf("Usage: %s csv-file\n", File.basename($0))
+   exit(1)
+end
+
+csv, rest = ARGV
+
+prefix = "/usr/local/depot/projects/GOS/circumnavigation_sanger/"
+File.new(csv).each do |line|
+  next if line =~/^library/
+  lib, apis = line.chomp.split(",")
+  if (!File.exist?(apis + ".tab.bz2"))
+    STDERR.printf("Warning: %s.tab.bz2 does not exist\n", apis)
+    next
+  end
+  if (!File.exist?(prefix + lib + "/apis"))
+    STDERR.printf("Warning: %s not not exist\n", prefix + lib + "/apis")
+    next
+  end
+  STDERR.printf("Copying %s...\n", apis + ".tab.bz2")
+  File.copy(apis + ".tab.bz2", prefix + lib + "/apis/apis.tab.bz2")
+end
