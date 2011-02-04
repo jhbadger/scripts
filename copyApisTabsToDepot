@@ -19,6 +19,7 @@ File.new(csv).each do |line|
     STDERR.printf("Warning: %s not not exist\n", prefix + lib + "/apis")
     next
   end
+  next if (File.exists?(prefix + lib + "/apis/apis.tab.bz2"))
   STDERR.printf("Copying %s...\n", apis + ".tab.bz2")
-  File.copy(apis + ".tab.bz2", prefix + lib + "/apis/apis.tab.bz2")
+  File.link(apis + ".tab.bz2", prefix + lib + "/apis/apis.tab.bz2")
 end
