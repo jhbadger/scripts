@@ -3,7 +3,7 @@
 require 'optparse'
 require 'ostruct'
 require 'rubygems'
-require 'fastercsv'
+require 'csv'
 
 opt = OpenStruct.new
 o = OptionParser.new

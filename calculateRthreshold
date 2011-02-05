@@ -4,7 +4,7 @@ require 'optparse'
 require 'ostruct'
 require 'GeneExpression'
 require 'rubygems'
-require 'fastercsv'
+require 'csv'
 
 opt = OpenStruct.new
 o = OptionParser.new
@@ -27,7 +27,7 @@ end
 
 
 STDERR << "Loading Spreadsheet...\n"
-table = FasterCSV.read(ARGV.first, {:headers => true, :converters => :numeric})
+table = csv.read(ARGV.first, {:headers => true, :converters => :numeric})
 
 STDERR << "Simulating results...\n"
 total = Hash.new

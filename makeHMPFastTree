@@ -5,7 +5,7 @@ require 'ostruct'
 require 'rubygems'
 require 'bio'
 require 'ZFile'
-require 'fastercsv'
+require 'csv'
 
 #For testing in TextMate:
 #Dir.chdir("/Users/jbadger/work/hmp")

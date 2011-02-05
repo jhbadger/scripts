@@ -6,7 +6,7 @@ require 'Stats'
 require 'ZFile'
 require 'optparse'
 require 'ostruct'
-require 'fastercsv'
+require 'csv'
 
 opt = OpenStruct.new
 opt.iso = false

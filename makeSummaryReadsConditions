@@ -3,7 +3,7 @@
 require 'optparse'
 require 'ostruct'
 require 'rubygems'
-require 'fastercsv'
+require 'csv'
 require 'bio'
 require 'ZFile'
 require 'Stats'
@@ -36,7 +36,7 @@ greads = Hash.new
 greadMed = Hash.new
 greadMean = Hash.new 
  
-FasterCSV.foreach(csv, :headers => true, :converters => :numeric) do |row|
+CSV.foreach(csv, :headers => true, :converters => :numeric) do |row|
   contig = row["Contigs"]
   isogroup = row["Isogroup"]
   conditions = row.headers.grep(/Normalized/).collect{|x| x.split(" ").first} if (!conditions)

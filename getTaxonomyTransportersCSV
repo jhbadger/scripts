@@ -3,7 +3,7 @@
 require 'optparse'
 require 'ostruct'
 require 'rubygems'
-require 'fastercsv'
+require 'csv'
 require 'Silva'
 
 opt = OpenStruct.new
@@ -32,7 +32,7 @@ lowCounts = Hash.new
 highTot = 0.0
 lowTot = 0.0
 
-FasterCSV.foreach(csv) do |row|
+CSV.foreach(csv) do |row|
   next if row[0].nil?
   org, num = row[0], row[4]
   num = num.to_i

@@ -5,7 +5,7 @@ require 'ostruct'
 require 'rubygems'
 require 'dm-core'
 require 'ApisDB'
-require 'fastercsv'
+require 'csv'
 
 opt = OpenStruct.new
 opt.host = "mysql://access:access@mysql-lan-pro"

@@ -6,7 +6,7 @@ require 'rubygems'
 require 'dm-core'
 require 'ComboDB'
 begin
-  require 'fastercsv'
+  require 'csv'
 rescue
 end
 

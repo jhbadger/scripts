@@ -33,7 +33,7 @@ ARGV.each do |script|
         line.gsub!("|opt.#{var}|", "|t| opt.#{var} = t")
       end
       if (line =~/require 'csv'/)
-        line.gsub!("fastercsv", "csv")
+        line.gsub!("csv", "csv")
       end
       if (line =~/CSV/)
         line.gsub!("CSV", "CSV")

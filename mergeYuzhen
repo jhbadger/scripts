@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'fastercsv'
+require 'csv'
 
 headers1 = []
 sanger = Hash.new
-FasterCSV.foreach("/Users/jbadger/Dropbox/Public/sum.csv") do |row|
+CSV.foreach("/Users/jbadger/Dropbox/Public/sum.csv") do |row|
   if (headers1.empty?)
 		headers1 = row
 	else

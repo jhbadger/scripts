@@ -2,7 +2,7 @@
 
 require 'rubygems'
 require 'DBWrapper'
-require 'FasterCSV'
+require 'csv'
 
 
 if (ARGV.size != 2)
@@ -14,7 +14,7 @@ csv, db = ARGV
 
 db = SQLite.new(db)
 
-FasterCSV.foreach(csv) {|row|
+CSV.foreach(csv) {|row|
   name = row[0]
   ann = row[3]
   if (!ann.nil?)

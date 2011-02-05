@@ -2,7 +2,7 @@
 
 require 'ZFile'
 require 'rubygems'
-require 'fastercsv'
+require 'csv'
 
 if (ARGV.size != 2)
   STDERR.printf("Usage: %s posmap contigs [fna..fna...]\n", File.basename($0))

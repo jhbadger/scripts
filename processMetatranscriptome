@@ -7,7 +7,7 @@ require 'ostruct'
 require 'bio'
 require 'Btab'
 require 'ZFile'
-require 'fastercsv'
+require 'csv'
 
 ARGV.flatten!
 

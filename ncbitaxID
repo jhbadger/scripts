@@ -6,7 +6,7 @@ require 'net/ftp'
 require 'rubygems'
 require 'bio'
 require 'httpclient'
-require 'fastercsv'
+require 'csv'
 
 def getTaxId(species)
   link = "http://www.ncbi.nlm.nih.gov"
@@ -30,7 +30,7 @@ end
 need = []
 ARGV.each do |file|
   if (file =~/.csv/)
-    FasterCSV.foreach(file) do |row|
+    CSV.foreach(file) do |row|
       need.push(row[0])
     end
   else

@@ -3,7 +3,7 @@
 require 'optparse'
 require 'ostruct'
 require 'rubygems'
-require 'fastercsv'
+require 'csv'
 
 opt = OpenStruct.new
 o = OptionParser.new
@@ -28,7 +28,7 @@ ARGV.each do |csv|
   name = File.basename(csv, ".csv")
   counts[name] = 0
   geneCounts[name] = Hash.new
-  FasterCSV.foreach(csv) do |row|
+  CSV.foreach(csv) do |row|
     next if row.first == "Model"
     counts[name] += 1
     seen[row[0]] = true

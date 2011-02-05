@@ -2,7 +2,7 @@
 
 require 'GeneExpression'
 require 'rubygems'
-require 'fastercsv'
+require 'csv'
 
 
 if (ARGV.size < 2)
@@ -15,7 +15,7 @@ threshold = threshold.to_f
 
 
 STDERR << "Loading Spreadsheet...\n"
-table = FasterCSV.read(csv, {:headers => true, :converters => :numeric})
+table = csv.read(csv, {:headers => true, :converters => :numeric})
 
 STDERR << "Calculating R values...\n"
 total = Hash.new

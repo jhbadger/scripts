@@ -5,7 +5,7 @@ require 'ostruct'
 require 'rubygems'
 require 'bio'
 require 'ZFile'
-require 'FasterCSV'
+require 'csv'
 
 opt = OpenStruct.new
 o = OptionParser.new
@@ -89,7 +89,7 @@ closest = Hash.new
 phy = Hash.new
 dist = Hash.new
 
-FasterCSV.foreach(csv) do |row|
+CSV.foreach(csv) do |row|
   entry, clo, ph, d, size, npats, seq = row
   seqEntries[entry] = seq.gsub("N","")
   closest[entry] = clo
