@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'bio'
+require 'ZFile'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " csv fasta"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+csv, fasta = ARGV
+
+isotigs = Hash.new
+
+rows = []
+seen = Hash.new
+
+CSV.foreach(csv) do |row|
+  rows.push(row)
+  seen[row.first] = true
+end
+
+name = fasta.split("_isotigs").first
+outSeq = File.new(name + "_longestIsotigs.fna", "w")
+outCsv = File.new(name + "_longestIsotigs.csv", "w")
+
+headers = rows.shift
+totals = rows.pop
+headers.shift
+totals.shift
+conditions = headers[1..headers.index("Sum") - 1]
+outCsv.print headers.to_csv
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  next if !seen[seq.entry_id] # not in posmap
+  if (seq.definition =~/gene=isogroup([0-9]*)/)
+    isotigs[$1] = seq if (!isotigs[$1] || isotigs[$1].length < seq.length)
+  else
+    STDERR.printf("No isogroup for %s...\n", seq.entry_id)
+  end
+end
+
+isotigs.keys.sort.each do |isogroup|
+  outSeq.print isotigs[isogroup]
+  counts = []
+  exline = nil
+  rows.find_all{|x| x[1] == "isogroup" + isogroup}.each do |row|
+    exline = row if row[0] == isotigs[isogroup].entry_id
+    conditions.size.times do |i|
+      counts[i] = 0 if counts[i].nil?
+      counts[i] += row[i + 2].to_i
+    end
+  end
+  normalized = []
+  conditions.size.times do |i|
+    normalized[i] = counts[i] / totals[i + 1].to_f
+  end
+  line = ["isogroup" + isogroup] + counts + [counts.reduce(:+)] + normalized
+  line += exline[1 + line.size..exline.length]
+  outCsv.print line.to_csv
+end
+outCsv.print totals.to_csv
+outSeq.close
+outCsv.close
