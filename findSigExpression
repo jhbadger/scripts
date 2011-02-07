@@ -1,7 +1,6 @@
 #!/usr/bin/env ruby
 
 require 'GeneExpression'
-require 'rubygems'
 require 'csv'
 
 
@@ -15,15 +14,20 @@ threshold = threshold.to_f
 
 
 STDERR << "Loading Spreadsheet...\n"
-table = csv.read(csv, {:headers => true, :converters => :numeric})
+table = CSV.read(csv, {:headers => true, :converters => :numeric})
 
 STDERR << "Calculating R values...\n"
-total = Hash.new
+totals = []
+i = 0
+categories = []
 table.headers.each do |col|
   next if (col == "Contigs" || col == "Isogroup" || col == "Gene")
   break if (col == "Sum")
-  total[col] = table[col].last
+  totals[i] = table[col].last
+  categories.push(col)
+  i += 1
 end
+
 
 if (!table.headers.include?("R"))
   print (table.headers.push("R")).to_csv
@@ -33,7 +37,8 @@ end
 
 table.each do |row|
   if (!row["Gene"].nil? || !row["Contigs"].nil?)
-    row["R"] = (100*rvalue(total, row)).to_i/100.0
+    counts = categories.collect {|x| row[x]}
+    row["R"] = GeneExpression.rvalue(totals, counts)
     next if (row["R"] < threshold)
   end
   print row.to_csv

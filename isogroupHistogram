@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'rsruby'
+require 'bio'
+require 'ZFile'
+
+ARGV.options {|opts|
+  opts.banner << " fasta-file"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+fasta = ARGV.first
+r = RSRuby.instance
+name = fasta.split(".").first
+isogroups = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  if (seq.definition =~/(isogroup[0-9]*)/)
+    isogroups[$1] = 0 if (!isogroups[$1])
+    isogroups[$1] += 1
+  end
+end
+p isogroups.values
+r.pdf("#{name}_isogroups.pdf")
+r.hist(isogroups.values, :main => "Isogroup distribution for #{name}", :xlab => "Size Bins")
+r.dev_off.call

@@ -4,6 +4,7 @@ require 'optparse'
 require 'ostruct'
 require 'bio'
 require 'ZFile'
+require 'GeneExpression'
 require 'csv'
 
 opt = OpenStruct.new
@@ -42,10 +43,13 @@ totals = rows.pop
 headers.shift
 totals.shift
 conditions = headers[1..headers.index("Sum") - 1]
+totals = totals[1,conditions.size].collect{|x| x.to_i}
+
 outCsv.print headers.to_csv
 
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
   next if !seen[seq.entry_id] # not in posmap
+  next if seq.length < 100
   if (seq.definition =~/gene=isogroup([0-9]*)/)
     isotigs[$1] = seq if (!isotigs[$1] || isotigs[$1].length < seq.length)
   else
@@ -66,12 +70,15 @@ isotigs.keys.sort.each do |isogroup|
   end
   normalized = []
   conditions.size.times do |i|
-    normalized[i] = counts[i] / totals[i + 1].to_f
+    normalized[i] = counts[i] / totals[i].to_f
   end
   line = ["isogroup" + isogroup] + counts + [counts.reduce(:+)] + normalized
   line += exline[1 + line.size..exline.length]
+  if (headers.last == "R")
+    line[-1] = GeneExpression.rvalue(totals, counts)
+  end
   outCsv.print line.to_csv
 end
-outCsv.print totals.to_csv
+outCsv.print ([""] + totals + [totals.reduce(:+)]).to_csv
 outSeq.close
 outCsv.close

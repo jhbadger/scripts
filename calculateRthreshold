@@ -3,15 +3,16 @@
 require 'optparse'
 require 'ostruct'
 require 'GeneExpression'
-require 'rubygems'
 require 'csv'
 
 opt = OpenStruct.new
 o = OptionParser.new
-opt.num = nil
+opt.num = 1000
+opt.lines = nil
 
 o.banner << " expression-csv"
-o.on("-n", "--number ", Integer, "pick n random lines per simulation") {|t| opt.num = t}
+o.on("-l", "--lines ", Integer, "number of random lines per simulation") {|t| opt.lines = t}
+o.on("-n", "--number ", Integer, "number of simulations (#{opt.num})") {|t| opt.num = t}
 begin
   o.parse!
 rescue
@@ -27,38 +28,39 @@ end
 
 
 STDERR << "Loading Spreadsheet...\n"
-table = csv.read(ARGV.first, {:headers => true, :converters => :numeric})
+table = CSV.read(ARGV.first, {:headers => true, :converters => :numeric})
 
 STDERR << "Simulating results...\n"
-total = Hash.new
-allTot = 0
+totals = []
+
+i = 0
 table.headers.each do |col|
   next if (col == "Contigs" || col == "Isogroup" || col == "Gene")
   break if (col == "Sum")
-  total[col] = table[col].last
-  allTot += total[col]
+  totals[i] = table[col].last
+  i += 1
 end
 
 
 rvalues = []
-1000.times do |i|
+opt.num.times do |i|
   STDERR << "Simulation " << i << "...\n"
   rownum = 0
   picked = Hash.new
-  if (opt.num)
-    opt.num.times do |i|
+  if (opt.lines)
+    opt.lines.times do |i|
       picked[rand(table.size)] = true
     end
   end  
   table.each do |row|
     next if row.first.last.nil? # skip totals line
-    next if opt.num && !picked[rownum]
-    counts = Hash.new
-    total.keys.each do |lib|
-      expected = ((row["Sum"] / allTot.to_f) * total[lib]).to_i
-      counts[lib] = poisson(expected)
+    next if opt.lines && !picked[rownum]
+    counts = []
+    totals.size.times do |i|
+      expected = ((row["Sum"] / totals.reduce(:+).to_f) * totals[i]).to_i
+      counts[i] = GeneExpression.poisson(expected)
     end
-    rvalues.push(rvalue(total, counts))
+    rvalues.push(GeneExpression.rvalue(totals, counts))
     rownum += 1
   end
 end
