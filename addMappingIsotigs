@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+require 'ZFile'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " csv-file mapping.file"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+csv, mapping = ARGV
+
+STDERR.printf("Loading map...\n")
+map = Hash.new
+ZFile.new(mapping).each do |line|
+  contig, isotig = line.chomp.split("\t")
+  map[isotig] = "" if !map[isotig]
+  map[isotig] += contig + " "
+end
+
+STDERR.printf("Loading/writing spreadsheet...\n")
+headers = nil
+CSV.foreach(csv,{:headers => true, :converters => :numeric}) do |row|
+  if (headers.nil?)
+    print (row.headers + ["Mapping"]).to_csv 
+    headers = true
+  end
+  row.push(map[row["Contigs"]]) if map[row["Contigs"]]
+  print row.to_csv
+end

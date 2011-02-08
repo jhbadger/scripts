@@ -27,11 +27,9 @@ csv, fasta = ARGV
 isotigs = Hash.new
 
 rows = []
-seen = Hash.new
 
 CSV.foreach(csv) do |row|
   rows.push(row)
-  seen[row.first] = true
 end
 
 name = fasta.split("_isotigs").first
@@ -48,8 +46,6 @@ totals = totals[1,conditions.size].collect{|x| x.to_i}
 outCsv.print headers.to_csv
 
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
-  next if !seen[seq.entry_id] # not in posmap
-  next if seq.length < 100
   if (seq.definition =~/gene=isogroup([0-9]*)/)
     isotigs[$1] = seq if (!isotigs[$1] || isotigs[$1].length < seq.length)
   else
@@ -58,7 +54,7 @@ Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
 end
 
 isotigs.keys.sort.each do |isogroup|
-  outSeq.print isotigs[isogroup]
+  outSeq.print isotigs[isogroup].seq.to_fasta("isogroup" + isogroup, 60)
   counts = []
   exline = nil
   rows.find_all{|x| x[1] == "isogroup" + isogroup}.each do |row|

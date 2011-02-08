@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby 
+
+require 'bio'    
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.remove = false
+opt.header = false
+opt.noambig = false
+
+o = OptionParser.new
+o.banner << " seq.fasta posmap.txt"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+file, posmap = ARGV
+
+seen = Hash.new
+ZFile.new(posmap).each do |line|
+  contig, read = line.chomp.split("\t")
+  seen[contig] = true
+end
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
+  print seq if seen[seq.entry_id]
+}

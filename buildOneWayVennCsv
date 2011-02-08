@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Btab'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " btab [..btab...]"
+o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+
+hits = Hash.new
+categories = []
+ARGV.each do |btab|
+  category = btab.split("_vs_")[1].split("_").first
+  categories.push(category)
+  Btab.new(btab).each do |query|
+    hits[query.name] = Hash.new if (!hits[query.name])
+    hits[query.name][category] = query.matches.first.name
+  end
+end
+
+print (["Representative"] + categories).to_csv
+hits.keys.sort.each do |hit|
+  row = [hit]
+  categories.each do |category|
+    row.push(hits[hit][category])
+  end
+  print row.to_csv
+end
