@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+opt.dend = "both"
+opt.num = nil
+opt.exclude = nil
+opt.run = false
+opt.height = 20
+opt.width = 10
+opt.nokey = false
+
+o = OptionParser.new
+o.banner << " expression-csv"
+o.on("-d ", "--dendrogram ", String, "dendrogram (#{opt.dend})") {|t| opt.dend = t}
+o.on("-e ", "--exclude ", String, "exclude genes with annotation matching expression") {|t| opt.exclude = t}
+o.on("-l ", "--lines ", Integer, "only give top n lines") {|t| opt.num = t}
+o.on("-h ", "--height ", Integer, "height in inches (#{opt.height})") {|t| opt.height = t}
+o.on("-w ", "--width ", Integer, "width in inches (#{opt.width})") {|t| opt.width = t}
+o.on("-l ", "--lines ", Integer, "only give top n lines") {|t| opt.num = t}
+o.on("-r", "--run", "run R and map the heatmap itself (#{opt.run})") {|t| opt.run = true}
+o.on("-n", "--nokey", "don't show key (#{opt.run})") {|t| opt.nokey = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+csv, rest = ARGV
+
+conditions = nil
+condNames = nil
+outName = File.basename(csv, ".csv") + "#{opt.num}_heatmap.csv"
+outFile = File.new(outName, "w")
+count = 0
+columns = nil
+
+CSV.foreach(csv, options = {:headers => true, :converters => :numeric}) do |row|
+  next if row["PFAM Ann"].nil? || row["PFAM Ann"] == 0
+  if (!conditions)
+    conditions = row.headers.grep(/ Normalized|.by.station/)
+    condNames = conditions.collect{|x| x.split(/ Normalized|.by.station/).first}
+    outFile.print (["Gene"] + condNames).to_csv
+  end
+  name = row[row.headers.first] + " " + row["PFAM Ann"].to_s + " " + row["R"].to_s
+  next if name =~/#{opt.exclude}/i if (opt.exclude)
+  out =  [name] + conditions.collect{|x| row[x]}
+  outFile.print out.to_csv
+  columns = out.length if columns.nil?
+  count += 1
+  break if (count == opt.num)
+end
+outFile.close
+
+if (opt.run)
+  cmd = " library(made4);"
+  cmd += "pdf(\"#{File.basename(outName,".csv")+".pdf"}\", width = #{opt.width}, height=#{opt.height});"
+  cmd += "csv = read.csv(\"#{outName}\");row.names(csv)=csv$Gene;csv=csv[,2:#{columns}];"
+  cmd += "heatplot(data.matrix(csv), margins=c(10,25),zlim=c(0,1), dend=\"#{opt.dend}\", scaleKey=NULL);"
+  p cmd
+  system ("R -e '#{cmd}'")
+end
