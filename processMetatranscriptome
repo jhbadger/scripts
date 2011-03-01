@@ -167,5 +167,7 @@ total.keys.sort {|x, y| total[y] <=> total[x]}.each do |prot|
   print row.to_csv
 end
 
+print (["",""] + conditions.collect{|x| condTot[x]}).to_csv
+
 
 
