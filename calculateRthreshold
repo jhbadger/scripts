@@ -35,12 +35,11 @@ totals = []
 
 i = 0
 table.headers.each do |col|
-  next if (col == "Contigs" || col == "Isogroup" || col == "Gene")
-  break if (col == "Sum")
+  next if (col == "Contigs" || col == "Isogroup" || col == "Gene" || col == "Protein" || col == "Species")
+  break if (col == "Sum" || col == "Total")
   totals[i] = table[col].last
   i += 1
 end
-
 
 rvalues = []
 opt.num.times do |i|
@@ -53,11 +52,13 @@ opt.num.times do |i|
     end
   end  
   table.each do |row|
-    next if row.first.last.nil? # skip totals line
+    next if row.first.last.to_s == "" # skip totals line
     next if opt.lines && !picked[rownum]
     counts = []
     totals.size.times do |i|
-      expected = ((row["Sum"] / totals.reduce(:+).to_f) * totals[i]).to_i
+      sum = row["Sum"]
+      sum = row["Total"] if sum.nil?
+      expected = ((sum / totals.reduce(:+).to_f) * totals[i]).to_i
       counts[i] = GeneExpression.poisson(expected)
     end
     rvalues.push(GeneExpression.rvalue(totals, counts))
