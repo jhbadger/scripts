@@ -7,6 +7,7 @@ require 'ostruct'
 require 'bio'
 require 'Btab'
 require 'ZFile'
+require 'GeneExpression'
 require 'csv'
 
 ARGV.flatten!
@@ -43,7 +44,7 @@ total = Hash.new
 condTot = Hash.new
 
 btabs.each do |btab|  
-  name = File.basename(btab.split("_vs_").first, ".fna")
+  name = File.basename(btab.split("_vs_").first, ".fna").split(".btab").first
   conditions.push(name)
   condTot[name] = 0
   STDERR << "Loading #{btab}...\n"
@@ -116,6 +117,7 @@ if (opt.database)
     pfam2go[line.pfam] += line.go + " "
   end
 end
+header.push("R")
 
 print header.to_csv
 
@@ -160,6 +162,8 @@ total.keys.sort {|x, y| total[y] <=> total[x]}.each do |prot|
   else
     row.push(annotation[prot])
   end
+  row.push(GeneExpression.rvalue(conditions.collect{|x| condTot[x]}, 
+    conditions.collect{|x| protHits[prot][x]}))
   print row.to_csv
 end
 
