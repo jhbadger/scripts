@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " seqinfo-file cluster-info"
+#o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+
+info, clust = ARGV
+
+metadata = Hash.new
+count = 0
+
+STDERR.printf("Loading metadata...\n")
+ZFile.new(info).each do |line|
+  fields = line.chomp.split("\t")
+  metadata[fields.shift] = fields
+  count += 1
+  STDERR.printf("Processed %8.3f million records...\n", count/1e6) if count % 100000 == 0
+end
+
+STDERR.printf("Making Clusterinfo...\n")
+
+patients = Hash.new
+sites = Hash.new
+male = Hash.new
+female = Hash.new
+csize = Hash.new
+cnum = nil
+
+ZFile.new(clust).each do |line|
+  if (line =~/^#Consensus ([0-9]*)/)
+    cnum = $1.to_i
+    STDERR.printf("Processing Cluster %d...\n", cnum)
+    patients[cnum] = Hash.new
+    sites[cnum] = Hash.new
+    male[cnum] = 0
+    female[cnum] = 0
+    csize[cnum] = 0
+  else
+    csize[cnum] += 1
+    s, id, name = line.chomp.split(" ")
+    if (metadata[name])
+      site, patient, sex = metadata[name]
+      patients[cnum][patient] = true
+      sites[cnum][site] = true
+      male[cnum] += 1 if sex == "male"
+      female[cnum] += 1 if sex == "female"
+    end
+  end
+end
+
+csize.keys.sort.each do |cnum|
+  print [cnum, csize[cnum], (1000*male[cnum]/(male[cnum] + female[cnum]))/10.0, patients[cnum].keys.sort.join(" "),
+        sites[cnum].keys.sort.join(" ")].join("\t") + "\n"
+end

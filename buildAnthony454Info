@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " hmp-seq-summary pds.metadata"
+#o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+
+hmp, pds = ARGV
+
+
+colSex = Hash.new
+colSite = Hash.new
+colPatient = Hash.new
+ZFile.new(pds).each do |line|
+  id, dataset, patient, site, center, rep, visit, tot_visits, sex = line.chomp.split("\t")
+  next if id == "nap_id"
+  collection = id + "." + dataset
+  colSex[collection] = sex
+  colSite[collection] = site
+  colPatient[collection] = patient
+end
+
+ZFile.new(hmp).each do |line|
+  name, collection, rest = line.chomp.split("\t")
+  next if name == "seqName"
+  if (!colSite[collection])
+    STDERR.printf("%s not in pds.metadata\n", collection)
+    next
+  end
+  print name + "\t" + colSite[collection] + "\t" + colPatient[collection] + "\t" + colSex[collection] + "\n"
+end
+

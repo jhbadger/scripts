@@ -15,9 +15,11 @@ ARGV.flatten!
 opt = OpenStruct.new
 o = OptionParser.new
 opt.database = false
+opt.posmap = nil
 
 o.banner << " btab [btab...] [fna...]"
 o.on("-d", "--database", "use database") {opt.database = true}
+o.on("-p ", "--posmap ", String, "use posmap file supplied") {|t| opt.posmap = t}
 begin
   o.parse!
 rescue
@@ -42,6 +44,11 @@ geneHits = Hash.new
 conditions = []
 total = Hash.new
 condTot = Hash.new
+
+if (opt.posmap)
+  ZFile.new(opt.posmap).each do |line|
+  end
+end
 
 btabs.each do |btab|  
   name = File.basename(btab.split("_vs_").first, ".fna").split(".btab").first
