@@ -2,8 +2,8 @@
 
 require 'ostruct'
 require 'optparse'
-require 'rubygems'
 require 'bio'
+require 'ZFile'
 opt = OpenStruct.new
 
 ARGV.options {|opts|
@@ -25,7 +25,7 @@ ARGV.options {|opts|
 info, fasta = ARGV
 
 seen = Hash.new
-Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each {|seq|
   seen[seq.entry_id[0..20]] = true
 }
 

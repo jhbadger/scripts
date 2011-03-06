@@ -1,0 +1,113 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Stats'
+require 'csv'
+require 'ZFile'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " dist cluster-info fasta sequenced.tax"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 4)
+  STDERR << o
+  exit(1)
+end
+
+dist, cluster, fasta, stax = ARGV
+
+taxa = []
+
+phy = Hash.new
+
+ZFile.new(stax).each do |line|
+  id, tx = line.chomp.split(" ",2)
+  phy[id] = tx
+end
+
+STDERR.printf("Loading Distances...\n")
+ZFile.new(dist).each do |line|
+  fields = line.chomp.split(" ")
+  if (fields.size > 1)
+    taxa.push(fields.shift)
+  end
+end
+
+clusters = Hash.new
+ZFile.new(dist).each do |line|
+  fields = line.chomp.split(" ")
+  if (fields.size > 1)
+    name = fields.shift
+    if (name =~/Consens/)
+      name.gsub!("Consensus","")
+      clusters[name] = OpenStruct.new
+      clusters[name].minDist = 1e6
+      fields.size.times do |i|
+        if (fields[i].to_f < clusters[name].minDist && taxa[i] !~/Consens/)
+          clusters[name].minDist = fields[i].to_f
+          clusters[name].minName = taxa[i]
+        end
+      end
+    end
+  end
+end
+
+median = clusters.keys.collect{|x|clusters[x].minDist}.median
+stdDev = clusters.keys.collect{|x|clusters[x].minDist}.stdDev
+
+threshold = median+stdDev
+
+seqs = Hash.new
+
+STDERR.printf("Loading seqs...\n")
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  seqs[seq.entry_id.gsub("Consensus","")] = seq.seq
+end
+
+STDERR.printf("Loading cluster info...\n")
+ZFile.new(cluster).each do |line|
+  num, csize, male, patients, sites = line.chomp.split("\t")
+  if (!clusters[num])
+    STDERR.printf("No info for %d\n", num)
+    next
+  else
+    clusters[num].size = csize.to_i
+    clusters[num].male = male.to_f
+    clusters[num].patients = patients.split(" ")
+    clusters[num].sites = sites.split(" ")
+  end
+end
+
+
+STDERR.printf("Witing Spreadsheet...\n")
+header = ["Cluster Num", "Cluster Size", "Closest Sequenced or HMP Dist", 
+          "Closest Sequenced or HMP Name", 
+          "Number of Patients", "Percent Male", "Number of Sites", 
+          "Sites", "Closest Sequence Classification","Consensus Sequence", 
+          "Chosen"]
+STDOUT << header.to_csv 
+
+distOrder = clusters.keys.sort {|x, y| clusters[y].minDist <=> 
+  clusters[x].minDist}
+distOrder.each do |cnum|
+  c = clusters[cnum]
+  next if c.size.nil?
+  if (c.minDist >= threshold && ((c.patients.size > 100 && c.male > 50) ||
+                                 (c.patients.size > 25 && c.male <= 50)))
+    c.chosen = "yes"
+  else
+    c.chosen = "no"
+  end
+  print [cnum, c.size, c.minDist, c.minName, c.patients.size, c.male,
+         c.sites.size, c.sites.join(" "), phy[c.minName], seqs[cnum],
+        c.chosen].to_csv
+end

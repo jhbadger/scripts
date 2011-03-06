@@ -5,7 +5,7 @@ require 'optparse'
 opt = OpenStruct.new
 
 ARGV.options {|opts|
-  opts.banner << " taxa-list tree-info"
+  opts.banner << " tax.txt tree-info"
   #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
   begin
     opts.parse!
@@ -20,22 +20,23 @@ ARGV.options {|opts|
   end
 }
 
-taxa, info = ARGV
+tax, info = ARGV
 
-qHash = Hash.new
-File.new(taxa).each {|line|
-  qHash[line.chomp] = true
-}
-
-File.new(info).each {|line|
+tx = Hash.new
+File.new(tax).each do |line|
   fields = line.chomp.split("\t")
-  if (fields[2] == "r" && (qHash[fields[3]] || fields[3]=~/^Broad/ || fields[3]=~/Contig/))
-    fields[2] = "q"
-    fields.each {|field|
+  tx[fields.first] = fields.last
+end
+
+File.new(info).each do |line|
+  fields = line.chomp.split("\t")
+  if (fields[2] == "r")
+    fields.each do |field|
       print field + "\t"
-    }
+    end
+    print tx[fields.last] if (tx[fields.last])
     printf("\n")
   else
     print line
   end
-}
+end
