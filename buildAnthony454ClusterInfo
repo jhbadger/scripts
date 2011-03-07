@@ -66,6 +66,13 @@ ZFile.new(clust).each do |line|
 end
 
 csize.keys.sort.each do |cnum|
-  print [cnum, csize[cnum], (1000*male[cnum]/(male[cnum] + female[cnum]))/10.0, patients[cnum].keys.sort.join(" "),
+  percent = 0
+  begin
+    percent = 1000*male[cnum]/(male[cnum] + female[cnum])/10.0
+  rescue
+    STDERR.printf("Cluster %d has %d male, %d female...\n", cnum,
+    male[cnum], female[cnum])
+  end
+  print [cnum, csize[cnum], percent, patients[cnum].keys.sort.join(" "),
         sites[cnum].keys.sort.join(" ")].join("\t") + "\n"
 end
