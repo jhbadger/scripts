@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'dm-core'
+require 'GOS'
+require 'csv'
+
+DataMapper.setup(:default, "mysql://jbadger:plankton@mysql-lan-pro/gosii_io_apis") 
+
+counts = Hash.new
+families = Hash.new
+groups = Hash.new
+
+oldsite = nil
+query = "select count(mtName) as count, mtProject, mtLibrary, mtFid, phylum, class as cl, "
+query += "genus from transporters, classification where mtName=seq_name "
+query += "group by mtFid order by mtProject"
+
+repository(:default).adapter.select(query).each do |row|
+  filter = classifySample(row.mt_library)
+  site = row.mt_project + "_" + filter.to_s
+  STDERR.printf("Processing %s....\n", site) if (site != oldsite)
+  oldsite = site
+  next if row.phylum !~ /Actinobacteria|Cyanobacteria|Planctomyces|Bacteroidetes|Proteobacteria/
+  next if row.phylum == "Proteobacteria" && row.cl != "Alphaproteobacteria"
+  group = row.phylum
+  group = "Other alphaproteobacteria" if row.cl == "Alphaproteobacteria"
+  group = "Pelagibacter" if row.genus =~/Pelagibacter/
+  group = "Bacteroidetes" if group =~/Bacteroidetes/
+  counts[site] = Hash.new if counts[site].nil?
+  counts[site][row.mt_fid] = Hash.new if counts[site][row.mt_fid].nil?
+  counts[site][row.mt_fid][group] = 0 if counts[site][row.mt_fid][group].nil?
+  counts[site][row.mt_fid][group] += row.count
+  families[row.mt_fid] = true
+  groups[group] = true
+end
+
+
+counts.keys.sort.each do |site|
+  out = File.new(site + "_transporter_families.csv", "w")
+  header = [""] + groups.keys.sort + groups.keys.collect{|x| "% " + x}
+  out.print header.to_csv
+  families.keys.sort.each do |family|
+    percents = []
+    row = [family]
+    next if counts[site][family].nil?
+    sum = counts[site][family].keys.reduce(0) {|s, group| s + counts[site][family][group].to_i}
+    groups.keys.sort.each do |group|
+      row.push(counts[site][family][group].to_i)
+      percents.push((1000*counts[site][family][group].to_i / sum)/10.0)
+    end
+    row += percents
+    out.print row.to_csv
+  end
+  out.close
+end
