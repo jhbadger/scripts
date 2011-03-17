@@ -1,0 +1,92 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'Phylogeny'
+require 'ostruct'
+require 'fpdf'
+
+$VERBOSE = nil
+
+raxml = "raxmlHPC"
+
+opt = OpenStruct.new
+opt.outgroup = nil
+opt.trim = false
+opt.project = nil
+opt.model = nil
+
+pflag = ARGV.index("-p")
+pflag = ARGV.index("--project") if (pflag.nil?)
+if (pflag)
+  opt.project = ARGV[pflag + 1]
+  ARGV[pflag] = ""
+  ARGV[pflag + 1] = ""
+  cmd = $0
+  ARGV.each {|arg|
+    cmd += (" " + arg.to_s) if (arg != "")
+  }
+  qsub = "qsub -P #{opt.project} -e stderr -cwd -o stdout "
+  system("#{qsub} \"#{cmd}\"")
+  exit(0)
+end
+
+def cleanup(dir)
+  system("rm -rf #{dir}")	
+end
+
+ARGV.options {|opts|
+  opts.banner << " fasta [fasta...]"
+  opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
+  opts.on("-m ", "--model ", String, "model (default GTRGAMMA, PROTGAMMAWAGF)") {|m| opt.model = m}
+  opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}
+  opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+ARGV.each {|fasta|
+  name = File.basename(fasta).split(".").first
+  tmpdir = ENV["HOME"] + "/.tmp"
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tname = tmpdir + "/" + name
+  dna = isDNA?(fasta)
+  if (!opt.model)
+    if (dna)
+      opt.model = "GTRGAMMA"
+    else
+      opt.model = "PROTGAMMAWAGF"
+    end
+  end
+  aliHash = aliasFasta(fasta, nil, tname, opt.trim)
+  fasta2Phylip(tname, tname + ".phy")
+  system("cd #{tmpdir};#{raxml} -m #{opt.model} -n #{name} -s #{tname}.phy")
+  tree = NewickTree.fromFile("#{tmpdir}/RAxML_result.#{name}")
+  tree.unAlias(aliHash)
+  if (opt.outgroup)
+    outNode = tree.findNode(opt.outgroup)
+    if (outNode.nil?)
+      STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
+    else
+      tree = tree.reroot(outNode)
+    end 
+  else
+    tree = tree.midpointRoot
+  end  
+  tree.write("#{name}_raxml.tree")
+  tree.draw("#{name}_raxml.tree.pdf")
+  File.link("#{tmpdir}/RAxML_info.#{name}", "#{name}_raxml.info")
+  cleanup(tmpdir)
+}
