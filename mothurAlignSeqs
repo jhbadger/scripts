@@ -40,19 +40,18 @@ ARGV.each do |fasta|
     opt.template = ENV["PWD"] + "/" + opt.template
   end
   out = File.new(tmpdir + "/seq.fasta", "w")
-  taxinfo = Hash.new
   Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
-    taxinfo[seq.entry_id] = seq.definition.split(" ", 2).last
     out.print seq
   end
+  out.close
   batch = File.new(tmpdir + "/batch", "w")
   batch.printf("align.seqs(candidate=seq.fasta, template=#{opt.template}, flip=T, processors=2)")
   batch.close
   system("cd #{tmpdir};mothur batch >/dev/null")
   out = File.new(name + ".afa", "w")
   Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(tmpdir + "/seq.align")).each do |seq|
-    out.print seq.seq.gsub(".","-").to_fasta(seq.entry_id + " " + taxinfo[seq.entry_id], 60)
+    out.print seq.seq.gsub(".","-").to_fasta(seq.entry_id, 60)
   end
   out.close
-  cleanup(tmpdir)
+  #cleanup(tmpdir)
 end
