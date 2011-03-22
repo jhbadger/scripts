@@ -53,5 +53,5 @@ ARGV.each do |fasta|
     out.print seq.seq.gsub(".","-").to_fasta(seq.entry_id, 60)
   end
   out.close
-  #cleanup(tmpdir)
+  cleanup(tmpdir)
 end
