@@ -90,6 +90,6 @@ ARGV.each {|fasta|
   end  
   tree.write("#{name}_phyml.tree")
   tree.draw("#{name}_phyml.tree.pdf")
-  File.link("#{tmpdir}/#{name}.phy_phyml_stats.txt", "#{name}_phyml_stats.txt")
+  system("sed -e 's/20110304/v3.0/' #{tmpdir}/#{name}.phy_phyml_stats.txt > #{name}_phyml_stats.txt")
   cleanup(tmpdir)
 }
