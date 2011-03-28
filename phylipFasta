@@ -16,6 +16,7 @@ opt.noboot = false
 opt.numboot = 100
 opt.outgroup = nil
 opt.pam = false
+opt.unrooted = false
 opt.trim = false
 opt.project = nil
 
@@ -54,6 +55,7 @@ ARGV.options {|opts|
   opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
   opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}  
   opts.on(nil, "--pam", "use PAM model (default #{opt.pam})") {opt.pam = true}
+  opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}
   opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
   begin
     opts.parse!
@@ -155,7 +157,7 @@ tmpdir = ENV["HOME"] + "/.tmp"
     outNode = tree.findNode(opt.outgroup)
     if (outNode.nil?)
       STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
-    else
+    elsf (!opt.unrooted)
       tree = tree.reroot(outNode)
     end
   else

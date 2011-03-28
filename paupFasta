@@ -13,6 +13,7 @@ opt.algorithm = "nj"
 opt.estimate = false
 opt.noboot = false
 opt.outgroup = nil
+opt.unrooted = false
 opt.trim = false
 opt.numboot = 100
 opt.project = nil
@@ -48,6 +49,7 @@ ARGV.options {|opts|
           "method (default #{opt.algorithm} -  nj, pars, ml valid)") {|alg| opt.algorithm = alg}
   opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
   opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}
+  opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}
   opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
   begin
     opts.parse!
@@ -123,7 +125,7 @@ ARGV.each {|fasta|
     else
       tree = tree.reroot(outNode)
     end 
-  else
+  elsif (!opt.unrooted)
     tree = tree.midpointRoot
   end  
   tree.write("#{name}_#{opt.algorithm}.tree")

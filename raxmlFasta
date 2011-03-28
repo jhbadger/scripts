@@ -15,6 +15,7 @@ opt.outgroup = nil
 opt.trim = false
 opt.project = nil
 opt.model = nil
+opt.unrooted = false
 
 pflag = ARGV.index("-p")
 pflag = ARGV.index("--project") if (pflag.nil?)
@@ -40,6 +41,7 @@ ARGV.options {|opts|
   opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
   opts.on("-m ", "--model ", String, "model (default GTRGAMMA, PROTGAMMAWAGF)") {|m| opt.model = m}
   opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}
+  opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}
   opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
   begin
     opts.parse!
@@ -79,7 +81,7 @@ ARGV.each {|fasta|
     outNode = tree.findNode(opt.outgroup)
     if (outNode.nil?)
       STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
-    else
+    elsif (!opt.unrooted)
       tree = tree.reroot(outNode)
     end 
   else
