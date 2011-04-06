@@ -37,13 +37,29 @@ File.new(csv).each {|line|
 
 
 
-cutoff.keys.each {|hmm|
-  cmd = "hmmRunSingle #{names[hmm]} #{db}/#{hmm} #{pep} #{cutoff[hmm]}"
+cutoff.keys.each do |hmm|
+  cmd = "hmmsearch -T #{cutoff[hmm]} --tblout #{names[hmm]}.tbl #{db}/#{hmm}.HMM #{pep}"
   if (opt.project.nil?)
     STDERR.printf("Processing #{names[hmm]}...\n")
-    system("#{cmd} 2>#{names[hmm]}.err")
+    system("#{cmd} > /dev/null")
   else
-    system("runCmd -c \"#{cmd}\" -e #{names[hmm]}.err --nowait --project #{opt.project}")
+    system("runCmd -c \"#{cmd}\" --nowait --project #{opt.project}")
   end
-}
+end
 
+out = File.new(pep + "_summary.csv", "w")
+
+hits = 0
+
+cutoff.keys.each do |hmm|
+  next if !File.exist?(names[hmm] + ".tbl")
+  count = 0
+  File.new(names[hmm] + ".tbl").each do |line|
+    count += 1 if line !~/^#/
+  end
+  out.printf("%s,%d\n", names[hmm], count)
+  hits += 1 if count > 0
+end
+
+out.close
+STDERR.printf("%d of %d hmms hit\n", hits, cutoff.keys.size)

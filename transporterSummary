@@ -1,22 +1,67 @@
 #!/usr/bin/env ruby
 
 require 'dm-core'
+require 'optparse'
+require 'ostruct'
 require 'GOS'
 require 'csv'
 
-DataMapper.setup(:default, "mysql://jbadger:plankton@mysql-lan-pro/gosii_io_apis") 
+opt = OpenStruct.new
+opt.all = false
+opt.host = "mysql://access:access@mysql-lan-pro"
+opt.storage = "gosii_io_apis"
+opt.exp = false
+opt.filter = false
+
+o = OptionParser.new
+o.banner << " [dataset ... dataset]"
+o.on("-a", "--all", "include all datasets in database (#{opt.all})") {opt.all = true}
+o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
+ o.on("-e ", "--expression ", String, "include datasets matching substring") {|t| opt.exp = t}
+o.on("-f ", "--filter ", Float, "limit to a specific filter") {|t| opt.filter = t}
+o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1 && (!opt.all && !opt.exp))
+  STDERR << o
+  exit(1)
+end
+
+DataMapper.setup(:default, opt.host + "/" + opt.storage)
+
+if (opt.all || opt.exp)
+  repository(:default).adapter.select("select dataset from dataset").each do |dataset|
+    ARGV.push(dataset) if (!opt.exp || dataset =~/#{opt.exp}/)
+  end
+end
+
+inClause = "("
+ARGV.each do |dataset|
+  inClause += "'" + dataset + "',"
+end
+inClause.chop!
+inClause += ")"
 
 counts = Hash.new
 families = Hash.new
 groups = Hash.new
+filters = Hash.new
 
-query = "select count(mtName) as count, mtLibrary, mtFid, phylum, class as cl, "
-query += "genus from transporters, classification where mtName=seq_name "
-query += "group by mtFid, mtLibrary"
+query = "SELECT count(mtName) as count, mtProject, mtLibrary, mtFid, phylum, class as cl, "
+query += "genus FROM transporters, classification WHERE mtName=seq_name "
+query += "group by mtFid, mtLibrary AND mtLibrary IN #{inClause} AND mtLibrary NOT IN "
+query += "(SELECT mtLibrary FROM transporters WHERE mtLibrary LIKE '%.v2')"
 
 repository(:default).adapter.select(query).each do |row|
   filter = classifySample(row.mt_library)
   next if filter == "VIR"
+  next if opt.filter && filter != opt.filter
+  STDERR.printf("Processing %s %s (%s)\n", row.mt_project, filter, row.mt_library)
   group = row.phylum
   if (row.genus =~/Pelagibacter/)
     group = "Pelagibacter"
@@ -59,30 +104,26 @@ repository(:default).adapter.select(query).each do |row|
   else 
     group = "Other bacteria"
   end
-  counts[filter] = Hash.new if counts[filter].nil?
-  counts[filter][row.mt_fid] = Hash.new if counts[filter][row.mt_fid].nil?
-  counts[filter][row.mt_fid][group] = 0 if counts[filter][row.mt_fid][group].nil?
-  counts[filter][row.mt_fid][group] += row.count
+  counts[row.mt_fid] = Hash.new if counts[row.mt_fid].nil?
+  counts[row.mt_fid][group] = 0 if counts[row.mt_fid][group].nil?
+  counts[row.mt_fid][group] += row.count
   families[row.mt_fid] = true
   groups[group] = true
 end
 
 
-counts.keys.sort.each do |filter|
-  out = File.new("priority_" + filter.to_s + "_transporter_families.csv", "w")
-  header = [""] + groups.keys.sort + groups.keys.sort.collect{|x| "% " + x}
-  out.print header.to_csv
-  families.keys.sort.each do |family|
-    percents = []
-    row = [family]
-    next if counts[filter][family].nil?
-    sum = counts[filter][family].keys.reduce(0) {|s, group| s + counts[filter][family][group].to_i}
-    groups.keys.sort.each do |group|
-      row.push(counts[filter][family][group].to_i)
-      percents.push((1000*counts[filter][family][group].to_i / sum)/10.0)
-    end
-    row += percents
-    out.print row.to_csv
+header = [""] + groups.keys.sort + groups.keys.sort.collect{|x| "% " + x}
+print header.to_csv
+families.keys.sort.each do |family|
+  percents = []
+  row = [family]
+  next if counts[family].nil?
+  sum = counts[family].keys.reduce(0) {|s, group| s + counts[family][group].to_i}
+  groups.keys.sort.each do |group|
+    row.push(counts[family][group].to_i)
+    percents.push((1000*counts[family][group].to_i / sum)/10.0)
   end
-  out.close
+  row += percents
+  print row.to_csv
 end
+
