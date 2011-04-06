@@ -47,22 +47,22 @@ end
 inClause.chop!
 inClause += ")"
 
-counts = Hash.new
-families = Hash.new
 groups = Hash.new
-filters = Hash.new
+families = Hash.new
 
 query = "SELECT count(mtName) as count, mtProject, mtLibrary, mtFid, phylum, class as cl, "
-query += "genus FROM transporters, classification WHERE mtName=seq_name "
-query += "group by mtFid, mtLibrary AND mtLibrary IN #{inClause} AND mtLibrary NOT IN "
-query += "(SELECT mtLibrary FROM transporters WHERE mtLibrary LIKE '%.v2')"
+query += "genus FROM transporters, classification WHERE mtName=seq_name AND mtLibrary IN #{inClause} "
+query += "group by mtFid, mtLibrary"
 
 repository(:default).adapter.select(query).each do |row|
+  next if row.mt_library =~/\.v2/
   filter = classifySample(row.mt_library)
   next if filter == "VIR"
-  next if opt.filter && filter != opt.filter
+  next if (opt.filter && filter != opt.filter)
   STDERR.printf("Processing %s %s (%s)\n", row.mt_project, filter, row.mt_library)
   group = row.phylum
+  family = row.mt_fid
+  
   if (row.genus =~/Pelagibacter/)
     group = "Pelagibacter"
   elsif (row.genus =~/Prochlorococcus/)
@@ -104,24 +104,22 @@ repository(:default).adapter.select(query).each do |row|
   else 
     group = "Other bacteria"
   end
-  counts[row.mt_fid] = Hash.new if counts[row.mt_fid].nil?
-  counts[row.mt_fid][group] = 0 if counts[row.mt_fid][group].nil?
-  counts[row.mt_fid][group] += row.count
-  families[row.mt_fid] = true
-  groups[group] = true
+  groups[group] = Hash.new if groups[group].nil?
+  groups[group][family] = 0 if groups[group][family].nil?
+  groups[group][family] += row.count
+  families[family] = 0 if families[family].nil?
+  families[family] += row.count
 end
-
 
 header = [""] + groups.keys.sort + groups.keys.sort.collect{|x| "% " + x}
 print header.to_csv
 families.keys.sort.each do |family|
   percents = []
   row = [family]
-  next if counts[family].nil?
-  sum = counts[family].keys.reduce(0) {|s, group| s + counts[family][group].to_i}
   groups.keys.sort.each do |group|
-    row.push(counts[family][group].to_i)
-    percents.push((1000*counts[family][group].to_i / sum)/10.0)
+    groups[group][family] = 0 if groups[group][family].nil?
+    row.push(groups[group][family])
+    percents.push((1000*groups[group][family] / families[family])/10.0)
   end
   row += percents
   print row.to_csv
