@@ -3,7 +3,7 @@
 require 'ZFile'
 
 class RogerBlast
-  attr_reader :query, :score, :evalue, :ident, :strand, :target, :length
+  attr_reader :query, :score, :evalue, :ident, :strand, :target, :length, :qlength
   def initialize(file)
     @file = ZFile.new(file)
   end
@@ -31,6 +31,7 @@ class RogerBlast
         @evalue = @evalue.to_f
       elsif (line =~/Identities = ([0-9]+)\/([0-9]+)/)
         @ident = ($1.to_i*1000/$2.to_i)/10.0
+        @qlength = $2.to_i
       elsif (line =~/Strand = (.*)/)
         @strand = $1.split("/ ").last
         yield self

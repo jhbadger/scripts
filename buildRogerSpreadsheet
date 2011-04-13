@@ -42,7 +42,7 @@ ARGV.each do |blast|
     samples[sample][dir]["match"] = match
     samples[sample][dir]["strand"] = hit.strand
     samples[sample][dir]["ident"] = hit.ident
-    samples[sample][dir]["length"] = hit.length
+    samples[sample][dir]["length"] = hit.qlength
     samples[sample][dir]["fullname"] = hit.query.split(" ").grep(/WGA/).first
   end
   samples.keys.each do |sample|
