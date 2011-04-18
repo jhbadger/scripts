@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'dm-core'
+require 'csv'
+
+opt = OpenStruct.new
+opt.host = "mysql://access:access@mysql-lan-pro"
+opt.missing = false
+opt.nocontig = false
+opt.limit = false
+
+o = OptionParser.new
+o.banner << " database"
+o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+o.on("-l ", "--limit ", Integer, "limit on number of records to report (default #{opt.limit})") {|t| opt.limit = t}
+o.on("-m", "--missing", "only report where cds number not same as protein (#{opt.missing})") {opt.missing = true}
+o.on("-n", "--nocontig", "only report where contig seq missing (#{opt.nocontig})") {opt.nocontig = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+DataMapper.setup(:default, opt.host + "/" + ARGV.first)
+
+query = "select contigs.name, contigs.species, contigs.taxonomy, contigs.taxon_id, contigs.form, "
+query += "length(contigs.seq) as contig_size, (select count(*) from proteins where contigs.name = contig_name) "
+query += "as proteins, "
+query += "(select count(*) from transcripts where contig_name = contigs.name) as transcripts, updated from contigs"
+query += " limit #{opt.limit}" if (opt.limit)
+10
+first_line = true
+repository(:default).adapter.select(query).each do |row|
+  print row.members.to_csv if (first_line)
+  first_line = false
+  if ((!opt.missing && !opt.nocontig) || (opt.missing && row.proteins != row.transcripts) || (opt.nocontig && row.contig_size == 0))
+    print row.entries.to_csv
+  end
+end
