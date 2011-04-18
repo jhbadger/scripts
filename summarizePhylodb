@@ -15,7 +15,7 @@ o = OptionParser.new
 o.banner << " database"
 o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
 o.on("-l ", "--limit ", Integer, "limit on number of records to report (default #{opt.limit})") {|t| opt.limit = t}
-o.on("-m", "--missing", "only report where cds number not same as protein (#{opt.missing})") {opt.missing = true}
+o.on("-m", "--missing", "only report where cds missing (#{opt.missing})") {opt.missing = true}
 o.on("-n", "--nocontig", "only report where contig seq missing (#{opt.nocontig})") {opt.nocontig = true}
 begin
   o.parse!
@@ -41,7 +41,7 @@ first_line = true
 repository(:default).adapter.select(query).each do |row|
   print row.members.to_csv if (first_line)
   first_line = false
-  if ((!opt.missing && !opt.nocontig) || (opt.missing && row.proteins != row.transcripts) || (opt.nocontig && row.contig_size == 0))
+  if ((!opt.missing && !opt.nocontig) || (opt.missing && row.transcripts == 0) || (opt.nocontig && row.contig_size == 0))
     print row.entries.to_csv
   end
 end

@@ -27,7 +27,7 @@ end
 fasta = ARGV.shift
 
 name = File.basename(fasta).split(".").first
-tmpdir = ENV["HOME"] + "/.tmp"
+tmpdir = "./.tmp"
 Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
 tmpdir += "/" + name + "_" + Time.now.to_f.to_s
 Dir.mkdir(tmpdir) if !File.exists?(tmpdir)

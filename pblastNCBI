@@ -69,13 +69,13 @@ ARGV.each {|file|
   begin
     File.chmod(0777, bdir)
   rescue
-    STDERR << "User " < ENV["USER"] < "does not have permissions for " << bdir << "\n"
+    STDERR << "User " << ENV["USER"] << "does not have permissions for " << bdir << "\n"
    exit(1) 
   end
   begin
     File.chmod(0755, Dir.pwd)
   rescue
-    STDERR << "User " < ENV["USER"] < "does not have permissions for " << Dir.pwd << "\n"
+    STDERR << "User " << ENV["USER"] << "does not have permissions for " << Dir.pwd << "\n"
    exit(1) 
   end	
   seqName = bdir + bout + "_000001"
