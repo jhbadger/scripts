@@ -44,5 +44,5 @@ class Taxonomy
   end
 end
 
-tax = Taxonomy.new("/home/jbadger/EVOL/tx")
-tax.writeAll("/home/jbadger/EVOL/tx/taxonomy.txt")
+tax = Taxonomy.new("/Users/jbadger/Desktop")
+tax.writeAll("/Users/jbadger/Desktop/taxonomy.txt")

@@ -50,6 +50,8 @@ class BtabMatch
     $VERBOSE = true
     if (@desc =~/\{([^\}]*)/)
       @species = $1.strip
+    else
+      @species = nil
     end
     if (@species && @desc.index("{") > 0)
       @annotation = @desc[0..@desc.index("{") - 2]

@@ -1,0 +1,102 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Btab'
+require 'bio'
+require 'ZFile'
+require 'csv'
+
+opt = OpenStruct.new
+opt.database = false
+opt.database = false
+
+o = OptionParser.new
+o.banner << " btab [...btab] fna [fna...]"
+o.on("-d", "--database", "use database") {opt.database = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+
+btabs = Hash.new
+ARGV.grep(/btab/).each do |btab|
+  name = btab.split(".").first
+  btabs[name] = btab
+end
+
+
+readsCounts = Hash.new
+(ARGV - btabs.values).each do |fna|
+  name = fna.split(".").first
+  readsCounts[name] = 0
+  STDERR << "Loading in " << fna << "...\n"
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fna)).each do |seq|
+    readsCounts[name] += 1
+  end
+  STDERR << fna << " has " << readsCounts[name] << " reads...\n"
+end
+
+reads = Hash.new
+species = Hash.new
+annotation = Hash.new
+spCount = Hash.new
+protCount = Hash.new
+
+btabs.keys.sort.each do |name|
+  Btab.new(btabs[name]).each do |query|
+    hit = query.matches.first
+    reads[hit.name] = Hash.new if (!reads[hit.name])
+    reads[hit.name][name] = [] if !reads[hit.name][name]
+    reads[hit.name][name].push(query.name)
+    species[hit.name] = hit.species
+    protCount[hit.name] = Hash.new if protCount[hit.name].nil?
+    protCount[hit.name][name] = 0 if  protCount[hit.name][name].nil?
+    protCount[hit.name][name] += 1
+    spCount[hit.species] = Hash.new if spCount[hit.species].nil?
+    spCount[hit.species][name] = 0 if  spCount[hit.species][name].nil?
+    spCount[hit.species][name] += 1
+    annotation[hit.name] = hit.annotation
+  end
+end
+
+print (["Protein", "Species", "Total Species", "Total Protein", "Annotation"] +  btabs.keys.sort.collect{|x| x + " species count"} + 
+  btabs.keys.sort.collect{|x| x + " protein count"} + btabs.keys.sort.collect{|x| x + " normalized species count"} + 
+    btabs.keys.sort.collect{|x| x + " normalized protein count"} + btabs.keys.sort).to_csv
+
+
+annotation.keys.sort.each do |prot|
+  sp = species[prot]
+  sTotal = spCount[sp].values.reduce(:+)
+  pTotal = protCount[prot].values.reduce(:+)
+  row = [prot, sp, sTotal, pTotal, annotation[prot]]
+  btabs.keys.sort.each do |lib|
+    row.push(spCount[sp][lib].to_i)
+  end
+  btabs.keys.sort.each do |lib|
+    row.push(protCount[prot][lib].to_i)
+  end
+  btabs.keys.sort.each do |lib|
+    #STDERR.printf("readsCounts = %d speciesCount = %d div = %f\n", readsCounts[lib], spCount[sp][lib], spCount[sp][lib].to_f/readsCounts[lib])
+    row.push(spCount[species[prot]][lib].to_f/readsCounts[lib])
+  end
+  btabs.keys.sort.each do |lib|
+    row.push(protCount[prot][lib].to_f/readsCounts[lib])
+  end
+  btabs.keys.sort.each do |lib|
+    if (reads[prot][lib])
+      row.push(reads[prot][lib].join(" "))
+    else
+      row.push("")
+    end
+  end
+  print row.to_csv
+end
