@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+opt.greater = false
+o = OptionParser.new
+
+o.banner << " csv1 csv2"
+begin
+  o.on("-g", "--greater", "summarize by greater/smaller") {opt.greater = true}
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+csv1, csv2 = ARGV
+
+data1 = CSV.read(csv1, options = {:headers => true, :converters => :numeric})
+data2 = CSV.read(csv2, options = {:headers => true, :converters => :numeric})
+headers = data1.headers
+
+greater = 0
+smaller = 0
+0.upto(data1.size) do |i|
+  row1 = data1[i]
+  row2 = data2[i]
+  next if !row2
+  next if !row1
+  headers.each do |col|
+    next if col =~/^\%/
+    if (row1[col] != row2[col])
+      if (opt.greater)
+        greater += 1 if (row1[col].to_f > row2[col].to_f)
+        smaller += 1 if (row1[col].to_f < row2[col].to_f)
+      else
+        STDERR << row1.first.last  << " " << col << " is " << row1[col] << " in " << csv1 << " but " << row2[col] << " in " << csv2 << "\n"
+      end
+    end
+  end
+end
+
+if (opt.greater)
+  STDOUT << csv1 << " greater in " << greater << " cases\n"
+  STDOUT << csv1 << " smaller in " << smaller << " cases\n"
+end

@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'GOS'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " site-list"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+File.new(ARGV.first).each do |line|
+  site, size = line.chomp.split("_")
+  size = size.to_f
+  if ($dataset[site] && $dataset[site][size])
+    printf("%s\n", $dataset[site][size])
+  else
+    STDERR.printf("%s not found\n", line.chomp)
+  end
+end

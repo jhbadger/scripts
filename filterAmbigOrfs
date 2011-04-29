@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s prot.fasta max-ns\n", $0)
+  exit(1)
+end
+
+prot, max = ARGV
+max = max.to_i
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(prot)).each do |seq|
+  print seq if (seq.seq.count("NnXxWwSs")) <= max
+end

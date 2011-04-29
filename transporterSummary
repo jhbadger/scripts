@@ -12,14 +12,24 @@ opt.host = "mysql://access:access@mysql-lan-pro"
 opt.storage = "gosii_io_apis"
 opt.exp = false
 opt.filter = false
+opt.genome = false
+opt.file = false
+opt.lib = false
+opt.libfilter=false
+opt.order = false
 
 o = OptionParser.new
 o.banner << " [dataset ... dataset]"
 o.on("-a", "--all", "include all datasets in database (#{opt.all})") {opt.all = true}
 o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
- o.on("-e ", "--expression ", String, "include datasets matching substring") {|t| opt.exp = t}
-o.on("-f ", "--filter ", Float, "limit to a specific filter") {|t| opt.filter = t}
+o.on("-e ", "--expression ", String, "include datasets matching substring") {|t| opt.exp = t}
+o.on("-g", "--genomeEquiv", "divide by genome equivilents") {opt.genome = true}
+o.on("-f ", "--file ", String, "load datasets from file") {|t| opt.file = t}
+o.on("-l", "--lib", "group by library not taxonomy") {opt.lib = true}
+o.on("-m", "--libfilter", "group by library+filter not taxonomy") {opt.libfilter = true}
+o.on("-o ", "--order ", String, "order by CSV file first field") {|t| opt.order = t}
 o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+o.on("-z ", "--filter ", Float, "limit to a specific filter") {|t| opt.filter = t}
 begin
   o.parse!
 rescue
@@ -27,14 +37,25 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size < 1 && (!opt.all && !opt.exp))
+if (ARGV.size < 1 && (!opt.all && !opt.exp && !opt.file))
   STDERR << o
   exit(1)
 end
 
 DataMapper.setup(:default, opt.host + "/" + opt.storage)
 
-if (opt.all || opt.exp)
+order = []
+if (opt.order)
+  CSV.foreach(opt.order) do |row|
+    order.push(row.first.rstrip) if !row.first.nil? && row.first != ""
+  end
+end
+
+if (opt.file)
+  File.new(opt.file).each do |line|
+    ARGV.push(line.chomp)
+  end
+elsif (opt.all || opt.exp)
   repository(:default).adapter.select("select dataset from dataset").each do |dataset|
     ARGV.push(dataset) if (!opt.exp || dataset =~/#{opt.exp}/)
   end
@@ -50,76 +71,116 @@ inClause += ")"
 groups = Hash.new
 families = Hash.new
 
-query = "SELECT count(mtName) as count, mtProject, mtLibrary, mtFid, phylum, class as cl, "
-query += "genus FROM transporters, classification WHERE mtName=seq_name AND mtLibrary IN #{inClause} "
-query += "group by mtFid, mtLibrary"
+query = "SELECT DISTINCT mtLibrary FROM transporters WHERE mtLibrary IN #{inClause}"
+missing = ARGV - repository(:default).adapter.select(query)
+if (!missing.empty?)
+  missing.each do |miss|
+    STDERR << "Missing " << miss << "\n"
+  end
+end
+
+names = Hash.new
+begin
+  query = "SELECT fFID, fName FROM transporter_info"
+  repository(:default).adapter.select(query).each do |row|
+    names[row.f_fid] = row.f_name
+  end
+rescue
+  STDERR << "Skipping loading transporter names..."
+end
+
+query = "SELECT mtName, mtProject, mtLibrary, mtFid, phylum, class as cl, genus FROM classification "
+query += "JOIN transporters ON mtName=seq_name WHERE mtLibrary IN #{inClause}"
 
 repository(:default).adapter.select(query).each do |row|
-  next if row.mt_library =~/\.v2/
   filter = classifySample(row.mt_library)
-  next if filter == "VIR"
   next if (opt.filter && filter != opt.filter)
-  STDERR.printf("Processing %s %s (%s)\n", row.mt_project, filter, row.mt_library)
   group = row.phylum
   family = row.mt_fid
-  
-  if (row.genus =~/Pelagibacter/)
-    group = "Pelagibacter"
-  elsif (row.genus =~/Prochlorococcus/)
-    group = "Prochlorococcus"
-  elsif (row.genus =~/Synechococcus/)
-    group = "Synechococcus"
-  elsif (row.cl == "Alphaproteobacteria")
-    group = "Other alphaproteobacteria"
-  elsif (group == "Cyanobacteria")
-    group = "Other cyanobacteria"
-  elsif (group =~/Bacteroidetes|Chlorobi/)
-    group = "Bacteroidetes/Chlorobi"
-  elsif (row.cl =~/Betaproteobacteria/)
-    group = "Betaproteobacteria"
-  elsif (row.cl =~/Gammaproteobacteria/)
-    group = "Gammaproteobacteria"
-  elsif (row.cl =~/Deltaproteobacteria/)
-    group = "Deltaproteobacteria"
-  elsif (row.cl =~/Epsilonproteobacteria/)
-    group = "Epsilonproteobacteria"
-  elsif (group =~/Proteobacteria/)
-    group = "Other proteobacteria"
-  elsif (group =~/Rhodobacterales/)
-    group = "Rhodobacterales"
-  elsif (group =~/Actinobacteria/)
-    group = "Actinobacteria"  
-  elsif (group =~/Firmicutes/)
-    group = "Firmicutes" 
-  elsif (group =~/Chlamydiae|Verrucomicrobia/)
-    group = "Chlamydiae/Verrucomicrobia"
-  elsif (group =~/Spirochaetes/)
-    group = "Spirochaetes"
-  elsif (group =~/Thermotogae/)
-    group = "Thermotogae"
-  elsif (group =~/Planctomycetes/)
-    group = "Planctomycetes"  
-  elsif (group =~/Unknown/)
-    group = "Unknown bacteria" 
-  else 
-    group = "Other bacteria"
+  next if family.nil? || family == "" || family == "H+-"
+  next if (opt.order && !order.include?(family))
+  if (opt.lib)
+    group = row.mt_project
+  elsif(opt.libfilter)
+    group = row.mt_project + "_" + filter.to_s
+    group.gsub!("IOSM","")
+    group.gsub!("IOLG","")
+  else
+    if (row.genus =~/Pelagibacter/)
+      group = "Pelagibacter"
+    elsif (row.genus =~/Prochlorococcus/)
+      group = "Prochlorococcus"
+    elsif (row.genus =~/Synechococcus/)
+      group = "Synechococcus"
+    elsif (row.cl == "Alphaproteobacteria")
+      group = "Other alphaproteobacteria"
+    elsif (group == "Cyanobacteria")
+      group = "Other cyanobacteria"
+    elsif (group =~/Bacteroidetes|Chlorobi/)
+      group = "Bacteroidetes/Chlorobi"
+    elsif (row.cl =~/Betaproteobacteria/)
+      group = "Betaproteobacteria"
+    elsif (row.cl =~/Gammaproteobacteria/)
+      group = "Gammaproteobacteria"
+    elsif (row.cl =~/Deltaproteobacteria/)
+      group = "Deltaproteobacteria"
+    elsif (row.cl =~/Epsilonproteobacteria/)
+      group = "Epsilonproteobacteria"
+    elsif (group =~/Proteobacteria/)
+      group = "Other proteobacteria"
+    elsif (group =~/Rhodobacterales/)
+      group = "Rhodobacterales"
+    elsif (group =~/Actinobacteria/)
+      group = "Actinobacteria"  
+    elsif (group =~/Firmicutes/)
+      group = "Firmicutes" 
+    elsif (group =~/Chlamydiae|Verrucomicrobia/)
+      group = "Chlamydiae/Verrucomicrobia"
+    elsif (group =~/Spirochaetes/)
+      group = "Spirochaetes"
+    elsif (group =~/Thermotogae/)
+      group = "Thermotogae"
+    elsif (group =~/Planctomycetes/)
+      group = "Planctomycetes"  
+    elsif (group =~/Unknown/)
+      group = "Unknown bacteria" 
+    else 
+      group = "Other bacteria"
+    end
   end
   groups[group] = Hash.new if groups[group].nil?
   groups[group][family] = 0 if groups[group][family].nil?
-  groups[group][family] += row.count
+  groups[group][family] += 1
   families[family] = 0 if families[family].nil?
-  families[family] += row.count
+  families[family] += 1
 end
 
-header = [""] + groups.keys.sort + groups.keys.sort.collect{|x| "% " + x}
+if (names.empty?)
+  header = [""]
+else
+  header = ["", "Transporter Name"]
+end
+
+header += groups.keys.sort + groups.keys.sort.collect{|x| "% " + x}
 print header.to_csv
-families.keys.sort.each do |family|
+order = families.keys.sort if order.empty?
+order.each do |family|
   percents = []
   row = [family]
+  row.push(names[family].to_s) if (!names.empty?)
   groups.keys.sort.each do |group|
     groups[group][family] = 0 if groups[group][family].nil?
+    if (opt.libfilter)
+      site, filter = group.split("_")
+      filter = filter.to_f
+      groups[group][family] /= ($genomeEquiv[site][filter].to_f) if opt.genome
+    end
     row.push(groups[group][family])
-    percents.push((1000*groups[group][family] / families[family])/10.0)
+    begin
+      percents.push((1000*groups[group][family] / families[family])/10.0)
+    rescue
+      percents.push(0)
+    end
   end
   row += percents
   print row.to_csv
