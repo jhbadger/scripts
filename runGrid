@@ -10,7 +10,7 @@ opt.queue = "default"
 o = OptionParser.new
 o.banner << " \"command\""
 o.on("-m ", "--memory ", Float, "Memory in gigs") {|m| opt.memory = m}
-o.on("-p ", "--project ", Integer, "JCVI project number") {|p| opt.project = p}
+o.on("-p ", "--project ", String, "JCVI project number") {|p| opt.project = p}
 o.on("-q ", "--queue ", String, "grid queue to use") {|q| opt.queue = q}
 begin
   o.parse!
