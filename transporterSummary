@@ -89,7 +89,7 @@ rescue
   STDERR << "Skipping loading transporter names..."
 end
 
-query = "SELECT mtName, mtProject, mtLibrary, mtFid, phylum, class as cl, genus FROM classification "
+query = "SELECT mtName, mtProject, mtLibrary, mtFid, phylum, class as cl, ord, family, genus FROM classification "
 query += "JOIN transporters ON mtName=seq_name WHERE mtLibrary IN #{inClause}"
 
 repository(:default).adapter.select(query).each do |row|
@@ -97,7 +97,7 @@ repository(:default).adapter.select(query).each do |row|
   next if (opt.filter && filter != opt.filter)
   group = row.phylum
   family = row.mt_fid
-  next if family.nil? || family == "" || family == "H+-"
+  next if family.nil? || family == "" 
   next if (opt.order && !order.include?(family))
   if (opt.lib)
     group = row.mt_project
@@ -108,9 +108,9 @@ repository(:default).adapter.select(query).each do |row|
   else
     if (row.genus =~/Pelagibacter/)
       group = "Pelagibacter"
-    elsif (row.genus =~/Prochlorococcus/)
+    elsif (row.family =~/Prochlorococcus/)
       group = "Prochlorococcus"
-    elsif (row.genus =~/Synechococcus/)
+    elsif (row.ord =~/Synechococcus/)
       group = "Synechococcus"
     elsif (row.cl == "Alphaproteobacteria")
       group = "Other alphaproteobacteria"
