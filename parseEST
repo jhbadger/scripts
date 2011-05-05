@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+
+if (ARGV.size < 1)
+  STDERR << "Usage: " << $0 << " est-fasta [est-fasta...]\n"
+  exit(1)
+end
+
+cds = File.new("est.cds", "w")
+peps = File.new("est.pep", "w")
+attf = File.new("est.att", "w")
+
+ARGV.each do |gb|
+  system("parseGenBank2Combo  #{gb}")
+  system("metaGenePeps all.con")
+  att = File.read("all.att").split("\n").first.split("\t")
+  sp = att[2]
+  abbr = (sp.split(" ")[0][0] + sp.split(" ")[1][0]).downcase
+  att[0] = abbr
+  name = abbr + "000001"
+  Bio::FlatFile.new(Bio::FastaFormat, File.new("all.con.cds")).each do |seq|
+    header = name + "-" + abbr + " " + seq.entry_id + " {" + sp + "}"
+    frame = seq.entry_id.split("_").last.to_i
+    cds.print seq.seq.to_fasta(header, 60)
+    peps.print seq.naseq.translate(frame).to_fasta(header, 60)
+    name.succ!
+  end
+  attf.print att.join("\t") + "\n"
+end
+system("rm all.*")
+
+cds.close
+peps.close
+attf.close
