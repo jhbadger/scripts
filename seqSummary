@@ -2,16 +2,19 @@
 # provides some information about sequence(s) in a FASTA file
 
 require 'ostruct'
-require 'rubygems'
 require 'bio'
 require 'optparse'
 require 'ZFile'
+require 'csv'
+
 opt = OpenStruct.new
 
+opt.csv = false
 opt.total = false
 
 ARGV.options {|opts|
   opts.banner << " fasta [...fasta...]"
+  opts.on("-c", "--csv", "output as csv") {|t| opt.csv = t}    
   opts.on("-t", "--total", "run all sequences in each file as one") {|t| opt.total = t}    
   begin
     opts.parse!
@@ -26,21 +29,32 @@ ARGV.options {|opts|
   end
 }
 
-ARGV.each {|file|
+if (opt.csv)
+  print ["Name", "Sequences", "Avg. Length", "% Ambiguous bases", "%GC"].to_csv
+end
+
+ARGV.each do |file|
   tLen = 0
   tgc = 0
   tat = 0
   tam = 0
   count  = 0
-  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
+  stream = ZFile.new(file)
+  Bio::FlatFile.new(Bio::FastaFormat, stream).each do |seq|
     gc =  seq.seq.count("GCgc")
     at =  seq.seq.count("ATUatu")
     ambig = seq.seq.count("NRYWSnryws")
     if (!opt.total)
-      printf("---%s---\n", seq.definition)
-      printf("Length: %d (%.1f megabases)\n", seq.length, seq.length / 1.0e6)
-      printf("Ambiguous bases: %d (%.1f megabases)\n", ambig, ambig / 1.0e6)
-      printf("GC:     %d%%\n", (gc*100.0) / (gc + at))
+      gcper = ((gc*100.0) / (gc + at)).round(1)
+      amper = ((ambig*100.0)/seq.length).round(1)
+      if (opt.csv)
+        print [seq.definition, 1, seq.length, amper, gcper].to_csv
+      else
+        printf("---%s---\n", seq.definition)
+        printf("Length: %d (%.1f megabases)\n", seq.length, seq.length / 1.0e6)
+        printf("%% Ambiguous %d%%\n", amper)
+        printf("GC:     %d%%\n", gcper)
+      end
     else
       tLen += seq.length
       tgc +=  gc
@@ -48,13 +62,21 @@ ARGV.each {|file|
       tam += ambig
       count += 1
     end
-  }
-  if (opt.total)
-    printf("---%s---\n", file)
-    printf("Sequences: %d\n", count)
-    printf("Length: %d (%.1f megabases)\n", tLen, tLen / 1.0e6)
-    printf("Average length: %d (%.1f megabases)\n", tLen/(1.0*count), tLen / (count*1.0e6))
-    printf("Ambiguous bases: %d (%.1f megabases)\n", tam, tam / 1.0e6)
-    printf("GC:     %d%%\n", (tgc*100.0) / (tgc + tat))
   end
-}
+  stream.close
+  if (opt.total)
+    avg = (tLen/count.to_f).round(1)
+    gcper = ((tgc*100.0) / (tgc + tat)).round(1)
+    amper = (100*tam/tLen.to_f).round(1)
+    if (opt.csv)
+      print [file, count, avg, amper, gcper].to_csv
+    else
+      printf("---%s---\n", file)
+      printf("Sequences: %d\n", count)
+      printf("Length: %d (%.1f megabases)\n", tLen, tLen / 1.0e6)
+      printf("Average length: %d (%.1f megabases)\n", avg, avg / (count*1.0e6))
+      printf("%% Ambiguous: %d%\n", amper)
+      printf("GC:     %d%%\n", gcper)
+    end
+  end
+end

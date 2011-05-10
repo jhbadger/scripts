@@ -12,7 +12,7 @@ opt.maxHits = 50
 opt.btab = false
 opt.project = nil
 opt.queue = "default"
-opt.gridSize = 150
+opt.gridSize = nil
 opt.tmpdir = "/usr/local/scratch/#{ENV["USER"]}/"
 $VERBOSE = nil
 
@@ -32,7 +32,7 @@ ARGV.options {|opts|
 	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
   opts.on("-t", "--tab", "use btab format (#{opt.btab})") {|t| opt.btab = t}
   opts.on("-z ", "--size ", Integer,  
-	  "number of sequences per each grid job (default #{opt.gridSize})") {|t| opt.gridSize = t} 
+	  "number of sequences per each grid job (default automatic)") {|t| opt.gridSize = t} 
   begin
     opts.parse!
   rescue
@@ -61,7 +61,9 @@ if (opt.blast !~ /^blast[n|p|x]/ && opt.blast !~/tblastn/)
   exit(1)
 end
 
+
 ARGV.each {|file|
+  opt.gridSize = `grep -c ">" #{file}`.to_i / 1000 if (opt.gridSize.nil?)
   bout = File.basename(file) + "_vs_" + File.basename(db) + ".#{opt.blast}"
   Dir.mkdir(opt.tmpdir) if !File.exists?(opt.tmpdir)
   bdir = opt.tmpdir + "/blastdir/"
