@@ -88,7 +88,7 @@ ARGV.each do |file|
   seqs.each do |seq|
     hmm = "hmmscan --cut_tc -Z 15930 -o #{seq}.out "
     hmm += "--tblout #{seq}.tbl --domtblout #{seq}.dom "
-    hmm += db + " " + seq
+    hmm += db + " " + seq + ".seq"
     hmm += ";rm #{seq}.seq"
     if (opt.queue != "default")
       queue = "-l \"#{queue},memory=4G\""
@@ -107,7 +107,7 @@ ARGV.each do |file|
   tblF=File.new(tblout,"w")
   domF=File.new(domout,"w")
   seqs.sort.each do |seq|
-    File.new(seq + ".hmm").each do |line|
+    File.new(seq + ".out").each do |line|
       outF.print line
     end
     File.new(seq + ".tbl").each do |line|
@@ -116,7 +116,7 @@ ARGV.each do |file|
     File.new(seq + ".dom").each do |line|
       domF.print line
     end
-    File.unlink(seq + ".hmm")
+    File.unlink(seq + ".out")
     File.unlink(seq + ".tbl")
     File.unlink(seq + ".dom")
   end
