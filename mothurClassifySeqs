@@ -81,9 +81,11 @@ ARGV.each do |fasta|
     end
     out.close
   else
+    out = File.new(File.basename(fasta) + "_class.txt", "w")
     File.new(tax).each do |line|
-      print line
+      out.print line
     end
+    out.close
   end
   cleanup(tmpdir)
 end
