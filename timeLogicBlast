@@ -6,6 +6,9 @@ opt = OpenStruct.new
 
 opt.evalue = 1e-9
 opt.blast = "blastp"
+opt.server = "tmlsrv2.jcvi.org"
+opt.user = ENV["USER"]
+opt.password = nil
 opt.maxHits = 50
 opt.btab = false
 $VERBOSE = nil
@@ -19,7 +22,14 @@ ARGV.options {|opts|
           "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
   opts.on("-m ", "--maxHits ", Integer, 
           "max number of BLAST hits (default #{opt.maxHits})") {|t| opt.maxHits = t}
+  opts.on("-p ", "--password ", String, 
+          "password (required!)") {|t| opt.password = t}
+  opts.on("-s ", "--server ", String, 
+          "server (#{opt.server})") {|t| opt.server = t}
+  opts.on("-u ", "--user ", String, 
+          "username (#{opt.user})") {|t| opt.user = t}
   opts.on("-t", "--tab", "use btab format (#{opt.btab})") {|t| opt.btab = t}
+ 
   begin
     opts.parse!
   rescue
@@ -33,6 +43,10 @@ ARGV.options {|opts|
   end
 }
 
+if (opt.password.nil?)
+  STDERR.puts "A password is required!\n"
+  exit(1)
+end
 
 
 db = ARGV.shift
@@ -53,6 +67,7 @@ ARGV.each {|file|
   STDERR << "Processing #{file}....\n"
   cmd = "dc_run -parameters tera-#{opt.blast} -database #{db} -threshold significance=#{opt.evalue} "
   cmd += "-max_alignments #{opt.maxHits} -max_scores #{opt.maxHits} -query #{file} "
+  cmd += "-user #{opt.user} -password #{opt.password} -server #{opt.server} "
   if (opt.btab)
     cmd += "-output_format tab "
     cmd += "-field querytext queryaccession querylength algorithm userid targetlocus "
