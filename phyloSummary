@@ -1,0 +1,140 @@
+#!/usr/bin/env ruby
+
+require 'dm-core'
+require 'optparse'
+require 'ostruct'
+require 'GOS'
+require 'csv'
+
+opt = OpenStruct.new
+opt.all = false
+opt.host = "mysql://access:access@mysql-lan-pro"
+opt.storage = "gosii_io_apis"
+opt.exp = false
+
+o = OptionParser.new
+o.banner << " [dataset ... dataset]"
+o.on("-a", "--all", "include all datasets in database (#{opt.all})") {opt.all = true}
+o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
+o.on("-e ", "--expression ", String, "select by WHERE clause") {|t| opt.exp = t}
+o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1 && (!opt.all && !opt.exp && !opt.file))
+  STDERR << o
+  exit(1)
+end
+
+DataMapper.setup(:default, opt.host + "/" + opt.storage)
+
+if (opt.all || opt.exp)
+  query = "SELECT dataset FROM dataset"
+  query += " WHERE #{opt.exp}" if opt.exp
+  repository(:default).adapter.select(query).each do |dataset|
+    ARGV.push(dataset)
+  end
+end
+
+inClause = "("
+ARGV.each do |dataset|
+  inClause += "'" + dataset + "',"
+end
+inClause.chop!
+inClause += ")"
+
+groups = Hash.new
+names = []
+
+query = "SELECT sequence.seq_name, sequence.dataset, sequence.sequence, annotation,"
+query += " kingdom, phylum, class AS cl, ord, family, genus FROM sequence, classification, annotation"
+query += " WHERE classification.dataset = sequence.dataset AND classification.seq_name"
+query += " = sequence.seq_name AND sequence.dataset IN #{inClause}"
+query += " AND annotation.dataset = sequence.dataset AND annotation.seq_name = sequence.seq_name"
+query += " AND source = 'APIS' ORDER BY sequence.dataset"
+
+oldname = nil
+pepOut = nil
+repository(:default).adapter.select(query).each do |row|
+  filter = classifySample(row.dataset)
+  name = row.dataset + "_" + filter.to_s
+  name.gsub!("IOSM","")
+  name.gsub!("IOLG","")
+  if (oldname != name)
+    pepOut.close if (!pepOut.nil?)
+    pepOut = File.new(name + ".pep", "w")
+  end
+  oldname = name
+  group = row.phylum
+  if (row.genus =~/Pelagibacter/)
+    group = "Pelagibacter"
+  elsif (row.family =~/Prochlorococcus/)
+    group = "Prochlorococcus"
+  elsif (row.ord =~/Synechococcus/)
+    group = "Synechococcus"
+  elsif (row.cl == "Alphaproteobacteria")
+    group = "Other alphaproteobacteria"
+  elsif (group == "Cyanobacteria")
+    group = "Other cyanobacteria"
+  elsif (group =~/Bacteroidetes|Chlorobi/)
+    group = "Bacteroidetes/Chlorobi"
+  elsif (row.cl =~/Betaproteobacteria/)
+    group = "Betaproteobacteria"
+  elsif (row.cl =~/Gammaproteobacteria/)
+    group = "Gammaproteobacteria"
+  elsif (row.cl =~/Deltaproteobacteria/)
+    group = "Deltaproteobacteria"
+  elsif (row.cl =~/Epsilonproteobacteria/)
+    group = "Epsilonproteobacteria"
+  elsif (group =~/Proteobacteria/)
+    group = "Other proteobacteria"
+  elsif (group =~/Rhodobacterales/)
+    group = "Rhodobacterales"
+  elsif (group =~/Actinobacteria/)
+    group = "Actinobacteria"  
+  elsif (group =~/Firmicutes/)
+    group = "Firmicutes" 
+  elsif (group =~/Chlamydiae|Verrucomicrobia/)
+    group = "Chlamydiae/Verrucomicrobia"
+  elsif (group =~/Spirochaetes/)
+    group = "Spirochaetes"
+  elsif (group =~/Thermotogae/)
+    group = "Thermotogae"
+  elsif (group =~/Planctomycetes/)
+    group = "Planctomycetes"  
+  elsif (group =~/Unknown/)
+    group = "Unknown" 
+  elsif (row.kingdom == "Bacteria") 
+    group = "Other bacteria"
+  else
+    group = row.kingdom
+  end
+  groups[group] = Hash.new if (groups[group].nil?)
+  groups[group][name] = 0 if groups[group][name].nil?
+  groups[group][name] += 1
+  names.push(name) if (!names.include?(name))
+  pepOut.printf(">%s [%s] %s\n%s", row.seq_name, group, row.annotation, 
+    row.sequence.gsub(Regexp.new(".{1,60}"), "\\0\n"))
+end
+pepOut.close
+
+header = [""] + groups.keys.sort + groups.keys.sort.collect{|x| "% " + x}
+print header.to_csv
+names.sort.each do |name|
+  row = [name]
+  total = 0
+  groups.keys.sort.each do |group|
+    row.push(groups[group][name].to_i)
+    total += groups[group][name].to_i
+  end
+  groups.keys.sort.each do |group|
+    row.push((1000*groups[group][name].to_i/total)/10.0)
+  end
+  print row.to_csv
+end
+
+
