@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.length = 400
+
+o = OptionParser.new
+o.banner << " seq.fasta"
+o.on("-l ", "--length ", Integer, "read length (#{opt.length})") {|t| opt.length = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each do |seq|
+  name = seq.entry_id.split("_").first
+  print seq.naseq.subseq(1, opt.length).to_fasta(name + "_Forward", 60)
+  print seq.naseq.subseq(1 + seq.length - opt.length, seq.length).to_fasta(name + "_Reverse", 60)
+end
+  

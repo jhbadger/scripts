@@ -2,14 +2,15 @@
 
 require 'ostruct'
 require 'bio'
-require 'ZFile'
 require 'optparse'
 require 'Btab'
 
 opt = OpenStruct.new
+opt.hits = false
 
 ARGV.options do |opts|
   opts.banner << " fasta [...fasta] [btab...btab..]"
+  opts.on("-h", "--hits", "only print hits (#{opt.hits})") {opt.hits = true}
   begin
     opts.parse!
   rescue
@@ -27,27 +28,32 @@ btabs = ARGV.grep(/btab/)
 dnas = ARGV - btabs
 
 hits = Hash.new
+frames = Hash.new
 if (!btabs.empty?)
   btabs.each do |btab|
     STDERR.printf("Loading %s...\n", btab)
     Btab.new(btab).each do |query|
       hits[query.name] = query.matches.first.name
+      frames[query.name] = query.matches.first.frame.to_i
     end
   end
 end
 
 
-dnas.each do |dna|
-  name = File.basename(dna).split(".f").first
+dnas.each do |fasta|
+  name = File.basename(fasta).split(".f").first
+  name = "hits_" + name if (opt.hits)
   STDERR.printf("Processing %s...\n", name)
   out = File.new(name + "_6frames.fa", "w")
-  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(dna)).each do |seq|
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
     next if seq.length < 90
     [1, 2, 3, -1, -2, -3].each do |frame|
+      hit = false
       orfName = seq.entry_id + "_" + frame.to_s
-      orfName += "_" + hits[seq.entry_id] if (hits[seq.entry_id]) 
+      hit = true if (hits[seq.entry_id] && frame == frames[seq.entry_id]) 
+      orfName += "_" + hits[seq.entry_id] if hit
       prot = seq.naseq.translate(frame, 11)
-      out.print Bio::Sequence::AA.new(prot).to_fasta(orfName, 60)
+      out.print Bio::Sequence::AA.new(prot).to_fasta(orfName, 60) if (!opt.hits || (opt.hits && hit))
     end
   end
   out.close
