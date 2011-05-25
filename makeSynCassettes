@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'bio'
+
+opt = OpenStruct.new
+opt.size = 1080
+opt.overlap = 80
+
+o = OptionParser.new
+o.banner << " fasta"
+o.on("-o ", "--overlap ", Integer, "Overlap size (#{opt.overlap})") {|t| opt.overlap = t}
+o.on("-s ", "--size ", Integer, "Cassette size (#{opt.size})") {|t| opt.size = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+fasta = ARGV.shift
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+  n = 0
+  name = "cassette0001"
+  while (n < seq.length)
+    subSeq = seq.seq[n..n + opt.size - 1]
+    if (subSeq.length < opt.size)
+      subSeq += seq.seq[0..(opt.size - subSeq.length - 1)]
+    end
+    print Bio::Sequence::NA.new(subSeq).to_fasta(name, 60)
+    n += opt.size - opt.overlap
+    name.succ!
+  end
+end
+

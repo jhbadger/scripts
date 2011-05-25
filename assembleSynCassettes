@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'bio'
+
+opt = OpenStruct.new
+opt.overlap = 80
+
+o = OptionParser.new
+o.banner << " fasta"
+o.on("-o ", "--overlap ", Integer, "Overlap size (#{opt.overlap})") {|t| opt.overlap = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+fasta = ARGV.shift
+
+
+cassettes = []
+STDERR << "Loading cassettes...\n"
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+  cassettes << seq
+end
+
+
+0.upto(cassettes.size - 1).each do |i|
+  leftOver1 = cassettes[i].seq[0,opt.overlap]
+  rightOver1 = cassettes[i].seq[cassettes[i].length - opt.overlap, opt.overlap]
+  (i + 1).upto(cassettes.size - 2).each do |j|
+    leftOver2 = cassettes[j].seq[0,opt.overlap]
+    rightOver2 = cassettes[j].seq[1 + cassettes[j].length - opt.overlap, opt.overlap]
+    if (rightOver1 == leftOver2)
+      printf("%s matches %s\n", cassettes[i].entry_id, cassettes[j].entry_id)
+    end
+  end
+end
