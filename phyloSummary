@@ -61,9 +61,8 @@ oldname = nil
 pepOut = nil
 repository(:default).adapter.select(query).each do |row|
   filter = classifySample(row.dataset)
-  name = row.dataset + "_" + filter.to_s
-  name.gsub!("IOSM","")
-  name.gsub!("IOLG","")
+  name = row.dataset.split(/-01|-G/).first
+  name = name + "_" + filter.to_s
   if (oldname != name)
     pepOut.close if (!pepOut.nil?)
     pepOut = File.new(name + ".pep", "w")
