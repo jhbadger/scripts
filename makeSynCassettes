@@ -7,10 +7,12 @@ require 'bio'
 opt = OpenStruct.new
 opt.size = 1080
 opt.overlap = 80
+opt.random = false
 
 o = OptionParser.new
 o.banner << " fasta"
 o.on("-o ", "--overlap ", Integer, "Overlap size (#{opt.overlap})") {|t| opt.overlap = t}
+o.on("-r", "--randomize", "Randomize cassette order (#{opt.random})") {opt.random = true}
 o.on("-s ", "--size ", Integer, "Cassette size (#{opt.size})") {|t| opt.size = t}
 begin
   o.parse!
@@ -26,17 +28,24 @@ end
 
 fasta = ARGV.shift
 
+cassettes = []
+
 Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
   n = 0
-  name = "cassette0001"
   while (n < seq.length)
     subSeq = seq.seq[n..n + opt.size - 1]
     if (subSeq.length < opt.size)
-      subSeq += seq.seq[0..(opt.size - subSeq.length - 1)]
+      subSeq += seq.seq[0, opt.overlap]
     end
-    print Bio::Sequence::NA.new(subSeq).to_fasta(name, 60)
+    cassettes << subSeq
     n += opt.size - opt.overlap
-    name.succ!
   end
 end
 
+cassettes.shuffle! if opt.random
+
+name = "cassette0001"
+cassettes.each do |cassette|
+  print Bio::Sequence::NA.new(cassette).to_fasta(name, 60)
+  name.succ!
+end

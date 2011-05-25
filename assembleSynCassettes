@@ -22,24 +22,83 @@ if (ARGV.size != 1)
   exit(1)
 end
 
+def findUnmatched(array)
+  unmatched = []
+  0.upto(array.size - 1) {|i| unmatched << i if array[i].nil?}
+  return unmatched
+end
+
+def assemble(start, cassettes, rmatch, overlap)
+  contig = ""
+  pos = start
+  begin
+    contig += cassettes[pos].seq[0.. -overlap - 1]
+    pos = rmatch[pos]
+  end until (pos.nil? || rmatch[pos].nil? || pos == start)
+  return contig
+end
+
 fasta = ARGV.shift
 
-
 cassettes = []
+loverlaps = []
+roverlaps = []
+
 STDERR << "Loading cassettes...\n"
 Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
   cassettes << seq
+  loverlaps << seq.seq[0,opt.overlap]
+  roverlaps << seq.seq[seq.length - opt.overlap, opt.overlap]
 end
+
+lmatch = [nil]*cassettes.size
+rmatch = [nil]*cassettes.size
 
 
 0.upto(cassettes.size - 1).each do |i|
-  leftOver1 = cassettes[i].seq[0,opt.overlap]
-  rightOver1 = cassettes[i].seq[cassettes[i].length - opt.overlap, opt.overlap]
-  (i + 1).upto(cassettes.size - 2).each do |j|
-    leftOver2 = cassettes[j].seq[0,opt.overlap]
-    rightOver2 = cassettes[j].seq[1 + cassettes[j].length - opt.overlap, opt.overlap]
-    if (rightOver1 == leftOver2)
-      printf("%s matches %s\n", cassettes[i].entry_id, cassettes[j].entry_id)
+  0.upto(cassettes.size - 1).each do |j|
+    next if i == j 
+    if (roverlaps[i] == loverlaps[j])
+      if (!rmatch[i].nil?)
+        STDERR << "Warning: right end of " << cassettes[i].entry_id << " already paired to left end of " << cassettes[rmatch[i]].entry_id << "\n"
+      elsif (!lmatch[j].nil?)
+        STDERR << "Warning: left end of " << cassettes[j].entry_id << " already paired to right end of " << cassettes[lmatch[j]].entry_id << "\n"
+      else
+        lmatch[j] = i
+        rmatch[i] = j
+      end
     end
   end
 end
+
+starts = findUnmatched(lmatch)
+
+type = nil
+
+if (starts.empty?)
+  STDERR << "Looks like we have a circular molecule...\n"
+  starts.push(0)
+  type = :circular
+elsif (starts.size == 1)
+  STDERR << "Looks like we have a linear molecule...\n"
+  type = :linear
+else
+  STDERR << "Looks like we have " << starts.size << " linear molecules...\n"
+  type = :linear
+end
+
+out = File.new(File.basename(fasta).split(".").first + "_contigs.fa", "w")
+name = "contig00001"
+
+starts.each do |start|  
+  seq = assemble(start, cassettes, rmatch, opt.overlap)
+  out.print Bio::Sequence::NA.new(seq).to_fasta(name, 60)
+  name.succ!
+end
+
+out.close
+
+
+
+
+
