@@ -6,9 +6,11 @@ require 'bio'
 
 opt = OpenStruct.new
 opt.overlap = 80
+opt.mismatch = 0
 
 o = OptionParser.new
 o.banner << " fasta"
+o.on("-m ", "--mismatch ", Integer, "Allowed mismatches in overlap (#{opt.mismatch})") {|t| opt.mismatch = t}
 o.on("-o ", "--overlap ", Integer, "Overlap size (#{opt.overlap})") {|t| opt.overlap = t}
 begin
   o.parse!
@@ -38,6 +40,17 @@ def assemble(start, cassettes, rmatch, overlap)
   return contig
 end
 
+def compare(string1, string2, mismatch)
+  miss = 0
+  string1.size.times do |i|
+    miss += 1 if (string1[i] != string2[i])
+    if (miss > mismatch)
+      return false
+    end
+  end
+  return true
+end
+
 fasta = ARGV.shift
 
 cassettes = []
@@ -54,11 +67,11 @@ end
 lmatch = [nil]*cassettes.size
 rmatch = [nil]*cassettes.size
 
-
+STDERR << "Comparing cassettes...\n"
 0.upto(cassettes.size - 1).each do |i|
   0.upto(cassettes.size - 1).each do |j|
     next if i == j 
-    if (roverlaps[i] == loverlaps[j])
+    if (compare(roverlaps[i], loverlaps[j], opt.mismatch))
       if (!rmatch[i].nil?)
         STDERR << "Warning: right end of " << cassettes[i].entry_id << " already paired to left end of " << cassettes[rmatch[i]].entry_id << "\n"
       elsif (!lmatch[j].nil?)
