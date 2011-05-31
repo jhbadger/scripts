@@ -36,7 +36,7 @@ def assemble(start, cassettes, rmatch, overlap)
   begin
     contig += cassettes[pos].seq[0.. -overlap - 1]
     pos = rmatch[pos]
-  end until (pos.nil? || rmatch[pos].nil? || pos == start)
+  end until (pos.nil? || pos == start)
   return contig
 end
 
