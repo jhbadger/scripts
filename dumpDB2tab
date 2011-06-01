@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'mysql'
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+opt.host = "mysql-lan-pro"
+opt.user = ENV["USER"]
+opt.password = ""
+
+
+
+o = OptionParser.new
+o.banner << " database-name"
+o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
+o.on("-u ", "--user ", String, "database user (#{opt.user})") {|t| opt.user = t}
+o.on("-p ", "--password ", String, "database password") {|t| opt.password = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size <  1 && !opt.file)
+  STDERR << o
+  exit(1)
+end
+
+database = ARGV.shift
+
+db = Mysql::new(opt.host, opt.user, opt.password, database)
+
+db.query("SHOW TABLES").each do |table|
+  out = File.new(table.first + ".txt", "w")
+  db.query("SELECT * from #{table.first}").each do |row|
+    out.print row.join("\t") + "\n"
+  end
+  out.close
+end
+
+db.close
