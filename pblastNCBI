@@ -56,8 +56,8 @@ if (File.basename(db) == db)
   db = Dir.pwd + "/" + db
 end
 
-if (opt.blast !~ /^blast[n|p|x]/ && opt.blast !~/tblastn/)
-  STDERR.printf("Only blastn, blastp, blastx, and tblastn are valid grid BLAST programs\n")
+if (opt.blast !~ /^blast[n|p|x]/ && opt.blast !~/tblastn/ && opt.blast !~ /tblastx/)
+  STDERR.printf("Only blastn, blastp, blastx, tblastn, and tblastx are valid grid BLAST programs\n")
   exit(1)
 end
 

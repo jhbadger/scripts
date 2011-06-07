@@ -44,33 +44,55 @@ geneHits = Hash.new
 conditions = []
 total = Hash.new
 condTot = Hash.new
+posCounts = Hash.new
 
 if (opt.posmap)
+  STDERR.printf("Loading posmap...\n")
   ZFile.new(opt.posmap).each do |line|
+    contig, read = line.chomp.split("\t")
+    condition = read.split("_").first
+    conditions.push(condition) if (!conditions.include?(condition))
+    posCounts[contig] = Hash.new if (!posCounts[contig])
+    posCounts[contig][condition] = 0 if (!posCounts[contig][condition])
+    posCounts[contig][condition] += 1
+  end
+else
+  btabs.each do |btab|
+    condition = File.basename(btab.split("_vs_").first, ".fna").split(".btab").first
+    conditions.push(condition)
   end
 end
 
-btabs.each do |btab|  
-  name = File.basename(btab.split("_vs_").first, ".fna").split(".btab").first
-  conditions.push(name)
-  condTot[name] = 0
+
+
+
+btabs.each do |btab|
+  if (opt.posmap)
+    conds = conditions
+  else  
+    conds = [File.basename(btab.split("_vs_").first, ".fna").split(".btab").first]
+  end
   STDERR << "Loading #{btab}...\n"
   Btab.new(btab).each do |query|
-    match = query.matches.first
-    protHits[match.name] = Hash.new if (protHits[match.name].nil?)
-    protHits[match.name][name] = 0 if (protHits[match.name][name].nil?)
-    protHits[match.name][name] += 1
-    speciesHits[match.species] = Hash.new if (speciesHits[match.species].nil?)
-    speciesHits[match.species][name] = 0 if (speciesHits[match.species][name].nil?)
-    speciesHits[match.species][name] += 1
-    species[match.name] = match.species
-    annotation[match.name] = match.annotation
-    total[match.name] = 0 if total[match.name].nil?
-    total[match.name] += 1
-    condTot[name] += 1
-    geneHits[match.species] = Hash.new if (geneHits[match.species].nil?)
-    geneHits[match.species][name] = Hash.new if (geneHits[match.species][name].nil?)
-    geneHits[match.species][name][match.name] = true
+    conds.each do |condition|
+      match = query.matches.first
+      protHits[match.name] = Hash.new if (protHits[match.name].nil?)
+      protHits[match.name][condition] = 0 if (protHits[match.name][condition].nil?)
+      cname = query.name.split(" ").first
+      protHits[match.name][condition] += posCounts[cname][condition].to_i
+      speciesHits[match.species] = Hash.new if (speciesHits[match.species].nil?)
+      speciesHits[match.species][condition] = 0 if (speciesHits[match.species][condition].nil?)
+      speciesHits[match.species][condition] += 1
+      species[match.name] = match.species
+      annotation[match.name] = match.annotation
+      total[match.name] = 0 if total[match.name].nil?
+      total[match.name] += posCounts[cname][condition].to_i
+      condTot[condition] = 0 if (!condTot[condition])
+      condTot[condition] += posCounts[cname][condition].to_i
+      geneHits[match.species] = Hash.new if (geneHits[match.species].nil?)
+      geneHits[match.species][condition] = Hash.new if (geneHits[match.species][condition].nil?)
+      geneHits[match.species][condition][match.name] = true
+    end
   end
 end
 
