@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Btab'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " btab [...btab...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+ARGV.each do |btab|
+  Btab.new(btab).each do |query|
+    row = [query.name]
+    query.each do |match|
+      row.push(match.name)
+      row.push(match.evalue)
+      row.push(match.desc)
+    end
+    print row.to_csv if (row.length > 1)
+  end
+end
+
