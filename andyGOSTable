@@ -9,12 +9,17 @@ opt = OpenStruct.new
 opt.all = false
 opt.storage = "gosii_io_apis"
 opt.host = "mysql-lan-pro"
+opt.kingdom = false
 opt.filter = false
+opt.exp = false
+
 
 ARGV.options {|opts|
   opts.banner << " [dataset .. dataset..]"
   opts.on("-a", "--all", "include all datasets in database") {|t| opt.all = t}
+  opts.on("-e ", "--expression ", String, "include datasets matching substring") {|t| opt.exp = t}
   opts.on("-f", "--filter", "group by filter (not sample)") {|t| opt.filter = t}
+  opts.on("-k ", "--kingdom ", String, "limit to kingdom (default #{opt.kingdom})") {|t| opt.kingdom = t}
   opts.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
   opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
   begin
@@ -24,7 +29,7 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-  if (ARGV.size < 1 && !opt.all)
+  if (ARGV.size < 1 && (!opt.all && !opt.exp))
     STDERR.puts opts
     exit(1)
   end
@@ -68,6 +73,11 @@ if (opt.all)
   }
 end
 
+if (opt.exp)
+  storage.query("select dataset from dataset where dataset like '%#{opt.exp}%'").each {|row|
+    ARGV.push(row[0])
+  }
+end
 
 proteins = Hash.new
 classified = Hash.new
@@ -89,6 +99,12 @@ groups = {"Synechococcus" => "ord", "Prochlorales" => "class", "Other Cyanos" =>
   "Thermotogae" => "phylum", "Planctomycetes" => "phylum",
   "Eukaryota" => "kingdom", "Viruses" => "kingdom"}
 
+if (opt.kingdom)
+  king = "AND kingdom = '#{opt.king}'"
+else
+  king = ""
+end
+
 ARGV.each {|dataset|
   sample = parseSample(dataset, opt.filter)
   if (proteins[sample].nil?)
@@ -99,8 +115,8 @@ ARGV.each {|dataset|
       number[sample][taxon] = 0
     }
   end
-  proteins[sample] += storage.count("sequence WHERE dataset = '#{dataset}'")
-  classified[sample] += storage.count("classification WHERE dataset = '#{dataset}'")
+  proteins[sample] += storage.count("sequence WHERE dataset = '#{dataset}' #{king}")
+  classified[sample] += storage.count("classification WHERE dataset = '#{dataset}' #{king}")
   list.each {|taxon|
     if (!groups[taxon].nil?)
       number[sample][taxon] += storage.countTaxa(taxon, groups[taxon], dataset)

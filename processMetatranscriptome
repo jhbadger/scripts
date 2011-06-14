@@ -60,6 +60,7 @@ else
   btabs.each do |btab|
     condition = File.basename(btab.split("_vs_").first, ".fna").split(".btab").first
     conditions.push(condition)
+    
   end
 end
 
@@ -79,16 +80,28 @@ btabs.each do |btab|
       protHits[match.name] = Hash.new if (protHits[match.name].nil?)
       protHits[match.name][condition] = 0 if (protHits[match.name][condition].nil?)
       cname = query.name.split(" ").first
-      protHits[match.name][condition] += posCounts[cname][condition].to_i
+      if (opt.posmap)
+        protHits[match.name][condition] += posCounts[cname][condition].to_i
+      else
+        protHits[match.name][condition] += 1
+      end
       speciesHits[match.species] = Hash.new if (speciesHits[match.species].nil?)
       speciesHits[match.species][condition] = 0 if (speciesHits[match.species][condition].nil?)
       speciesHits[match.species][condition] += 1
       species[match.name] = match.species
       annotation[match.name] = match.annotation
       total[match.name] = 0 if total[match.name].nil?
-      total[match.name] += posCounts[cname][condition].to_i
+      if (opt.posmap)
+        total[match.name] += posCounts[cname][condition].to_i
+      else
+        total[match.name] += 1
+      end
       condTot[condition] = 0 if (!condTot[condition])
-      condTot[condition] += posCounts[cname][condition].to_i
+      if (opt.posmap)
+        condTot[condition] += posCounts[cname][condition].to_i
+      else
+        condTot[condition] += 1
+      end
       geneHits[match.species] = Hash.new if (geneHits[match.species].nil?)
       geneHits[match.species][condition] = Hash.new if (geneHits[match.species][condition].nil?)
       geneHits[match.species][condition][match.name] = true
