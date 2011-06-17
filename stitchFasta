@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.adapter = "N"*100
+
+o = OptionParser.new
+o.banner << " contigs.fasta"
+o.on("-a ", "--adapter", String, "string to place between contigs (#{opt.adapter})") {|t| opt.adapter = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+file = ARGV.shift
+
+concat = ""
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each do |seq|
+  concat += seq.seq
+  concat += opt.adapter
+end
+
+print Bio::Sequence::NA.new(concat).to_fasta(file, 60)
