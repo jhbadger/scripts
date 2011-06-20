@@ -150,11 +150,11 @@ class Btab
   # step through each query
   def each
     oldQ = nil
-    @file.each {|line|
+    @file.each do |line|
       query, date, qlen, program, database, subject, qleft, qright, 
       sleft, sright, percentId, percentSim, dummy, score, dummy2,
       desc, frame, strand, slen, evalue = line.chomp.split("\t")
-      desc = dummy2 if (desc.length < 10) # fix timelogic btab
+      desc = dummy2 if (desc.nil? || desc.length < 10) # fix timelogic btab
       @date = date if (!@date)
       @program = program if (!@program)
       @database = database if (!@database)
@@ -166,7 +166,7 @@ class Btab
                       percentId, percentSim, score, desc,
                       frame, strand, evalue, line)
       oldQ = query
-    }
+    end
     yield @query if (!@query.nil?)
   end 
     
