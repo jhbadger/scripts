@@ -38,7 +38,8 @@ end
 
 fasta, cluster = ARGV
 
-name = File.basename(fasta).split(".").first
+name = File.basename(fasta)
+name = name[0..name.rindex(".").to_i - 1] # remove suffix but not other period
 
 if (opt.password.nil?)
   STDERR.printf("You must supply a password!\n")
@@ -124,7 +125,7 @@ end
 if (!File.exist?(name + ".nr.btab.gz"))
   db = findTimeLogicDB(opt.user, opt.password, opt.server, "nr")
   STDERR.printf("Creating %s...\n", name + ".nr.btab.gz")
-  system("dc_run -parameters tera-blastp -database #{db} -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querytext queryaccession querylength algorithm userid target\
+  system("dc_run -parameters tera-blastp -database #{db} -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querylocus queryaccession querylength algorithm userid target\
 locus querystart queryend targetstart targetend alignmentlength matches s\
 core score targetdescription queryframe queryframe queryframe significance significance > #{name}.nr.btab")
   system("gzip #{name}.nr.btab")
@@ -137,7 +138,7 @@ end
 if (!File.exist?(name + ".cog.btab"))
   db = findTimeLogicDB(opt.user, opt.password, opt.server, "cog")
   STDERR.printf("Creating %s...\n", name + ".cog.btab")
-  system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querytext queryaccession querylength algorithm userid target\
+  system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querylocus queryaccession querylength algorithm userid target\
 locus querystart queryend targetstart targetend alignmentlength matches s\
 core score targetdescription queryframe queryframe queryframe significance significance > #{name}.cog.btab")
 end
