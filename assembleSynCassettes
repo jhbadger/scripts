@@ -5,13 +5,13 @@ require 'ostruct'
 require 'bio'
 
 opt = OpenStruct.new
-opt.overlap = 80
 opt.mismatch = 0
+opt.restriction = "GC*GGCCGC"
 
 o = OptionParser.new
 o.banner << " fasta"
 o.on("-m ", "--mismatch ", Integer, "Allowed mismatches in overlap (#{opt.mismatch})") {|t| opt.mismatch = t}
-o.on("-o ", "--overlap ", Integer, "Overlap size (#{opt.overlap})") {|t| opt.overlap = t}
+o.on("-r ", "--restriction ", String, "Restriction site to chop before assembly (#{opt.restriction})") {|t| opt.restriction = t}
 begin
   o.parse!
 rescue

@@ -9,12 +9,13 @@ require 'ZFile'
 opt = OpenStruct.new
 opt.file = nil
 opt.inverse = nil
-
+opt.unique = false
 
 o = OptionParser.new
 o.banner << " expression fasta [...fasta...]"
 o.on("-f ", "--file ", String, 
-        "read list of ids to search from file") {|f| opt.file = f}    
+        "read list of ids to search from file") {|f| opt.file = f} 
+o.on("-u", "--unique", "only returm sequence once") {opt.unique = true}   
 o.on("-v", "--inverse", "return lines not matching expression") {opt.inverse = true}
 begin
   o.parse!
@@ -39,19 +40,25 @@ else
 end
 
 
+printed = Hash.new
 ARGV.each do |fasta|
   Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+    next if (opt.unique && printed[seq.entry_id])
     if (express)
       if (!opt.inverse)
         print seq if (seq.definition =~/#{express}/)
+        printed[seq.entry_id]=true
       else
         print seq if (seq.definition !~/#{express}/)
+        printed[seq.entry_id]=true
       end
     else
       if (!opt.inverse)
         print seq if (seen[seq.entry_id])
+        printed[seq.entry_id]=true
       else
         print seq if (!seen[seq.entry_id])
+        printed[seq.entry_id]=true
       end
     end
   end

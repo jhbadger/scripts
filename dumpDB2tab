@@ -13,7 +13,7 @@ opt.password = ""
 
 
 o = OptionParser.new
-o.banner << " database-name"
+o.banner << " database-name [table]"
 o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
 o.on("-u ", "--user ", String, "database user (#{opt.user})") {|t| opt.user = t}
 o.on("-p ", "--password ", String, "database password") {|t| opt.password = t}
@@ -24,18 +24,27 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size <  1 && !opt.file)
+if (ARGV.size !=  1 && ARGV.size != 2)
   STDERR << o
   exit(1)
 end
 
-database = ARGV.shift
+database, table = ARGV
 
 db = Mysql::new(opt.host, opt.user, opt.password, database)
 
-db.query("SHOW TABLES").each do |table|
-  out = File.new(table.first + ".txt", "w")
-  db.query("SELECT * from #{table.first}").each do |row|
+if (table)
+  tables = [table]
+else
+  tables = []
+  db.query("SHOW TABLES").each do |table|
+    tables.push(table)
+  end
+end
+
+tables.each do |table|
+  out = File.new(table + ".txt", "w")
+  db.query("SELECT * from #{table}").each do |row|
     out.print row.join("\t") + "\n"
   end
   out.close

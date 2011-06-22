@@ -1,0 +1,70 @@
+#!/usr/bin/env ruby
+
+require 'Btab'
+require 'csv'
+
+if (ARGV.size != 3)
+  STDERR << "Usage: #{File.basename($0)} btab-foward btab-reverse reads-hits.csv\n"
+  exit(1)
+end
+
+fwd, rev, hits = ARGV
+
+annotation = Hash.new
+conditions = nil
+CSV.foreach(hits, options = {:headers => true, :converters => :numeric}) do |row|
+  ann = row["Protein"] + " " + row["Annotation"]
+  conditions = row.headers - ["Protein", "Species", "Annotation"] if (conditions.nil?)
+  conditions.each do |field|
+    row[field].split(" ").each do |read|
+      annotation[read] = ann
+    end
+  end
+end
+
+
+forward = Hash.new
+reverse = Hash.new
+
+Btab.new(fwd).each do |query|
+  name = query.name.gsub("_f", "")
+  forward[name] = []
+  reverse[name] = []
+  query.matches.each do |match|
+    forward[name].push(match.name)
+  end
+end
+
+Btab.new(rev).each do |query|
+  name = query.name.gsub("_r", "")
+  reverse[name] = []
+  query.matches.each do |match|
+    reverse[name].push(match.name)
+  end
+end
+
+print (["Gene"] + conditions +  ["Annotation"]).to_csv
+
+forward.keys.sort.each do |primer|
+ shared = forward[primer]  - (forward[primer] - reverse[primer])
+ counts = Hash.new
+ ann = ""
+ conditions.each do |condition|
+   counts[condition] = 0
+ end
+ if (shared.empty?)
+   print [primer, "**NO SHARED HITS**"].to_csv
+ else
+   shared.each do |entry|
+     ann = annotation[entry] if (annotation[entry].to_s.length > ann.length)
+     condition = entry.split("_").first
+     counts[condition] += 1
+   end
+   line = [primer]
+   conditions.each do |condition|
+     line.push(counts[condition])
+   end
+   line.push(ann)
+   print line.to_csv
+ end
+end
