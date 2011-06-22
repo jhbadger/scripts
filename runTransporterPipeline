@@ -1,0 +1,172 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'bio'
+
+opt = OpenStruct.new
+opt.grid = nil
+opt.tgg="/usr/local/projects/TGG/PEP/transporter_faa/transporter_TC.faa"
+opt.hmm="/usr/local/projects/TGG/PEP/transporter_faa/transporter_hmm_frag_models.FRAG"
+opt.cog="/usr/local/projects/EVOL/jbadger/cog.pep"
+opt.server = "tmlsrv2.jcvi.org"
+opt.user = ENV["USER"]
+opt.password = nil
+opt.tmpdir = "/usr/local/scratch/#{ENV["USER"]}/"
+
+
+ARGV.options do |o|
+  o.banner << " fasta [cluster-file]"
+  o.on("-d ", "--dir ", String,
+          "choose temp directory (default #{opt.tmpdir})") {|t| opt.tmpdir = t}
+  o.on("-g ", "--grid ", String, "grid project code (required)") {|t| opt.grid = t}
+  o.on("-p ", "--password ", String, "password (required!)") {|t| opt.password = t}
+  o.on("-s ", "--server ", String, "server (#{opt.server})") {|t| opt.server = t}
+  o.on("-u ", "--user ", String, "username (#{opt.user})") {|t| opt.user = t}
+  begin
+    o.parse!
+  rescue
+    STDERR << $!.message << "\n"
+    STDERR << o
+    exit(1)
+  end
+  if (ARGV.size != 1 && ARGV.size != 2)
+    STDERR << o
+    exit(1)
+  end
+end
+
+fasta, cluster = ARGV
+
+name = File.basename(fasta).split(".").first
+
+if (opt.password.nil?)
+  STDERR.printf("You must supply a password!\n")
+  exit(1)
+end
+
+
+# return full name of timelogic database matching dbname, or nil
+def findTimeLogicDB(user, password, server, dbname)
+  db = `dc_show -database a -user #{user} -password #{password} -server #{server} | grep #{dbname}`.split("\n").last
+  if (!db.nil?)
+    db = db.split(" ").first
+  end
+  return db
+end
+
+
+# run HMM splitting it on grid, running postprocess to filter it afterwards
+def runpHMM(file, command, output, dir, project, postprocess = "cat")
+  gridSize = `grep -c ">" #{file}`.to_i / 1000
+  gridSize = 10000 if gridSize == 0
+  Dir.mkdir(dir) if !File.exists?(dir)
+  bdir = dir + "hmmdir/"
+  Dir.mkdir(bdir) if !File.exists?(bdir)
+  begin
+    File.chmod(0777, bdir)
+  rescue
+    STDERR << "User " << ENV["USER"] << "does not have permissions for " << bdir << "\n"
+   exit(1) 
+  end
+  begin
+    File.chmod(0755, Dir.pwd)
+  rescue
+    STDERR << "User " << ENV["USER"] << "does not have permissions for " << Dir.pwd << "\n"
+   exit(1) 
+  end	
+  seqName = bdir + File.basename(file).split(".").first + "_000001"
+  seqs = []
+  out = nil
+  count = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
+    if (count % gridSize == 0)
+      out.close if (!out.nil?)
+      out = File.new(seqName + ".seq", "w")
+      seqs.push(seqName.dup)
+      seqName.succ!
+    end 
+    out.print seq
+    count += 1
+  end
+  out.close
+  seqs.each do |seq|
+    cmd = "#{command} #{seq}.seq;rm #{seq}.seq"
+    qsub = "qsub -P #{project} -e /dev/null -cwd -o #{seq}.hmm "
+    qsub += "\"#{cmd}\""
+    system(qsub)
+  end
+  STDERR.printf("Waiting until jobs done\n")
+  while (Dir.glob(bdir+"*.seq").size > 0)
+    sleep 30
+  end
+  Dir.glob(bdir+"*.hmm").each do |hmm|
+    system("#{postprocess} #{hmm} >> #{output} 2>/dev/null")
+    system("rm #{hmm}")
+  end
+end
+
+# build time logic database for given fastafile
+def buildTimeLogicDB(user, password, server, fasta, dbname)
+  STDERR.printf("Building timelogic db %s...\n", dbname)
+  system("dc_run -parameters format_aa_into_aa -query #{fasta} -database #{dbname} -user #{user} -password #{password} -server #{server}")
+end
+
+if (!findTimeLogicDB(opt.user, opt.password, opt.server, "transportDB"))
+  buildTimeLogicDB(opt.user, opt.password, opt.server, opt.tgg, "transportDB")
+end
+
+if (!File.exist?(name + ".trans.btab"))
+  STDERR.printf("Creating %s...\n", name + ".trans.btab")
+  system("dc_run -parameters tera-blastp -database private:transportDB -threshold significance=1e-5 -max_alignments 30 -max_scores 30 -user #{opt.user} -password #{opt.password} -server #{opt.server} -query #{fasta} -output_format tab -field querylocus targetlocus significance score > #{name}.trans.btab")
+end
+
+if (!File.exist?(name + ".nr.btab.gz"))
+  db = findTimeLogicDB(opt.user, opt.password, opt.server, "nr")
+  STDERR.printf("Creating %s...\n", name + ".nr.btab.gz")
+  system("dc_run -parameters tera-blastp -database #{db} -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querytext queryaccession querylength algorithm userid target\
+locus querystart queryend targetstart targetend alignmentlength matches s\
+core score targetdescription queryframe queryframe queryframe significance significance > #{name}.nr.btab")
+  system("gzip #{name}.nr.btab")
+end
+
+if (!findTimeLogicDB(opt.user, opt.password, opt.server, "cog"))
+  buildTimeLogicDB(opt.user, opt.password, opt.server, opt.cog, "cog")
+end
+
+if (!File.exist?(name + ".cog.btab"))
+  db = findTimeLogicDB(opt.user, opt.password, opt.server, "cog")
+  STDERR.printf("Creating %s...\n", name + ".cog.btab")
+  system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querytext queryaccession querylength algorithm userid target\
+locus querystart queryend targetstart targetend alignmentlength matches s\
+core score targetdescription queryframe queryframe queryframe significance significance > #{name}.cog.btab")
+end
+
+if (!File.exists?(name + ".hmm.gz"))
+  if (opt.grid.nil?)
+    STDERR << "A grid project is required!\n"
+    exit(1)
+  end
+  STDERR.printf("Creating %s.hmm.gz...\n", name)
+  runpHMM(fasta, "hmmpfam #{opt.hmm} -E 0.01", name + ".hmm", opt.tmpdir, opt.grid, "trans_htab.pl <")
+  system("gzip #{name}.hmm")  
+end
+
+if (!File.exists?(name + ".tmhmm.gz"))
+  if (opt.grid.nil?)
+    STDERR << "A grid project is required!\n"
+    exit(1)
+  end
+  STDERR.printf("Creating %s.tmhmm.gz...\n", name)
+  runpHMM(fasta, "tmhmm", name + ".tmhmm", opt.tmpdir, opt.grid)
+  system("gzip #{name}.tmhmm")  
+end
+
+
+if (cluster.nil?)
+  STDERR.printf("Starting summary pipeline without cluster info...\n")
+  system("metagenome_transporter_annotation.pl -i #{name} -t #{name}.trans.btab -c #{name}.cog.btab -h #{name}.hmm.gz -m #{name}.tmhmm.gz -s #{name}.pep -n #{name}.nr.btab.gz -l #{name}.log > #{name}.transporter_annotation.txt")
+  else
+  STDERR.printf("Starting summary pipeline with cluster info...\n")
+  system("metagenome_transporter_annotation_with_cluster.pl -i #{name} -t #{name}.trans.btab -c #{name}.cog.btab -h #{name}.hmm.gz -m #{name}.tmhmm.gz -s #{name}.pep -n #{name}.nr.btab.gz -l #{name}.log -u #{cluster} > #{name}.transporter_annotation_with_cluster.txt")
+end
