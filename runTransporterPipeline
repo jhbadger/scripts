@@ -103,7 +103,7 @@ def runpHMM(file, command, output, dir, project, postprocess = "cat")
   end
   Dir.glob(bdir+"*.hmm").each do |hmm|
     system("#{postprocess} #{hmm} >> #{output} 2>/dev/null")
-    system("rm #{hmm}")
+     system("rm #{hmm}")
   end
 end
 
@@ -135,12 +135,10 @@ if (!findTimeLogicDB(opt.user, opt.password, opt.server, "cog"))
   buildTimeLogicDB(opt.user, opt.password, opt.server, opt.cog, "cog")
 end
 
-if (!File.exist?(name + ".cog.btab"))
+if (!File.exist?(name + ".cog.tab"))
   db = findTimeLogicDB(opt.user, opt.password, opt.server, "cog")
-  STDERR.printf("Creating %s...\n", name + ".cog.btab")
-  system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querylocus queryaccession querylength algorithm userid target\
-locus querystart queryend targetstart targetend alignmentlength matches s\
-core score targetdescription queryframe queryframe queryframe significance significance > #{name}.cog.btab")
+  STDERR.printf("Creating %s...\n", name + ".cog.tab")
+  system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querylocus querylength targetlength targetlocus targetdescription querystart queryend targetstart targetend score significance > #{name}.cog.tab")
 end
 
 if (!File.exists?(name + ".hmm.gz"))
@@ -166,8 +164,8 @@ end
 
 if (cluster.nil?)
   STDERR.printf("Starting summary pipeline without cluster info...\n")
-  system("metagenome_transporter_annotation.pl -i #{name} -t #{name}.trans.btab -c #{name}.cog.btab -h #{name}.hmm.gz -m #{name}.tmhmm.gz -s #{name}.pep -n #{name}.nr.btab.gz -l #{name}.log > #{name}.transporter_annotation.txt")
+  system("metagenome_transporter_annotation.pl -i #{name} -t #{name}.trans.btab -c #{name}.cog.tab -h #{name}.hmm.gz -m #{name}.tmhmm.gz -s #{name}.pep -n #{name}.nr.btab.gz -l #{name}.log > #{name}.transporter_annotation.txt")
   else
   STDERR.printf("Starting summary pipeline with cluster info...\n")
-  system("metagenome_transporter_annotation_with_cluster.pl -i #{name} -t #{name}.trans.btab -c #{name}.cog.btab -h #{name}.hmm.gz -m #{name}.tmhmm.gz -s #{name}.pep -n #{name}.nr.btab.gz -l #{name}.log -u #{cluster} > #{name}.transporter_annotation_with_cluster.txt")
+  system("metagenome_transporter_annotation_with_cluster.pl -i #{name} -t #{name}.trans.btab -c #{name}.cog.tab -h #{name}.hmm.gz -m #{name}.tmhmm.gz -s #{name}.pep -n #{name}.nr.btab.gz -l #{name}.log -u #{cluster} > #{name}.transporter_annotation_with_cluster.txt")
 end
