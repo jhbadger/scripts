@@ -41,9 +41,8 @@ class RogerBlast
       elsif (inTarget && line == "\n")
         inTarget = false
        elsif (inTarget)
-         if (oldLine.strip.size < 57) 
-           @target += " " 
-         end
+         @target = "" if @target.nil?
+         @target += " " if (line.strip[0] =~/^[A-Z]/)
          @target += line.strip.chomp 
       end
       oldLine = line
