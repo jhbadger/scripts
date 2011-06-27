@@ -64,6 +64,7 @@ end
 
 ARGV.each {|file|
   opt.gridSize = `grep -c ">" #{file}`.to_i / 1000 if (opt.gridSize.nil?)
+  opt.gridSize = 150 if opt.gridSize == 0
   bout = File.basename(file) + "_vs_" + File.basename(db) + ".#{opt.blast}"
   Dir.mkdir(opt.tmpdir) if !File.exists?(opt.tmpdir)
   bdir = opt.tmpdir + "/blastdir/"
