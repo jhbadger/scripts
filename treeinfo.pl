@@ -170,7 +170,7 @@ sub parsetreestr($$$$) {
       $readlength = 1;
       $readtoken = 0;
 
-    } elsif($readlength && $ci =~ /[\.\d\-e]/) {
+    } elsif($readlength && $ci =~ /[E\.\d\-e]/) {
 
       $len .= $ci;
 
