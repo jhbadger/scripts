@@ -46,12 +46,12 @@ ZFile.new(dist).each do |line|
   fields = line.chomp.split(" ")
   if (fields.size > 1)
     name = fields.shift
-    if (name =~/Consens/)
-      name.gsub!("Consensus","")
+    if (name =~/(v[0-9]v[0-9]\_)/)
+      name.gsub!($1,"")
       clusters[name] = OpenStruct.new
       clusters[name].minDist = 1e6
       fields.size.times do |i|
-        if (fields[i].to_f < clusters[name].minDist && taxa[i] !~/Consens/)
+        if (fields[i].to_f < clusters[name].minDist && taxa[i] !~/^v[0-9]v[0-9]/)
           clusters[name].minDist = fields[i].to_f
           clusters[name].minName = taxa[i]
         end
@@ -70,16 +70,14 @@ seqs = Hash.new
 STDERR.printf("Loading seqs...\n")
 
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
-  seqs[seq.entry_id.gsub("Consensus","")] = seq.seq
+  seqs[seq.entry_id.gsub(/v[0-9]v[0-9]\_/,"")] = seq.seq
 end
 
 STDERR.printf("Loading cluster info...\n")
 ZFile.new(cluster).each do |line|
   num, csize, male, patients, sites = line.chomp.split("\t")
-  if (!clusters[num])
-    STDERR.printf("No info for %d\n", num)
-    next
-  else
+  next if patients.nil?
+  if (clusters[num])
     clusters[num].size = csize.to_i
     clusters[num].male = male.to_f
     clusters[num].patients = patients.split(" ")

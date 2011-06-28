@@ -25,11 +25,15 @@ end
 hits = Hash.new
 categories = []
 ARGV.each do |btab|
-  category = btab.split("_vs_")[1].split("_").first
-  categories.push(category)
+  source, target = btab.split("_vs_")
+  source = source.split(".").first
+  target = target.split(".").first
+  categories.push(source) if (!categories.include?(source))
+  categories.push(target) if (!categories.include?(target))
   Btab.new(btab).each do |query|
     hits[query.name] = Hash.new if (!hits[query.name])
-    hits[query.name][category] = query.matches.first.name
+    hits[query.name][target] = query.matches.first.name
+    hits[query.name][source] = query.name
   end
 end
 
