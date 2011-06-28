@@ -1,57 +1,24 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'optparse'
-require 'rubygems'
 require 'bio'
-opt = OpenStruct.new
 
-opt.cluster = 100
-opt.program = "promer"
-
-ARGV.options {|opts|
-  opts.banner << " reference-genome.fa query.fa"
-  opts.on("-c ", "--cluster ", Integer, "cluster size (default #{opt.cluster})") {|t| opt.cluster = t}    
-  opts.on("-p ", "--program ", String, "mummer to run (default #{opt.program})") {|t| opt.program = t}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size != 2)
-    STDERR.puts opts
-    exit(1)
-  end
-}
-
-reference, query = ARGV
-
-prefix = opt.program + "_c#{opt.cluster}"
-prefix += "_" + File.basename(reference, ".con")
-prefix += "_" + File.basename(query, ".fasta")
-delta = prefix + ".delta"
-tiling = prefix + ".tiling"
-
-if (!File.exists?(delta))
-  system("#{opt.program} -maxmatch -c #{opt.cluster} -p #{prefix} #{reference} #{query}")
+if (ARGV.size != 2)
+  STDERR.printf("Usage: %s tiling-file query.fna\n", File.basename($0))
+  exit(1)
 end
 
-if (!File.exists?(tiling))
-  system("show-tiling #{delta} > #{tiling}")
-end
+tiling, query = ARGV
 
 scaffs = Hash.new
-Bio::FlatFile.new(Bio::FastaFormat, File.new(query)).each {|seq|
+Bio::FlatFile.new(Bio::FastaFormat, File.new(query)).each do |seq|
   scaffs[seq.entry_id] = seq
-}
+end
 
 
 order = File.new(File.basename(query).split(".").first+".order", "w")
 tiled = ""
 seen = []
-File.new(tiling).each {|line|
+File.new(tiling).each do |line|
   next if line =~/^>/
   rs, re, qs, qe, per1, per2, strand, scaff = line.chomp.split(" ")
   seen.push(scaff)
@@ -61,13 +28,13 @@ File.new(tiling).each {|line|
     tiled += Bio::Sequence::NA.new(scaffs[scaff].seq).reverse_complement.seq.tr("N","")
   end
   order.printf("%s\t%s\n", scaff, strand)
-}
+end
 
 missing = scaffs.keys - seen
-missing.each {|scaff|
-  tiled += scaffs[scaff].seq.tr("N","")
+missing.each do |scaff|
+  tiled += scaffs[scaff].seq.tr("N","") + "N"*100
   order.printf("%s\t%s\n", scaff, "+")
-}
+end
 
 pseudo = File.new(File.basename(query).split(".").first+"_pseudo.fa", "w")
 
