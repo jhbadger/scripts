@@ -13,7 +13,7 @@ opt.server = "tmlsrv2.jcvi.org"
 opt.user = ENV["USER"]
 opt.password = nil
 opt.tmpdir = "/usr/local/scratch/#{ENV["USER"]}/"
-
+opt.verbose = 0
 
 ARGV.options do |o|
   o.banner << " fasta library-name [cluster-file]"
@@ -23,6 +23,7 @@ ARGV.options do |o|
   o.on("-p ", "--password ", String, "password (required!)") {|t| opt.password = t}
   o.on("-s ", "--server ", String, "server (#{opt.server})") {|t| opt.server = t}
   o.on("-u ", "--user ", String, "username (#{opt.user})") {|t| opt.user = t}
+  o.on("-v", "--verbose", "more status messages displayed") {opt.verbose = 1}
   begin
     o.parse!
   rescue
@@ -161,4 +162,4 @@ if (!File.exists?(name + ".tmhmm.bz2"))
 end
 
 STDERR.printf("Starting summary pipeline...\n")
-system("transporter_annotation.pl -p #{name} -z #{library} -t #{name}.trans.btab.bz2 -c #{name}.cog.tab.bz2 -h #{name}.hmm.bz2 -m #{name}.tmhmm.bz2 -s #{name}.pep -n #{name}.nr.btab.bz2 -l #{name}.log -u #{cluster} > #{name}.transporter_annotation.txt")
+system("transporter_annotation.pl -p #{name} -z #{library} -t #{name}.trans.btab.bz2 -c #{name}.cog.tab.bz2 -h #{name}.hmm.bz2 -m #{name}.tmhmm.bz2 -s #{name}.pep -n #{name}.nr.btab.bz2 -l #{name}.log -v #{opt.verbose} -u #{cluster} > #{name}.transporter_annotation.txt")
