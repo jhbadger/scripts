@@ -256,6 +256,7 @@ while (<IN>) {
 	chop;
 	( $a, $b, $c, $d ) = split(/\t|\n/);
 	if ( $transporter_hash{$a}) {
+		$trans_count{$a} = 0 if (!$trans_count{$a});
 		$trans_count{$a} += 1;
 	}
 }
