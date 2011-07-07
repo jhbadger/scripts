@@ -27,22 +27,22 @@ unless ($opt_d) {
     $initialdir =~ s/\/$//;
 }
 
-if ($opt_s eq "") {
-	printf("Usage: $0 [options]\n");
-	printf(" -i is the library id/metagenome id\n");
-	printf(" -m is tmhmm search file\n");
-	printf(" -t is transporter blast search trans file\n");
-	printf(" -h is transporter hmm search file\n");
-	printf(" -c is cog search btab file\n");
-	printf(" -s is the pep sequence file\n");
-	printf(" -n is the nraa blastp file\n");
-	printf(" -l is the log file\n");
-	printf(" -p is the APIS dataset\n");
-	printf(" -z is the metagenome site id\n");
-	printf(" -u is the cluster transporter search file\n");
-	printf(" -d is the search file directory\n");
-	printf(" -v run verbosely\n");
-	die;
+if ( $opt_s eq "" ) {
+    printf("Usage: $0 [options]\n");
+    printf(" -i is the library id/metagenome id\n");
+    printf(" -m is tmhmm search file\n");
+    printf(" -t is transporter blast search trans file\n");
+    printf(" -h is transporter hmm search file\n");
+    printf(" -c is cog search btab file\n");
+    printf(" -s is the pep sequence file\n");
+    printf(" -n is the nraa blastp file\n");
+    printf(" -l is the log file\n");
+    printf(" -p is the APIS dataset\n");
+    printf(" -z is the metagenome site id\n");
+    printf(" -u is the cluster transporter search file\n");
+    printf(" -d is the search file directory\n");
+    printf(" -v run verbosely\n");
+    die;
 }
 
 $opt_m = $initialdir . "\/" . $opt_m;
@@ -166,8 +166,8 @@ while (<IN>) {
     chop;
     ( $a, $b, $c, $d, $e, $f ) = split(/\t|\n/);
     if ( $a !~ /B/ ) {
-        $pfam_hash{$d}{"tc"} = $a;
-        $pfam_hash{$d}{"subfamily"} = $c;   
+        $pfam_hash{$d}{"tc"}        = $a;
+        $pfam_hash{$d}{"subfamily"} = $c;
         $pfam_hash{$d}{"substrate"} = $f;
     }
 }
@@ -178,7 +178,7 @@ open_it( IN, "$cog_list" );
 while (<IN>) {
     chop;
     ( $a, $b, $c, $d, $e, @others ) = split(/\t|\n/);
-    $cog_hash{$e}{"tc"} = $a;
+    $cog_hash{$e}{"tc"}        = $a;
     $cog_hash{$e}{"subfamily"} = $c;
     $cog_hash{$e}{"substrate"} = $d;
 }
@@ -208,7 +208,7 @@ while (<IN>) {
     $evalue = pop(@a);
     if ( $temp ne $a[5] ) {
         if ( $pfam_hash{ $a[0] } && $evalue < 0.01 ) {
-            $transporter_hash{ $a[5] }{"pfam"} = $a[0];      #pfam model name
+            $transporter_hash{ $a[5] }{"pfam"} = $a[0];    #pfam model name
             $transporter_hash{ $a[5] }{"pfam_evalue"} = $evalue;    #evalue
 
         }
@@ -221,10 +221,10 @@ close IN;
 open_it( IN, $opt_c );
 while (<IN>) {
     chop;
-    ( $a, $b, $c, $d, $e, $f, $g, $h, $i, $j, $k, $l ) = split(/\t|\n/);
-    if ( $cog_hash{$d} ) {
-        $transporter_hash{$a}{"cog"} = $d;
-        $transporter_hash{$a}{"cog_evalue"} = $l;
+    @fields = split(/\t/);
+    if ( $cog_hash{ $fields[3] } ) {
+        $transporter_hash{ $fields[0] }{"cog"}        = $fields[3];
+        $transporter_hash{ $fields[0] }{"cog_evalue"} = $fields[10];
     }
 }
 close IN;
@@ -235,35 +235,33 @@ while (<IN>) {
     chop;
     ( $a, $b, $c, $d, $e, $f, $g ) = split(/\t|\n/);
 
-    $transporter_hash{$a}{"cluster"} = $c;
-    $transporter_hash{$a}{"family"} = $e;
+    $transporter_hash{$a}{"cluster"}   = $c;
+    $transporter_hash{$a}{"family"}    = $e;
     $transporter_hash{$a}{"subfamily"} = $f;
     $transporter_hash{$a}{"substrate"} = $g;
-    $transporter_hash{$a}{"quality"} = $d;
+    $transporter_hash{$a}{"quality"}   = $d;
 }
 close IN;
 
 $false_count = 0;
 
-
-
 &add_transporter_search_result( \%transporter_hash,
     $opt_n, $opt_s, $opt_m, $OID, $opt_d );
 
-open_it(IN, $opt_t );
+open_it( IN, $opt_t );
 while (<IN>) {
-	chop;
-	( $a, $b, $c, $d ) = split(/\t|\n/);
-	if ( $transporter_hash{$a}) {
-		$trans_count{$a} = 0 if (!$trans_count{$a});
-		$trans_count{$a} += 1;
-	}
+    chop;
+    ( $a, $b, $c, $d ) = split(/\t|\n/);
+    if ( $transporter_hash{$a} ) {
+        $trans_count{$a} = 0 if ( !$trans_count{$a} );
+        $trans_count{$a} += 1;
+    }
 }
 close IN;
 
 foreach $transporter ( keys %transporter_hash ) {
     (
-        $nraa, $nraa1,    $species, $evalue, $length,
+        $nraa  ,    $species, $evalue, $length,
         $tms,  $topology, $seq,     $TC,     $cluster
     ) = "";
 
@@ -274,12 +272,14 @@ foreach $transporter ( keys %transporter_hash ) {
         next;
     }
 
-	$trans_count{$transporter} = 0 if !$trans_count{$transporter};
-    if ( grep { $_ eq $transporter_hash{$transporter}{"cog"} } @false_COG_array ) {
+    $trans_count{$transporter} = 0 if !$trans_count{$transporter};
+    if ( grep { $_ eq $transporter_hash{$transporter}{"cog"} }
+        @false_COG_array )
+    {
         delete $transporter_hash{$transporter};
         next;
     }
-	
+
     if ( $cog = $transporter_hash{$transporter}{"cog"} ) {
         $TC        = $cog_hash{$cog}{"tc"};
         $subfamily = $cog_hash{$cog}{"subfamily"};
@@ -306,12 +306,11 @@ foreach $transporter ( keys %transporter_hash ) {
 
     $count2++;
 
-    ($nraa1) = split( /\^\|\^/, $transporter_hash{$transporter}{"nraa"});
-
+   
     #check for false hit from nraa top hits
     $false_flag = 0;
     foreach $false_key_word (@false_nraa_array) {
-        if ( $nraa1 =~ /$false_key_word/ ) {
+        if ( $transporter_hash{$transporter}{"nraa"} =~ /$false_key_word/ ) {
             $false_flag = 1;
         }
     }
@@ -328,8 +327,10 @@ foreach $transporter ( keys %transporter_hash ) {
     $count_evidence = 0;
     if ( $trans_count{$transporter} > 0 ) { $count_evidence++ }
     if ( $transporter_hash{$transporter}{"pfam"} ne "" ) { $count_evidence++ }
-    if ( $transporter_hash{$transporter}{"cog"} ne "" ) { $count_evidence++ }
-    if ( $transporter_hash{$transporter}{"cluster"} ne "" ) { $count_evidence++ }
+    if ( $transporter_hash{$transporter}{"cog"}  ne "" ) { $count_evidence++ }
+    if ( $transporter_hash{$transporter}{"cluster"} ne "" ) {
+        $count_evidence++;
+    }
 
     if ( $family eq "" ) {
         $family = $fid_hash{$TC};
@@ -358,11 +359,12 @@ foreach $transporter ( keys %transporter_hash ) {
       . $transporter_hash{$transporter}{"cog"} . "\t"
       . $transporter_hash{$transporter}{"cog_evalue"} . "\t"
       . $transporter_hash{$transporter}{"cluster"} . "\t"
+      . $transporter_hash{$transporter}{"quality"} . "\t"
       . $count_evidence . "\t"
       . $transporter_hash{$transporter}{"length"} . "\t"
       . $transporter_hash{$transporter}{"tms"} . "\t"
       . $transporter_hash{$transporter}{"topology"} . "\t"
-      . $nraa1 . "\t"
+      . $transporter_hash{$transporter}{"nraa"} . "\t"
       . $transporter_hash{$transporter}{"species"} . "\t"
       . $transporter_hash{$transporter}{"nraa_evalue"} . "\t"
       . $transporter_hash{$transporter}{"seq"} . "\n";
@@ -388,9 +390,10 @@ flock( OUT, LOCK_UN );
 close OUT;
 
 ###########################
-#Subfuncitons
+#Subfunctions
 ###########################
 
+# opens file for reading whether it is uncompressed, gzipped, or bzip2ed
 sub open_it {
     my ( $handle, $file ) = @_;
     if ( $file =~ /\.gz/ ) {
@@ -434,72 +437,55 @@ sub add_transporter_search_result {
     open_it( IN, $file );
 
     while (<IN>) {
-        chop;
+        chomp;
         @a = split(/\t/);
         if ( $temp ne $a[0] ) {
-        	if ( $$hashref{$a[0]} ) {
-
-                $hit = $a[15];    #nraa hit
-
-                if ( $hit =~ /\{(.*?)\}/ ) {
-                    $species = $1;
-                }
-                else {
-                    $species = "";
-                }
-
+            if ( $$hashref{ $a[0] } ) {
+                ($nraa, $species) = split(/\[|\]/,$a[14]); 
+				($nraa) = split( /\^\|\^/, $nraa );
                 $species =~ s/\s+/ /g;
                 $species =~ s/;/ /g;
-                $evalue = pop(@a);    #evalue
-
-                $$hashref{$a[0]}{"nraa"} = $hit;
-                $$hashref{$a[0]}{"species"} = $species;
-                $$hashref{$a[0]}{"nraa_evalue"} = $evalue;
-
+                $evalue = pop(@a);    #evalue	
+                $$hashref{ $a[0] }{"nraa"}        = $nraa;
+                $$hashref{ $a[0] }{"species"}     = $species;
+                $$hashref{ $a[0] }{"nraa_evalue"} = $evalue;
             }
             $temp = $a[0];
         }
     }
     close IN;
 
-    $file = $opt_m;
-
-    #query tmhmm value for all transporters and add to the array
-    open_it( IN, $file );
-    my @file = <IN>;
-
-    shift @file;
-    shift @file;
-
-    foreach $line (@file) {
+    # tmhmm results
+    open_it( IN, $opt_m );
+    while (<IN>) {
         chomp;
+		$line = $_;
         if ( $line !~ /\/usr\/local\/bin/ ) {
             if ( $line =~ /\#/ ) {
 
                 if ( $line =~ /^\# ([^\s]+) Length: (\d+)\s*/ ) {
                     $a = $1;
-                     if ($$hashref{$a}) {
-                       $$hashref{$a}{"length"} = "len=" . $2;   #length
-                     }
+                    if ( $$hashref{$a} ) {
+                        $$hashref{$a}{"length"} = "len=" . $2;    #length
+                    }
                 }
                 elsif ( $line =~
                     /^\# ([^\s]+) Number of predicted TMHs:\s+(\d+)\s*/ )
                 {
                     $a = $1;
-                        if ($$hashref{$a}) {
-                            $$hashref{$a}{"tms"} = "PredHel=" . $2;  #TMS
-                        }
+                    if ( $$hashref{$a} ) {
+                        $$hashref{$a}{"tms"} = "PredHel=" . $2;    #TMS
+                    }
                 }
             }
             else {
-
                 if ( $out !~ /Topology/ ) {
                     $out .= "Topology=";
                 }
 
                 ( $a, $b, $property, $topology ) = split( /\t/, $line );
                 if ( $a ne $temp ) {
-					$$hashref{$temp}{"topology"} = $out if ($$hashref{$temp});
+                    $$hashref{$temp}{"topology"} = $out if ( $$hashref{$temp} );
                     $out  = "Topology=";
                     $temp = $a;
                 }
@@ -525,6 +511,7 @@ sub add_transporter_search_result {
         return ( $length, $TMS, $out );
     }
     close IN;
+
 }
 
 sub clear_output {
@@ -536,76 +523,6 @@ sub clear_output {
     print OUT "";
 
     close(OUT);
-
-}
-
-sub get_tms {
-
-    ( $ORF, $file ) = @_;
-    $out = "";
-
-    #process tmhmm search file
-    open_it( IN, $file );
-
-    my @file = <IN>;
-
-    shift @file;
-    shift @file;
-
-    foreach $line (@file) {
-
-        chomp;
-        if ( $line !~ /\/usr\/local\/bin/ ) {
-            if ( $line =~ /\#/ ) {
-
-                if ( $line =~ /^\# ([^\s]+) Length: (\d+)\s*/ ) {
-
-                    #			print $line;
-                    $a = $1;
-                    if ( $a eq $ORF ) {
-                        $length = "len=" . $2;
-                    }
-                }
-                elsif ( $line =~
-                    /^\# ([^\s]+) Number of predicted TMHs:\s+(\d+)\s*/ )
-                {
-
-                    $a = $1;
-                    if ( $a eq $ORF ) {
-                        $TMS = "PredHel=" . $2;
-                    }
-                }
-            }
-            else {
-                if ( $out !~ /Topology/ ) {
-                    $out .= "Topology=";
-                }
-
-                ( $a, $b, $property, $topology ) = split( /\t/, $line );
-
-                if ( $a eq $ORF ) {
-                    if ( $property eq "inside" ) {
-                        $out .= "i";
-                    }
-                    elsif ( $property eq "outside" ) {
-                        $out .= "o";
-                    }
-                    else {
-                        $topology =~ /\s+(\d+)\s+(\d+)/;
-                        $out .= "$1-$2";
-                    }
-                }
-            }
-        }
-    }
-
-    if ( $out =~ /Topology=$/ ) {
-        return ( "", "", "" );
-    }
-    else {
-        return ( $length, $TMS, $out );
-    }
-    close IN;
 
 }
 

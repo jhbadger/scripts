@@ -17,6 +17,7 @@ opt.file = false
 opt.lib = false
 opt.libfilter=false
 opt.order = false
+opt.transporter = "transporters"
 
 o = OptionParser.new
 o.banner << " [dataset ... dataset]"
@@ -29,6 +30,7 @@ o.on("-l", "--lib", "group by library not taxonomy") {opt.lib = true}
 o.on("-m", "--libfilter", "group by library+filter not taxonomy") {opt.libfilter = true}
 o.on("-o ", "--order ", String, "order by CSV file first field") {|t| opt.order = t}
 o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+o.on("-t ", "--transporter ", String, "transporter table (default #{opt.transporter})") {|t| opt.transporter = t}
 o.on("-z ", "--filter ", Float, "limit to a specific filter") {|t| opt.filter = t}
 begin
   o.parse!
@@ -71,7 +73,10 @@ inClause += ")"
 groups = Hash.new
 families = Hash.new
 
-query = "SELECT DISTINCT mtLibrary FROM transporters WHERE mtLibrary IN #{inClause}"
+p inClause
+exit(1)
+STDERR.printf("Querying datasets...\n")
+query = "SELECT DISTINCT mtLibrary FROM #{opt.transporter} WHERE mtLibrary IN #{inClause}"
 missing = ARGV - repository(:default).adapter.select(query)
 if (!missing.empty?)
   missing.each do |miss|
@@ -89,6 +94,7 @@ rescue
   STDERR << "Skipping loading transporter names..."
 end
 
+STDERR.printf("Querying transporter info...\n")
 query = "SELECT mtName, mtProject, mtLibrary, mtFid, phylum, class as cl, ord, family, genus FROM classification "
 query += "JOIN transporters ON mtName=seq_name WHERE mtLibrary IN #{inClause}"
 
