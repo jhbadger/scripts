@@ -130,7 +130,7 @@ $cog_list  = "$ENV{'TGG'}/PEP/transporter_faa/cog_fid.list";
     'hydrolase',                 'integrase',
     'flagellum',                 'ranscription',
     'HSP',                       'grpE',
-    'MinD',                      'synthase',
+    'MinD',                      
     'hydrogenase',               'reductase',
     'nitrogenase',               'polymerase',
     'starvation',                'Ankyrin',
@@ -207,7 +207,7 @@ while (<IN>) {
     @a      = split(/\t/);
     $evalue = pop(@a);
     if ( $temp ne $a[5] ) {
-        if ( $pfam_hash{ $a[0] } && $evalue < 0.01 ) {
+        if ( $pfam_hash{ $a[0] } && $evalue < 0.0001 ) {
             $transporter_hash{ $a[5] }{"pfam"} = $a[0];    #pfam model name
             $transporter_hash{ $a[5] }{"pfam_evalue"} = $evalue;    #evalue
 
@@ -268,7 +268,9 @@ foreach $transporter ( keys %transporter_hash ) {
     if ( grep { $_ eq $transporter_hash{$transporter}{"cluster"} }
         @false_cluster_array )
     {
-        delete $transporter_hash{$transporter};
+		printf STDERR ("Deleting cluster support for %s because it is in bad cluster %s\n", $transporter, 
+			$transporter_hash{$transporter}{"cluster"});
+		delete $transporter_hash{$transporter};
         next;
     }
 
@@ -276,6 +278,8 @@ foreach $transporter ( keys %transporter_hash ) {
     if ( grep { $_ eq $transporter_hash{$transporter}{"cog"} }
         @false_COG_array )
     {
+		printf STDERR ("Deleting cog support for %s because it is in bad cog %s\n", $transporter, 
+			$transporter_hash{$transporter}{"cog"});
         delete $transporter_hash{$transporter};
         next;
     }
@@ -311,6 +315,8 @@ foreach $transporter ( keys %transporter_hash ) {
     $false_flag = 0;
     foreach $false_key_word (@false_nraa_array) {
         if ( $transporter_hash{$transporter}{"nraa"} =~ /$false_key_word/ ) {
+			printf STDERR ("Deleting nraa support for %s because it hits false keyword %s\n", $transporter, 
+				$false_key_word);
             $false_flag = 1;
         }
     }

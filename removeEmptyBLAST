@@ -9,17 +9,18 @@ end
 blastFile = ARGV.first
 
 lines = ""
-File.new(blastFile).each {|line|
-  if (line =~/^BLAST/)
+File.new(blastFile).each do |line|
+  if (line =~/^BLAST/ || line =~/^TBLAST/)
     if (lines != "")
-      if lines !~ /\*\*\* NONE/
-	print lines
+      if lines !~ /\*\*\* No hits found/
+	      print lines
       end
       lines = ""
     end
   end
   lines += line
-}
+end
+
 if lines !~ /\*\*\* NONE/
   print lines
 end

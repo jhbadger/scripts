@@ -162,4 +162,4 @@ if (!File.exists?(name + ".tmhmm.bz2"))
 end
 
 STDERR.printf("Starting summary pipeline...\n")
-system("transporter_annotation.pl -p #{name} -z #{library} -t #{name}.trans.btab.bz2 -c #{name}.cog.tab.bz2 -h #{name}.hmm.bz2 -m #{name}.tmhmm.bz2 -s #{name}.pep -n #{name}.nr.btab.bz2 -l #{name}.log -v #{opt.verbose} -u #{cluster} > #{name}.transporter_annotation.txt")
+system("transporter_annotation.pl -p #{name} -z #{library} -t #{name}.trans.btab.bz2 -c #{name}.cog.tab.bz2 -h #{name}.hmm.bz2 -m #{name}.tmhmm.bz2 -s #{name}.pep -n #{name}.nr.btab.bz2 -v #{opt.verbose} -u #{cluster} > #{name}.transporter_annotation.txt 2> #{name}.warnings")
