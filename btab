@@ -6,9 +6,10 @@ require 'rubygems'
 require 'bio'
 opt = OpenStruct.new
 
+opt.top = false
 ARGV.options {|opts|
   opts.banner << " blast-file [...blast-file...]"
-  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
+  opts.on("-t", "--top","only show top hit") {opt.top = true}    
   begin
     opts.parse!
   rescue
@@ -22,16 +23,16 @@ ARGV.options {|opts|
   end
 }
 
-ARGV.each {|blast|
+ARGV.each do |blast|
   out = File.new(blast + ".btab", "w")
-  Bio::Blast::Default::Report.open(blast, "r").each {|query|
+  Bio::Blast::Default::Report.open(blast, "r").each do |query|
     fields = [""]*21
     fields[0] = query.query_def.split(" ").first
     fields[2] = query.query_len
     fields[3] = query.program
     fields[4] = query.db
     begin
-      query.each {|hit|
+      query.each do |hit|
         hsp = hit.hsps.first
         fields[5] = hit.definition.split(" ").first
         fields[6] = hit.query_start
@@ -48,17 +49,18 @@ ARGV.each {|blast|
         fields[18] = query.db_len
         fields[19] = hit.evalue
         fields[20] = hit.evalue
-        fields.each {|field|
+        fields.each do |field|
           out.printf("%s\t", field.to_s)
-        }
+        end
         out.printf("\n")
-      }
+        break if opt.top
+      end
     rescue
       STDERR.printf("Skipping query %s...\n", fields[0])
     end
-  }
+  end
   out.close
-}
+end
 
 # This is a BioRuby remake. The original BTAB program is described here:
 # Dubnick M. (1992) Btab--a Blast output parser. Comput Appl Biosci 8(6):601-2

@@ -21,6 +21,6 @@ File.new(blastFile).each do |line|
   lines += line
 end
 
-if lines !~ /\*\*\* NONE/
+if lines !~ /\*\*\* No hits found/
   print lines
 end
