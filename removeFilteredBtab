@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby 
+
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.remove = false
+opt.header = false
+opt.noambig = false
+
+o = OptionParser.new
+o.banner << " false-postives.txt btab [..btab..]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+exclude = ARGV.shift
+
+excluded = Hash.new
+
+ZFile.new(exclude).each do |line|
+  name, rest = line.chomp.split(" ")
+  excluded[name] = true
+end
+
+ARGV.each do |btab|
+  name = btab[0..btab.index(".btab") - 1] 
+  good = File.new(name + "_good_filter.btab", "w")
+  bad = File.new(name + "_bad_filter.btab", "w")
+  counts = {:good => 0, :bad => 0}
+  ZFile.new(btab).each do |line|
+    query, q1, method, db, user, hit = line.chomp.split("\t")
+    if (excluded[hit])
+      bad.print line
+      counts[:bad] += 1
+    else
+      good.print line
+      counts[:good] += 1
+    end
+  end
+  STDERR.printf("%s: %d good, %d bad\n", btab, counts[:good], counts[:bad])
+  good.close
+  bad.close
+end
