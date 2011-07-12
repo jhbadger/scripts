@@ -5,7 +5,7 @@
 
 use Getopt::Std;
 use Switch;
-getopts("t:h:c:m:s:n:l:i:u:d:p:z:v:");
+getopts("t:h:c:m:s:n:i:u:d:p:z:v:k:");
 
 # i is the library id/metagenome id
 # m is tmhmm search file
@@ -14,12 +14,12 @@ getopts("t:h:c:m:s:n:l:i:u:d:p:z:v:");
 # c is cog search btab file
 # s is the pep sequence file
 # n is the nraa blastp file
-# l is the log file
 # p is the APIS dataset
 # z is the metagenome site id
 # u is the cluster transporter search file
 # d is the search file directory
 # v run verbosely
+# k don't exclude on keywords
 
 unless ($opt_d) {
     $initialdir = `pwd`;
@@ -42,6 +42,7 @@ if ( $opt_s eq "" ) {
     printf(" -u is the cluster transporter search file\n");
     printf(" -d is the search file directory\n");
     printf(" -v run verbosely\n");
+    printf(" -k don't exclude on keyword\n");
     die;
 }
 
@@ -130,7 +131,7 @@ $cog_list  = "$ENV{'TGG'}/PEP/transporter_faa/cog_fid.list";
     'hydrolase',                 'integrase',
     'flagellum',                 'ranscription',
     'HSP',                       'grpE',
-    'MinD',                      
+    'MinD',                      'synthase',
     'hydrogenase',               'reductase',
     'nitrogenase',               'polymerase',
     'starvation',                'Ankyrin',
@@ -245,8 +246,99 @@ close IN;
 
 $false_count = 0;
 
-&add_transporter_search_result( \%transporter_hash,
-    $opt_n, $opt_s, $opt_m, $OID, $opt_d );
+# load sequences
+open_it( IN, $opt_s );
+
+my ($save_input_separator) = $/;
+$/ = "\n>";
+while ( $file_array = <IN> ) {
+    if ( $file_array =~ /^>(.*)/s ) {
+        $file_array = $1;
+    }
+    if ( $file_array !~ /.*?>$/s ) {
+        $file_array .= ">";
+    }
+    my ( $ORF, $seq ) = ( $file_array =~ /([^\s]+).*?\n(.*)>/s );
+    $seq =~ s/\s|\n//g;
+    $transporter_hash{$ORF}{"seq"} = $seq if $transporter_hash{$ORF};
+}
+close IN;
+
+$/    = $save_input_separator;
+$file = $opt_n;
+$temp = "";
+
+# load nraa hits
+open_it( IN, $file );
+
+while (<IN>) {
+    chomp;
+    @a = split(/\t/);
+    if ( $temp ne $a[0] ) {
+        if ( $transporter_hash{ $a[0] } ) {
+            ( $nraa, $species ) = split( /\[|\]/, $a[14] );
+            ($nraa) = split( /\^\|\^/, $nraa );
+            $species =~ s/\s+/ /g;
+            $species =~ s/;/ /g;
+            $evalue                                   = pop(@a);    #evalue
+            $transporter_hash{ $a[0] }{"nraa"}        = $nraa;
+            $transporter_hash{ $a[0] }{"species"}     = $species;
+            $transporter_hash{ $a[0] }{"nraa_evalue"} = $evalue;
+        }
+        $temp = $a[0];
+    }
+}
+close IN;
+
+# load tmhmm hits
+open_it( IN, $opt_m );
+while (<IN>) {
+    chomp;
+    $line = $_;
+    if ( $line !~ /\/usr\/local\/bin/ ) {
+        if ( $line =~ /\#/ ) {
+
+            if ( $line =~ /^\# ([^\s]+) Length: (\d+)\s*/ ) {
+                $a = $1;
+                if ( $transporter_hash{$a} ) {
+                    $transporter_hash{$a}{"length"} = "len=" . $2;    #length
+                }
+            }
+            elsif (
+                $line =~ /^\# ([^\s]+) Number of predicted TMHs:\s+(\d+)\s*/ )
+            {
+                $a = $1;
+                if ( $transporter_hash{$a} ) {
+                    $transporter_hash{$a}{"tms"} = "PredHel=" . $2;    #TMS
+                }
+            }
+        }
+        else {
+            if ( $out !~ /Topology/ ) {
+                $out .= "Topology=";
+            }
+
+            ( $a, $b, $property, $topology ) = split( /\t/, $line );
+            if ( $a ne $temp ) {
+                $transporter_hash{$temp}{"topology"} = $out
+                  if ( $transporter_hash{$temp} );
+                $out  = "Topology=";
+                $temp = $a;
+            }
+
+            if ( $property eq "inside" ) {
+                $out .= "i";
+            }
+            elsif ( $property eq "outside" ) {
+                $out .= "o";
+            }
+            else {
+                $topology =~ /\s+(\d+)\s+(\d+)/;
+                $out .= "$1-$2";
+            }
+        }
+    }
+}
 
 open_it( IN, $opt_t );
 while (<IN>) {
@@ -260,17 +352,17 @@ while (<IN>) {
 close IN;
 
 foreach $transporter ( keys %transporter_hash ) {
-    (
-        $nraa  ,    $species, $evalue, $length,
-        $tms,  $topology, $seq,     $TC,     $cluster
-    ) = "";
+    ( $nraa, $species, $evalue, $length, $tms, $topology, $seq, $TC, $cluster )
+      = "";
 
     if ( grep { $_ eq $transporter_hash{$transporter}{"cluster"} }
         @false_cluster_array )
     {
-		printf STDERR ("Deleting cluster support for %s because it is in bad cluster %s\n", $transporter, 
-			$transporter_hash{$transporter}{"cluster"});
-		delete $transporter_hash{$transporter};
+        printf STDERR (
+            "Deleting cluster support for %s because it is in bad cluster %s\n",
+            $transporter, $transporter_hash{$transporter}{"cluster"}
+        );
+        delete $transporter_hash{$transporter};
         next;
     }
 
@@ -278,8 +370,10 @@ foreach $transporter ( keys %transporter_hash ) {
     if ( grep { $_ eq $transporter_hash{$transporter}{"cog"} }
         @false_COG_array )
     {
-		printf STDERR ("Deleting cog support for %s because it is in bad cog %s\n", $transporter, 
-			$transporter_hash{$transporter}{"cog"});
+        printf STDERR (
+            "Deleting cog support for %s because it is in bad cog %s\n",
+            $transporter, $transporter_hash{$transporter}{"cog"}
+        );
         delete $transporter_hash{$transporter};
         next;
     }
@@ -310,14 +404,19 @@ foreach $transporter ( keys %transporter_hash ) {
 
     $count2++;
 
-   
-    #check for false hit from nraa top hits
-    $false_flag = 0;
-    foreach $false_key_word (@false_nraa_array) {
-        if ( $transporter_hash{$transporter}{"nraa"} =~ /$false_key_word/ ) {
-			printf STDERR ("Deleting nraa support for %s because it hits false keyword %s\n", $transporter, 
-				$false_key_word);
-            $false_flag = 1;
+    if ( !$opt_k == 1 ) {
+
+        #check for false hit from nraa top hits
+        $false_flag = 0;
+        foreach $false_key_word (@false_nraa_array) {
+            if ( $transporter_hash{$transporter}{"nraa"} =~ /$false_key_word/ )
+            {
+                printf STDERR (
+"Deleting nraa support for %s because it hits false keyword %s\n",
+                    $transporter, $false_key_word
+                );
+                $false_flag = 1;
+            }
         }
     }
 
@@ -378,22 +477,6 @@ foreach $transporter ( keys %transporter_hash ) {
     $family = "";
 }
 
-$count = keys %transporter_hash;
-
-$count     = $count - $false_count;
-$pep_count = `grep -c '>' $opt_s`;
-
-$percent = sprintf( "%.2f", 100 * $count / $pep_count );
-
-chomp $pep_count;
-open OUT, ">>$opt_l", or die "Can't open OUT file $opt_l\n";
-flock( OUT, LOCK_EX );
-
-print OUT "$OID\t$count\t$pep_count\t$percent" . "%" . "\n";
-
-flock( OUT, LOCK_UN );
-
-close OUT;
 
 ###########################
 #Subfunctions
@@ -414,197 +497,7 @@ sub open_it {
     print STDERR "Opening $file for reading...\n" if ( $opt_v == 1 );
 }
 
-sub add_transporter_search_result {
-    ( $hashref, $opt_n, $opt_s, $opt_m, $OID, $opt_d ) = @_;
-
-    #query out all transporter sequences add value to the hash array
-    open_it( IN, $opt_s );
-
-    my ($save_input_separator) = $/;
-    $/ = "\n>";
-    while ( $file_array = <IN> ) {
-        if ( $file_array =~ /^>(.*)/s ) {
-            $file_array = $1;
-        }
-        if ( $file_array !~ /.*?>$/s ) {
-            $file_array .= ">";
-        }
-        my ( $ORF, $seq ) = ( $file_array =~ /([^\s]+).*?\n(.*)>/s );
-        $seq =~ s/\s|\n//g;
-        $$hashref{$ORF}{"seq"} = $seq if $$hashref{$ORF};
-    }
-    close IN;
-
-    $/    = $save_input_separator;
-    $file = $opt_n;
-    $temp = "";
-
-    #query out top blastp nraa hits add value to the hash array
-    open_it( IN, $file );
-
-    while (<IN>) {
-        chomp;
-        @a = split(/\t/);
-        if ( $temp ne $a[0] ) {
-            if ( $$hashref{ $a[0] } ) {
-                ($nraa, $species) = split(/\[|\]/,$a[14]); 
-				($nraa) = split( /\^\|\^/, $nraa );
-                $species =~ s/\s+/ /g;
-                $species =~ s/;/ /g;
-                $evalue = pop(@a);    #evalue	
-                $$hashref{ $a[0] }{"nraa"}        = $nraa;
-                $$hashref{ $a[0] }{"species"}     = $species;
-                $$hashref{ $a[0] }{"nraa_evalue"} = $evalue;
-            }
-            $temp = $a[0];
-        }
-    }
-    close IN;
-
-    # tmhmm results
-    open_it( IN, $opt_m );
-    while (<IN>) {
-        chomp;
-		$line = $_;
-        if ( $line !~ /\/usr\/local\/bin/ ) {
-            if ( $line =~ /\#/ ) {
-
-                if ( $line =~ /^\# ([^\s]+) Length: (\d+)\s*/ ) {
-                    $a = $1;
-                    if ( $$hashref{$a} ) {
-                        $$hashref{$a}{"length"} = "len=" . $2;    #length
-                    }
-                }
-                elsif ( $line =~
-                    /^\# ([^\s]+) Number of predicted TMHs:\s+(\d+)\s*/ )
-                {
-                    $a = $1;
-                    if ( $$hashref{$a} ) {
-                        $$hashref{$a}{"tms"} = "PredHel=" . $2;    #TMS
-                    }
-                }
-            }
-            else {
-                if ( $out !~ /Topology/ ) {
-                    $out .= "Topology=";
-                }
-
-                ( $a, $b, $property, $topology ) = split( /\t/, $line );
-                if ( $a ne $temp ) {
-                    $$hashref{$temp}{"topology"} = $out if ( $$hashref{$temp} );
-                    $out  = "Topology=";
-                    $temp = $a;
-                }
-
-                if ( $property eq "inside" ) {
-                    $out .= "i";
-                }
-                elsif ( $property eq "outside" ) {
-                    $out .= "o";
-                }
-                else {
-                    $topology =~ /\s+(\d+)\s+(\d+)/;
-                    $out .= "$1-$2";
-                }
-            }
-        }
-    }
-
-    if ( $out =~ /Topology=$/ ) {
-        return ( "", "", "" );
-    }
-    else {
-        return ( $length, $TMS, $out );
-    }
-    close IN;
-
-}
-
-sub clear_output {
-    ($out) = @_;
-
-    open( OUT, ">$out" )
-      || die "cannot open the file";
-
-    print OUT "";
-
-    close(OUT);
-
-}
-
-sub get_seq {
-
-    ( $ORF, $file ) = @_;
-
-    $seq = "";
-
-    #process seq file
-    open_it( IN, $file );
-    $flag = 0;
-
-    while (<IN>) {
-        if (/>(\S+)(.*)/) {
-            $name = $1;
-            if ( $name eq $ORF ) {
-                $flag = 1;
-            }
-            else {
-                $flag = 0;
-            }
-        }
-        else {
-            if ( $flag == 1 ) {
-                $seq .= "$_";
-            }
-        }
-    }
-    close IN;
-
-    $seq =~ s/\s|\n//g;
-
-    return $seq;
-}
-
-sub get_nraa {
-
-    ( $ORF, $file ) = @_;
-
-    open_it( IN, $file );
-
-    $flag = 0;
-
-    while (<IN>) {
-        chop;
-        @a = split(/\t/);
-
-        if ( $ORF eq $a[0] ) {
-            $hit = $a[15];    #nraa hit
-
-            if ( $hit =~ /\{(.*?)\}/ ) {
-                $species = $1;
-            }
-            else {
-                $species = "";
-            }
-
-            $species =~ s/\s+/ /g;
-            $species =~ s/;/ /g;
-            $evalue = pop(@a);    #evalue
-
-            last;
-        }
-        else {
-            ( $hit, $species, $evalue ) = "";
-        }
-    }
-
-    close IN;
-
-    return ( $hit, $species, $evalue );
-}
-
 sub get_substrate_by_TC($TC) {
-
     switch ($TC) {
         case "2A12" { $substrate = "ADP:ATP antiporter" }
         case "2A18" { $substrate = "amino acid" }

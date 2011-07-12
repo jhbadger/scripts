@@ -14,12 +14,14 @@ opt.user = ENV["USER"]
 opt.password = nil
 opt.tmpdir = "/usr/local/scratch/#{ENV["USER"]}/"
 opt.verbose = 0
+opt.keyword = 0
 
 ARGV.options do |o|
   o.banner << " fasta library-name [cluster-file]"
   o.on("-d ", "--dir ", String,
           "choose temp directory (default #{opt.tmpdir})") {|t| opt.tmpdir = t}
   o.on("-g ", "--grid ", String, "grid project code (required)") {|t| opt.grid = t}
+  o.on("-k", "--keyword", "don't exclude on keyword") {opt.keyword = 1}
   o.on("-p ", "--password ", String, "password (required!)") {|t| opt.password = t}
   o.on("-s ", "--server ", String, "server (#{opt.server})") {|t| opt.server = t}
   o.on("-u ", "--user ", String, "username (#{opt.user})") {|t| opt.user = t}
@@ -118,16 +120,20 @@ if (!File.exist?(name + ".trans.btab.bz2"))
     buildTimeLogicDB(opt.user, opt.password, opt.server, opt.tgg, "transportDB")
   end
   STDERR.printf("Creating %s...\n", name + ".trans.btab")
-  system("dc_run -parameters tera-blastp -database private:transportDB -threshold significance=1e-5 -max_alignments 30 -max_scores 30 -user #{opt.user} -password #{opt.password} -server #{opt.server} -query #{fasta} -output_format tab -field querylocus targetlocus significance score > #{name}.trans.btab")
+  system("dc_run -parameters tera-blastp -database private:transportDB -threshold significance=1e-5 -max_alignments 30 " +
+    "-max_scores 30 -user #{opt.user} -password #{opt.password} -server #{opt.server} -query #{fasta} " +
+      "-output_format tab -field querylocus targetlocus significance score > #{name}.trans.btab")
   system("bzip2 #{name}.trans.btab")
 end
 
 if (!File.exist?(name + ".nr.btab.bz2"))
   db = findTimeLogicDB(opt.user, opt.password, opt.server, "nr")
   STDERR.printf("Creating %s...\n", name + ".nr.btab.bz2")
-  system("dc_run -parameters tera-blastp -database #{db} -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querylocus queryaccession querylength algorithm userid target\
-locus querystart queryend targetstart targetend alignmentlength matches s\
-core score targetdescription queryframe queryframe queryframe significance significance > #{name}.nr.btab")
+  system("dc_run -parameters tera-blastp -database #{db} -threshold significance=1e-05 -max_alignments 1 -max_scores 1 " +
+    "-query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab " +
+      "-field querylocus queryaccession querylength algorithm userid targetlocus querystart queryend targetstart " +
+      "targetend alignmentlength matches score score targetdescription queryframe  queryframe queryframe " +
+      "significance significance > #{name}.nr.btab")
   system("bzip2 #{name}.nr.btab")
 end
 
@@ -137,7 +143,10 @@ if (!File.exist?(name + ".cog.tab.bz2"))
     buildTimeLogicDB(opt.user, opt.password, opt.server, opt.cog, "cog")
   end
   STDERR.printf("Creating %s...\n", name + ".cog.tab,bz2")
-  system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 -max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab -field querylocus querylength targetlength targetlocus targetdescription querystart queryend targetstart targetend score significance > #{name}.cog.tab")
+  system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 " +
+    "-max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} " + 
+    "-output_format tab -field querylocus querylength targetlength targetlocus targetdescription querystart " + 
+    "queryend targetstart targetend score significance > #{name}.cog.tab")
   system("bzip2 #{name}.cog.tab")
 end
 
@@ -162,4 +171,6 @@ if (!File.exists?(name + ".tmhmm.bz2"))
 end
 
 STDERR.printf("Starting summary pipeline...\n")
-system("transporter_annotation.pl -p #{name} -z #{library} -t #{name}.trans.btab.bz2 -c #{name}.cog.tab.bz2 -h #{name}.hmm.bz2 -m #{name}.tmhmm.bz2 -s #{name}.pep -n #{name}.nr.btab.bz2 -v #{opt.verbose} -u #{cluster} > #{name}.transporter_annotation.txt 2> #{name}.warnings")
+system("transporter_annotation.pl -p #{name} -z #{library} -t #{name}.trans.btab.bz2 -c #{name}.cog.tab.bz2 " +
+  "-k #{opt.keyword} -h #{name}.hmm.bz2 -m #{name}.tmhmm.bz2 -s #{name}.pep -n #{name}.nr.btab.bz2 -v #{opt.verbose} "+
+    " -u #{cluster} > #{name}.transporter_annotation.txt 2> #{name}.warnings")
