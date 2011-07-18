@@ -149,7 +149,56 @@ $cog_list  = "$ENV{'TGG'}/PEP/transporter_faa/cog_fid.list";
     'transposase'
 );
 
-@false_cluster_array = ('CAM_CL_1084');
+# keywords that qinghu used when annotating indian ocean
+@qinghu_orig = (
+    "oxidoreductase",                  "inclusion protein",
+    "calcineurin",                     "calmodulin",
+    "polyductin",                      "fibrocystin",
+    "NLI interacting factor",          "WD-40 repeat",
+    "WD-repeat",                       "WD repeat",
+    "WD40",                            "Tetratricopeptide",
+    "SLEI family",                     "transcription termination",
+    "excinuclease",                    "diguanylate cyclase",
+    "ComB",                            "CG15040",
+    "TPR repeat",                      "TPR-repeat",
+    "gliadin",                         "extensin",
+    "normocyte",                       "mucin",
+    "VrrB",                            "interaptin",
+    "retinoblastoma",                  "fizzy",
+    "Lissencephaly",                   "PRL1",
+    "coatomer",                        "transducin",
+    "zinc finger",                     "glutaredoxin",
+    "EF-hand",                         "clumping factor",
+    "Elongation factor",               "GCN20",
+    "LIM factor",                      "sperm-associated",
+    "ribonucleoprotein",               "coronin",
+    "RNA helicase",                    "phototropin",
+    "kinesin",                         "ubiquitin",
+    "loricrin",                        "RNase L inhibitor",
+    "STI1",                            "chemotaxis",
+    "ribosylation",                    "tetratricopeptide repeat",
+    "OEP16",                           "lipoxygenase",
+    "FRAS1",                           "two-component",
+    "LysM",                            "esterase",
+    "peptidase",                       "Caltractin",
+    "ehydrogenase",                    "ribonuclease",
+    "methylase",                       "peroxidase",
+    "initiation factor",               "transcriptional regulator",
+    "cytochrome c assembly",           "cytochrome c biogenesis",
+    "integrase",                       "flagellum",
+    "grpE",                            "nitrogenase",
+    "starvation",                      "Ankyrin",
+    "Sigma",                           "racemase",
+    "partition",                       "gyrase",
+    "DNA repair",                      "AidA",
+    "serine/threonine-protein kinase", "ribosylation",
+    "tetratricopeptide repeat",        "OEP16",
+    "lipoxygenase",                    "FRAS1",
+    "Caltractin",                      "centrin",
+    "transposase"
+  );
+
+  @false_cluster_array = ('CAM_CL_1084');
 
 $OID = $opt_i;
 open_it( IN, "$fid_list" );
@@ -409,14 +458,15 @@ foreach $transporter ( keys %transporter_hash ) {
         #check for false hit from nraa top hits
         $false_flag = 0;
         foreach $false_key_word (@false_nraa_array) {
-            if ( $transporter_hash{$transporter}{"nraa"} =~ /$false_key_word/ )
-            {
-                printf STDERR (
+                if ( $transporter_hash{$transporter}{"nraa"} =~
+                      /$false_key_word/ )
+                  {
+                      printf STDERR (
 "Deleting nraa support for %s because it hits false keyword %s\n",
-                    $transporter, $false_key_word
-                );
-                $false_flag = 1;
-            }
+                          $transporter, $false_key_word
+                      );
+                      $false_flag = 1;
+                }
         }
     }
 
@@ -476,7 +526,6 @@ foreach $transporter ( keys %transporter_hash ) {
 
     $family = "";
 }
-
 
 ###########################
 #Subfunctions
