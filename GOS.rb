@@ -88,12 +88,14 @@ end
 
 # return site name based on sample
 def siteName(sample)
-  sample.gsub!("GS-","GS") if sample =~/GS-/
-  sample.gsub!(/^0[0-9]+-/,"") if sample =~/^0[0-9]+-/
-  sample.gsub!("IOSM","") if sample =~/IOSM/
-  sample.gsub!("IOLG","") if sample =~/IOLG/
-  sample.gsub!("IOVIR","") if sample =~/IOVIR/
-  return sample.split("-").first
+  s = sample
+  s = s.gsub("GS0","GS")
+  s = s.gsub("GS-","GS")
+  s = s.gsub(/^0[0-9]+-/,"")
+  s = s.gsub("IOSM","")
+  s = s.gsub("IOLG","") 
+  s = s.gsub("IOVIR","") 
+  return s.split("-").first
 end
 
 # compute counts of peptides in different samples and filters

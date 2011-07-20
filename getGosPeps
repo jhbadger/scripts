@@ -37,22 +37,32 @@ datasets = db.select("SELECT dataset FROM dataset WHERE dataset NOT LIKE '%.v2'"
 
 
 ARGV.each do |site|
-  if (opt.filter)
-    out = File.new(site + "_" + opt.filter.to_s + ".pep", "w")
-  else
-    out = File.new(site + ".pep", "w")
-  end
+  seen = Hash.new
+  outName = site
+  outName += "_" + opt.cl.split("=").last.gsub("'","") if (opt.cl)
+  outName += "_" + opt.filter.to_s if (opt.filter) 
+  out = File.new(outName + ".pep", "w")
   datasets.each do |dataset|
     siteName = siteName(dataset)
     filter = classifySample(dataset)
-    if (site == siteName && (!opt.filter? || opt.filter == filter))
+    if (site == siteName)
+      next if opt.filter && opt.filter != filter
+      count = 0
       query = "SELECT sequence.seq_name, sequence FROM sequence"
       query += " JOIN classification ON classification.seq_name = sequence.seq_name" if (opt.cl)
       query += " AND classification.dataset = sequence.dataset" if (opt.cl)
       query += " WHERE sequence.dataset = '#{dataset}'"
       query += " AND #{opt.cl}" if (opt.cl)
       db.select(query).each do |row|
-        out.printf(">%s\n%s", row.seq_name, row.sequence.gsub(Regexp.new(".{1,60}"), "\\0\n"))
+        if (!seen[row.seq_name])
+          out.printf(">%s\n%s", row.seq_name, row.sequence.gsub(Regexp.new(".{1,60}"), "\\0\n"))
+         count += 1
+         seen[row.seq_name] = true
+       end
+      end
+      if (count > 0)
+        STDERR.printf("Processed %d peptides from %s as %s (%s)\n", 
+        			 count,dataset, siteName, filter)
       end
     end
   end
