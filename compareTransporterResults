@@ -1,15 +1,16 @@
 #!/usr/bin/env ruby
 
 
-if (ARGV.size != 2)
-  STDERR.printf("Usage: %s old-transporters.txt new-transporters.txt\n", File.basename($0))
+if (ARGV.size != 3)
+  STDERR.printf("Usage: %s old-transporters.txt new-transporters.txt new-warnings\n", File.basename($0))
   exit(1)
 end
 
-old, newer = ARGV
+old, newer, warn = ARGV
 
 oldHash = Hash.new
 newerHash = Hash.new
+warnHash = Hash.new
 
 File.new(old).each do |line|
   oldHash[line.split("\t").first] = line
@@ -19,12 +20,20 @@ File.new(newer).each do |line|
   newerHash[line.split("\t").first] = line
 end
 
+File.new(warn).each do |line|
+  words = line.split("for").last.split(" ")
+  next if words.first == "Can't"
+  warnHash[words.first] = words.last
+end
 
 olduniq = oldHash.keys - newerHash.keys
 neweruniq = newerHash.keys - oldHash.keys
+newerkey = olduniq.size - (olduniq - warnHash.keys).size
 
 STDERR.printf("%d uniq to %s. %d unique to %s\n", olduniq.size, old,
   neweruniq.size, newer)
+
+STDERR.printf("%d of the %d were due to keywords\n", newerkey, olduniq.size)
 
 
 out = File.new(old + "_uniq.txt", "w")
@@ -38,3 +47,5 @@ neweruniq.sort.each do |key|
   out.print newerHash[key]
 end
 out.close
+
+p warnHash.values.sort.uniq
