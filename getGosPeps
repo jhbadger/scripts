@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+
+require 'dm-core'
+require 'optparse'
+require 'ostruct'
+require 'GOS'
+require 'csv'
+
+opt = OpenStruct.new
+opt.host = "mysql://access:access@mysql-lan-pro"
+opt.storage = "gosii_io_apis"
+opt.filter = false
+opt.cl = nil
+
+o = OptionParser.new
+o.banner << " site [..site...]"
+o.on("-c ", "--classification ", String, "classification string like kingdom = 'Bacteria'") {|t| opt.cl = t}
+o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
+o.on("-e ", "--expression ", String, "include datasets matching substring") {|t| opt.exp = t}
+o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
+o.on("-z ", "--filter ", Float, "limit to a specific filter") {|t| opt.filter = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+DataMapper.setup(:default, opt.host + "/" + opt.storage)
+db = repository(:default).adapter
+datasets = db.select("SELECT dataset FROM dataset WHERE dataset NOT LIKE '%.v2'")
+
+
+ARGV.each do |site|
+  if (opt.filter)
+    out = File.new(site + "_" + opt.filter.to_s + ".pep", "w")
+  else
+    out = File.new(site + ".pep", "w")
+  end
+  datasets.each do |dataset|
+    siteName = siteName(dataset)
+    filter = classifySample(dataset)
+    if (site == siteName && (!opt.filter? || opt.filter == filter))
+      query = "SELECT sequence.seq_name, sequence FROM sequence"
+      query += " JOIN classification ON classification.seq_name = sequence.seq_name" if (opt.cl)
+      query += " AND classification.dataset = sequence.dataset" if (opt.cl)
+      query += " WHERE sequence.dataset = '#{dataset}'"
+      query += " AND #{opt.cl}" if (opt.cl)
+      db.select(query).each do |row|
+        out.printf(">%s\n%s", row.seq_name, row.sequence.gsub(Regexp.new(".{1,60}"), "\\0\n"))
+      end
+    end
+  end
+  out.close
+end
