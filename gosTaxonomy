@@ -62,7 +62,7 @@ datasets.each do |dataset|
     elsif row.ord =~/Rhodobacterales/
       taxon = "Rhodobacterales"
     elsif row["class"] === "Alphaproteobacteria"
-      taxon = "Rhodobacterales"
+      taxon = "Other Alphaproteobacteria"
     elsif row["genus"] =~/Prochlorococcus/
       taxon = "Prochlorococcus"
     elsif row["class"] == "Gammaproteobacteria"
