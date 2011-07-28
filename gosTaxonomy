@@ -1,0 +1,107 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'datamapper'
+require 'csv'
+require 'GOS'
+
+
+opt = OpenStruct.new
+opt.host = "mysql://access:access@mysql-lan-pro"
+opt.missing = false
+opt.nocontig = false
+opt.limit = false
+opt.where = ""
+
+o = OptionParser.new
+o.banner << " database"
+o.on("-e ", "--expression ", String, "expression to select datasets") {|t| opt.where = "WHERE dataset LIKE '%" + t + "%'"}
+o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+DataMapper.setup(:default, opt.host + "/" + ARGV.first)
+db = repository(:default).adapter
+
+datasets = db.select("SELECT DISTINCT dataset FROM classification #{opt.where}")
+
+taxa = ["SAR11", "Other Alphaproteobacteria", "Prochlorococcus", "Gammaproteobacteria" , 
+    "Bacteroidetes/Chlorobi" , "Actinobacteria" , "Firmicutes" , "Other" , "Unknown Bacteria" ,
+    "Deltaproteobacteria" , "Chlamydiae/Verrucomicrobia" , "Betaproteobacteria" , 
+    "Epsilonproteobacteria" , "Spirochaetes" , "Synechococcus" , "Thermotogae" ,
+    "Planctomycetes" , "Other Cyanobacteria" , "Other Proteobacteria"]
+filterCount = {0.1 => 0, 0.22 => 0, 0.8 => 0, 3.0 => 0, "VIR" => 0}
+
+taxonCount = Hash.new
+taxa.collect {|x| taxonCount[x] = Hash.new;taxonCount[x][0.1]=0;taxonCount[x][0.22]=0;taxonCount[x][0.8]=0;
+  taxonCount[x][3.0]=0;taxonCount[x]["VIR"]=0}
+
+datasets.each do |dataset|
+  STDERR.printf("Processing %s...\n", dataset)
+  filter = classifySample(dataset)
+  db.select("SELECT kingdom, phylum, class, ord, family, genus FROM classification WHERE dataset = '#{dataset}'").each do |row|
+    if row.genus =~/Pelagibacter/
+      taxonCount["SAR11"][filter] += 1
+    elsif row["class"] === "Alphaproteobacteria"
+      taxonCount["Other Alphaproteobacteria"][filter] += 1
+    elsif row["family"] =~/Prochlorococcus/
+      taxonCount["Prochlorococcus"][filter] += 1
+    elsif row["class"] == "Gammaproteobacteria"
+      taxonCount["Gammaproteobacteria"][filter] += 1
+    elsif row.phylum =~/Bacteroidetes|Chlorobi/
+      taxonCount["Bacteroidetes/Chlorobi"][filter] += 1
+    elsif row.phylum == "Firmicutes"
+        taxonCount["Firmicutes"][filter] += 1
+    elsif row.phylum == "Actinobacteria"
+      taxonCount["Actinobacteria"][filter] += 1
+    elsif row.phylum == "Actinobacteria"
+      taxonCount["Actinobacteria"][filter] += 1
+    elsif row["class"] == "Betaproteobacteria"
+      taxonCount["Betaproteobacteria"][filter] += 1
+    elsif row["class"] == "Deltaproteobacteria"
+      taxonCount["Deltaproteobacteria"][filter] += 1
+    elsif row["class"] == "Epsilonproteobacteria"
+      taxonCount["Epsilonproteobacteria"][filter] += 1
+    elsif row.phylum == "Proteobacteria"
+      taxonCount["Other Proteobacteria"][filter] += 1
+    elsif row.phylum == "Spirochaetes"
+      taxonCount["Spirochaetes"][filter] += 1  
+    elsif row.phylum == "Thermotogae"
+      taxonCount["Thermotogae"][filter] += 1
+    elsif row.phylum == "Planctomycetes"
+      taxonCount["Planctomycetes"][filter] += 1
+    elsif row.phylum =~/Chlamydiae|Verrucomicrobia/
+      taxonCount["Chlamydiae/Verrucomicrobia"][filter] += 1
+    elsif row.ord =~/Synechococcus/ || row.genus =~/Synechococcus/
+      taxonCount["Synechococcus"][filter] += 1
+    elsif row.phylum == "Cyanobacteria"
+      taxonCount["Other Cyanobacteria"][filter] += 1
+    elsif row.genus =~/Unknown/
+      taxonCount["Unknown Bacteria"][filter] += 1
+    else
+      taxonCount["Other"][filter] += 1
+    end
+    filterCount[filter] += 1
+  end
+end
+
+print ([] + taxa).to_csv
+filterCount.keys.each do |filter|
+  if filterCount[filter] > 0
+    row = [filter]
+    taxa.each do |taxon|
+      row.push(sprintf("%3.1f%%", taxonCount[taxon][filter]*100.0/filterCount[filter]))
+    end
+    print row.to_csv
+  end
+end
