@@ -16,7 +16,7 @@ opt.where = ""
 
 o = OptionParser.new
 o.banner << " database"
-o.on("-e ", "--expression ", String, "expression to select datasets") {|t| opt.where = "WHERE dataset LIKE '%" + t + "%'"}
+o.on("-e ", "--expression ", String, "expression to select datasets") {|t| opt.where = " AND dataset LIKE '%" + t + "%'"}
 o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
 begin
   o.parse!
@@ -33,13 +33,14 @@ end
 DataMapper.setup(:default, opt.host + "/" + ARGV.first)
 db = repository(:default).adapter
 
-datasets = db.select("SELECT DISTINCT dataset FROM classification #{opt.where}")
+datasets = db.select("SELECT DISTINCT dataset FROM classification WHERE kingdom = 'Bacteria' #{opt.where}")
 
 taxa = ["SAR11", "Other Alphaproteobacteria", "Prochlorococcus", "Gammaproteobacteria" , 
-    "Bacteroidetes/Chlorobi" , "Actinobacteria" , "Firmicutes" , "Other" , "Unknown Bacteria" ,
-    "Deltaproteobacteria" , "Chlamydiae/Verrucomicrobia" , "Betaproteobacteria" , 
-    "Epsilonproteobacteria" , "Spirochaetes" , "Synechococcus" , "Thermotogae" ,
-    "Planctomycetes" , "Other Cyanobacteria" , "Other Proteobacteria"]
+    "Bacteroidetes/Chlorobi" , "Rhodobacterales", "Actinobacteria" , "Firmicutes" , 
+    "Other" , "Unknown Bacteria" ,"Deltaproteobacteria" , "Chlamydiae/Verrucomicrobia" , 
+    "Betaproteobacteria" , "Epsilonproteobacteria" , "Spirochaetes" , 
+    "Synechococcus" , "Thermotogae" ,"Planctomycetes" , "Other Cyanobacteria" , 
+    "Other Proteobacteria"]
 filterCount = {0.1 => 0, 0.22 => 0, 0.8 => 0, 3.0 => 0, "VIR" => 0}
 
 taxonCount = Hash.new
@@ -52,6 +53,8 @@ datasets.each do |dataset|
   db.select("SELECT kingdom, phylum, class, ord, family, genus FROM classification WHERE dataset = '#{dataset}'").each do |row|
     if row.genus =~/Pelagibacter/
       taxonCount["SAR11"][filter] += 1
+    elsif row.ord =~/Rhodobacterales/
+      taxonCount["Rhodobacterales"][filter] += 1
     elsif row["class"] === "Alphaproteobacteria"
       taxonCount["Other Alphaproteobacteria"][filter] += 1
     elsif row["family"] =~/Prochlorococcus/
@@ -95,7 +98,7 @@ datasets.each do |dataset|
   end
 end
 
-print ([] + taxa).to_csv
+print ([""] + taxa).to_csv
 filterCount.keys.each do |filter|
   if filterCount[filter] > 0
     row = [filter]
