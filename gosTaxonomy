@@ -54,7 +54,7 @@ datasets.each do |dataset|
     if row.genus =~/Pelagibacter/
       taxonCount["SAR11"][filter] += 1
     elsif row.ord =~/Rhodobacterales/
-      taxonCount["Rhodobacterales"] += 1
+      taxonCount["Rhodobacterales"][filter] += 1
     elsif row["class"] === "Alphaproteobacteria"
       taxonCount["Other Alphaproteobacteria"][filter] += 1
     elsif row["family"] =~/Prochlorococcus/
