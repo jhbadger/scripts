@@ -7,7 +7,7 @@ require 'apis'
 opt = OpenStruct.new
 
 $VERBOSE = false
-opt.min = 45
+opt.min = 50
 
 ARGV.options {|opts|
   opts.banner << " fasta"
