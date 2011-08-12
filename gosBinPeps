@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'Apis_Active'
+
+
+class Classification < ActiveRecord::Base 
+  set_primary_key :id
+end
+
+opt = OpenStruct.new
+opt.host = "localhost"
+opt.user = "jbadger"
+opt.password = "plankton"
+
+o = OptionParser.new
+o.banner << " db"
+o.on("-h ", "--host ", String, "database host (default #{opt.host})") {|h| opt.host = h}
+o.on("-u ", "--user ", String, "database user (default #{opt.user})") {|h| opt.user = h}
+o.on("-p ", "--password ", String, "database password (default #{opt.password})") {|h| opt.password = h}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+db = ARGV.first
+
+ActiveRecord::Base.establish_connection(:adapter  => 'mysql',
+:host => opt.host, :username=>opt.user, :password=>opt.password,
+:database=>db)
+
+files = Hash.new
+
+Classification.where(:kingdom => "Bacteria").find_each do |row|
+  gos = row.gos_taxonomy.gsub("/","_").gsub(" ","_")
+  files[gos] = File.new(gos + ".txt", "w") if (!files[gos])
+  files[gos].printf("%s\t%s\t%s\n", row.seq_name, row.dataset, row.taxonomy)
+end
+
+files.keys.each {|key|files[key].close}
