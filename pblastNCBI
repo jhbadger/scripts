@@ -18,7 +18,7 @@ opt.gridSize = nil
 $VERBOSE = nil
 
 
-ARGV.options {|opts|
+ARGV.options do |opts|
   opts.banner << " db fasta [fasta...]"
   opts.on("-b ", "--blast ", String, 
           "choose BLAST to use (default #{opt.blast})") {|t| opt.blast = t}
@@ -43,7 +43,7 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-}
+end
 
 if (opt.project.nil?)
   STDERR.printf("A project is required\n")
@@ -63,11 +63,10 @@ end
 
 blast = "blastall -p #{opt.blast} -d #{db} -b#{opt.maxHits}"
 blast += " -v#{opt.maxHits} -e#{opt.evalue} -i "
-
+blast = [blast, "btab"] if (opt.btab)
 ARGV.each do |file|
   opt.gridSize = `grep -c ">" #{file}`.to_i / 1000 if (opt.gridSize.nil?)
   opt.gridSize = 150 if opt.gridSize == 0
-  bout = File.basename(file) + "_vs_" + File.basename(db) + ".#{opt.blast}"
   if (!File.exists?(file))
     STDERR.printf("File %s does not exist!\n", file)
     next
@@ -84,5 +83,11 @@ ARGV.each do |file|
     count += 1
   end
   out.close
-  grid.submit
+  grid.submit(sync = true)
+  grid.cleanup
+  bout = File.basename(file) + "_vs_" + File.basename(db) + ".#{opt.blast}"
+  bout += ".btab" if (opt.btab)
+  berr = File.basename(file) + "_vs_" + File.basename(db) + ".err"
+  File.rename("blastall.out", bout)
+  File.rename("blastall.err", berr)
 end

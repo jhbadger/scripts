@@ -7,7 +7,7 @@ require 'bio'
 opt = OpenStruct.new
 
 opt.top = false
-ARGV.options {|opts|
+ARGV.options do |opts|
   opts.banner << " blast-file [...blast-file...]"
   opts.on("-t", "--top","only show top hit") {opt.top = true}    
   begin
@@ -17,14 +17,16 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
-}
+end
+
+ARGV.push(STDIN) if ARGV.empty?
 
 ARGV.each do |blast|
-  out = File.new(blast + ".btab", "w")
+  if (blast == STDIN)
+    out = STDOUT
+  else
+    out = File.new(blast + ".btab", "w")
+  end
   Bio::Blast::Default::Report.open(blast, "r").each do |query|
     fields = [""]*21
     fields[0] = query.query_def.split(" ").first
@@ -56,7 +58,7 @@ ARGV.each do |blast|
         break if opt.top
       end
     rescue
-      STDERR.printf("Skipping query %s...\n", fields[0])
+      STDERR.printf("Skipping query %s...\n", fields[0]) if (out != STDOUT)
     end
   end
   out.close
