@@ -2,22 +2,21 @@
 
 require 'ostruct'
 require 'optparse'
-require 'rubygems'
 require 'bio'
+require 'SunGrid'
+
 opt = OpenStruct.new
 
 opt.project = nil
 opt.queue = "default"
 opt.gridSize = nil
-opt.tmpdir = "/usr/local/scratch/#{ENV["USER"]}/"
 $VERBOSE = nil
 
 
-ARGV.options {|opts|
+ARGV.options do |opts|
   opts.banner << " hmm-db fasta [fasta...]"
-  opts.on("-d ", "--dir ", String,
-          "choose temp directory (default #{opt.tmpdir})") {|t| opt.tmpdir = t}
-  opts.on("-p", "--project ", String,  "JCVI project number") {|t| opt.project = t}
+  opts.on("-p", "--project ", String,  
+          "JCVI project number") {|t| opt.project = t}
   opts.on("-q ", "--queue ", String, 
 	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
   opts.on("-z ", "--size ", Integer,  
@@ -33,7 +32,7 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-}
+end
 
 if (opt.project.nil?)
   STDERR.printf("A project is required\n")
@@ -51,76 +50,21 @@ ARGV.each do |file|
   hout = File.basename(file) + "_vs_" + File.basename(db) + ".out"
   tblout = File.basename(file) + "_vs_" + File.basename(db) + ".tbl"
   domout = File.basename(file) + "_vs_" + File.basename(db) + ".dom"
-  Dir.mkdir(opt.tmpdir) if !File.exists?(opt.tmpdir)
-  hdir = opt.tmpdir + "/hmmdir/"
-  Dir.mkdir(hdir) if !File.exists?(hdir)
-  begin
-    File.chmod(0777, hdir)
-  rescue
-    STDERR << "User " << ENV["USER"] << "does not have permissions for " << hdir << "\n"
-   exit(1) 
-  end
-  begin
-    File.chmod(0755, Dir.pwd)
-  rescue
-    STDERR << "User " << ENV["USER"] << "does not have permissions for " << Dir.pwd << "\n"
-   exit(1) 
-  end	
-  seqName = hdir + hout + "_000001"
-  seqs = []
-  out = nil
-  count = 0
   if (!File.exists?(file))
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
+  hmm = "hmmscan --cut_tc -Z 15930 -o hmmscan_input.$SGE_TASK_ID.out "
+  hmm += "--tblout hmmscan_input.$SGE_TASK_ID.tbl "
+  hmm += "--domtblout hmmscan_input.$SGE_TASK_ID.dom db "
+  grid = SunGrid.new(hmm, opt.project, "4G")
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
     if (count % opt.gridSize == 0)
       out.close if (!out.nil?)
-      out = File.new(seqName + ".seq", "w")
-      seqs.push(seqName.dup)
-      seqName.succ!
+      out = File.new(grid.next, "w")
     end 
     out.print seq
     count += 1
   end
   out.close
-  seqs.each do |seq|
-    hmm = "hmmscan --cut_tc -Z 15930 -o #{seq}.out "
-    hmm += "--tblout #{seq}.tbl --domtblout #{seq}.dom "
-    hmm += db + " " + seq + ".seq"
-    hmm += ";rm #{seq}.seq"
-    if (opt.queue != "default")
-      queue = "-l \"#{queue},memory=4G\""
-    else
-      queue = "-l \"memory=4G\""
-    end
-    qsub = "qsub -P #{opt.project} #{queue} -e hmm.err -cwd -o hmm.out "
-    qsub += "\"#{hmm}\""
-    system(qsub)
-  end
-  STDERR.printf("Waiting until jobs done\n")
-  while (Dir.glob(hdir+hout+"*.seq").size > 0)
-    sleep 30
-  end
-  outF=File.new(hout,"w")
-  tblF=File.new(tblout,"w")
-  domF=File.new(domout,"w")
-  seqs.sort.each do |seq|
-    File.new(seq + ".out").each do |line|
-      outF.print line
-    end
-    File.new(seq + ".tbl").each do |line|
-      tblF.print line
-    end
-    File.new(seq + ".dom").each do |line|
-      domF.print line
-    end
-    File.unlink(seq + ".out")
-    File.unlink(seq + ".tbl")
-    File.unlink(seq + ".dom")
-  end
-  outF.close
-  tblF.close
-  domF.close
 end
