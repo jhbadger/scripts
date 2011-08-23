@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+# routine to parse dc_show output
+def parseShow(output, server, user, pass)
+  status = ""
+  lines = []
+  output.split("\n").each do |line|
+    if (line =~/^Queued/)
+      status ="queued"
+    elsif (line =~ /^Running/)
+      status = "running"
+    elsif (line =~/^Completed/)
+      status = "completed"
+    elsif(line =~/^CLI|^CGI/)
+      job, u, group, p, desc = line.chomp.split(" ")
+      if (status == "running")
+        done = `dc_show -job #{job} -user #{user} -password #{pass} -server #{server}`
+        if (done =~/([0-9|\.]+\%)/)
+          status = status + " " + $1
+        end
+      end
+      if (status != "completed")
+        lines.push([job, user, server, status].join("\t"))
+      end
+    end
+  end
+  return lines
+end
+
+lines = {"tmlsrv1" => [], "tmlsrv2" => []}
+
+File.new("/home/jbadger/lib/tmpass.txt").each do |line|
+  user, pass = line.chomp.split("\t")
+  lines.keys.each do |server|
+    cmd = "dc_show -queue -user #{user} -password #{pass} -server #{server}"
+    lines[server] += parseShow(`#{cmd}`, server, user, pass)
+  end
+end
+
+print ["Job          ", "User", "Server", 
+      "Status     "].join("\t") + "\n"
+
+lines.keys.each do |server|
+  lines[server].sort.uniq.each do |line|
+    print line + "\n"
+  end
+end
+
