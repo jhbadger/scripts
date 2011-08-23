@@ -13,7 +13,7 @@ def parseShow(output, server, user, pass)
       status = "completed"
     elsif(line =~/^CLI|^CGI/)
       job, u, group, p, desc = line.chomp.split(" ")
-      if (status == "running")
+      if (status == "running" && u == user)
         done = `dc_show -job #{job} -user #{user} -password #{pass} -server #{server}`
         if (done =~/([0-9|\.]+\%)/)
           status = status + " " + $1
