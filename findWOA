@@ -1,0 +1,58 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'WOA'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " gos-sites.csv woa-db"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+
+gos, woa = ARGV
+
+ActiveRecord::Base.establish_connection(:adapter  => 'sqlite3',
+:database=>woa)
+
+headers = nil
+CSV.foreach(gos) do |row|
+  if (headers.nil?)
+    headers = row + ["Depth (m)", "Temperature (deg C)","Phosphate (umol/L)",
+      "Nitrate (umol/L)","Silicate (umol/L)","Oxygen (mL/L)","Salinity (unitless)"]
+    print headers.to_csv
+  else
+    lat, long, date, time, site, desc = row
+    lat = lat.to_f
+    long = long.to_f
+    month = date.split("/").first.to_i
+    depth = 0
+    row.push(depth)
+    hit = nil
+    dist = 0.5
+    while (!hit && dist < 3)
+      hit = Woa.where(:month => month, :depth => depth,
+        :lat => lat - dist .. lat + dist,
+        :long => long - dist .. long + dist).first
+      dist += 0.5
+    end
+    if (hit)
+      row.push(hit.temperature, hit.phosphate, hit.nitrate, 
+        hit.silicate, hit.oxygen, hit.salinity)
+    else
+      row += ["NA"]*6
+    end
+    print row.to_csv
+  end
+end

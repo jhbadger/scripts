@@ -1,37 +1,51 @@
 #!/usr/bin/env ruby
 
-require 'dm-core'
+require 'active_record'
+
 require 'optparse'
 require 'ostruct'
-require 'GOS'
 require 'csv'
 
+class Sequence < ActiveRecord::Base
+  has_one :transporter
+  has_one :newtransporter
+  has_one :gosgroup
+end
+
+class Transporter < ActiveRecord::Base
+  belongs_to :sequence
+  has_one :gosgroup, :through => :sequence
+end
+
+class Newtransporter < ActiveRecord::Base
+  belongs_to :sequence
+  has_one :gosgroup, :through => :sequence
+end
+
+class Gosgroup < ActiveRecord::Base
+  belongs_to :sequence
+end
+
+# connect using a url-style driver://user:password@server/database
+def connectDB(url)
+  token = "[a-z|0-9|A-Z|_|-]+"
+  if (url =~/(#{token}):\/\/(#{token}):(#{token})\@(#{token})\/(#{token})/)
+    driver, user, password, server, database = $1, $2, $3, $4, $5
+    ActiveRecord::Base.establish_connection(:adapter  => driver,
+    :host => server, :username=> user, :password=> password,
+    :database=> database)
+  else
+    STDERR << "can't parse " << url << "\n"
+    exit(1)
+  end
+end
+
 opt = OpenStruct.new
-opt.all = false
-opt.host = "mysql://access:access@mysql-lan-pro"
-opt.storage = "gosii_io_apis"
-opt.exp = false
-opt.filter = false
-opt.genome = false
-opt.file = false
-opt.lib = false
-opt.libfilter=false
-opt.order = false
-opt.transporter = "transporters"
+opt.host = "mysql://jbadger:plankton@localhost"
 
 o = OptionParser.new
-o.banner << " [dataset ... dataset]"
-o.on("-a", "--all", "include all datasets in database (#{opt.all})") {opt.all = true}
+o.banner << " table"
 o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
-o.on("-e ", "--expression ", String, "include datasets matching substring") {|t| opt.exp = t}
-o.on("-g", "--genomeEquiv", "divide by genome equivilents") {opt.genome = true}
-o.on("-f ", "--file ", String, "load datasets from file") {|t| opt.file = t}
-o.on("-l", "--lib", "group by library not taxonomy") {opt.lib = true}
-o.on("-m", "--libfilter", "group by library+filter not taxonomy") {opt.libfilter = true}
-o.on("-o ", "--order ", String, "order by CSV file first field") {|t| opt.order = t}
-o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
-o.on("-t ", "--transporter ", String, "transporter table (default #{opt.transporter})") {|t| opt.transporter = t}
-o.on("-z ", "--filter ", Float, "limit to a specific filter") {|t| opt.filter = t}
 begin
   o.parse!
 rescue
@@ -39,156 +53,34 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size < 1 && (!opt.all && !opt.exp && !opt.file))
+if (ARGV.size < 1)
   STDERR << o
   exit(1)
 end
 
-DataMapper.setup(:default, opt.host + "/" + opt.storage)
 
-order = []
-if (opt.order)
-  CSV.foreach(opt.order) do |row|
-    order.push(row.first.rstrip) if !row.first.nil? && row.first != ""
-  end
-end
+connectDB(opt.host + "/" + ARGV.first)
+families = Transporter.select("distinct(family)").collect{|x| x.family}.sort
+datasets = Sequence.select("distinct(dataset)").collect{|x| x.dataset}.sort
+taxa = Gosgroup.select("distinct(taxon)").collect{|x| x.taxon}.sort
 
-if (opt.file)
-  File.new(opt.file).each do |line|
-    ARGV.push(line.chomp)
-  end
-elsif (opt.all || opt.exp)
-  repository(:default).adapter.select("select dataset from dataset").each do |dataset|
-    ARGV.push(dataset) if (!opt.exp || dataset =~/#{opt.exp}/)
-  end
-end
-
-inClause = "("
-ARGV.each do |dataset|
-  inClause += "'" + dataset + "',"
-end
-inClause.chop!
-inClause += ")"
-
-groups = Hash.new
-families = Hash.new
-
-p inClause
-exit(1)
-STDERR.printf("Querying datasets...\n")
-query = "SELECT DISTINCT mtLibrary FROM #{opt.transporter} WHERE mtLibrary IN #{inClause}"
-missing = ARGV - repository(:default).adapter.select(query)
-if (!missing.empty?)
-  missing.each do |miss|
-    STDERR << "Missing " << miss << "\n"
-  end
-end
-
-names = Hash.new
-begin
-  query = "SELECT fFID, fName FROM transporter_info"
-  repository(:default).adapter.select(query).each do |row|
-    names[row.f_fid] = row.f_name
-  end
-rescue
-  STDERR << "Skipping loading transporter names..."
-end
-
-STDERR.printf("Querying transporter info...\n")
-query = "SELECT mtName, mtProject, mtLibrary, mtFid, phylum, class as cl, ord, family, genus FROM classification "
-query += "JOIN transporters ON mtName=seq_name WHERE mtLibrary IN #{inClause}"
-
-repository(:default).adapter.select(query).each do |row|
-  filter = classifySample(row.mt_library)
-  next if (opt.filter && filter != opt.filter)
-  group = row.phylum
-  family = row.mt_fid
-  next if family.nil? || family == "" 
-  next if (opt.order && !order.include?(family))
-  if (opt.lib)
-    group = row.mt_project
-  elsif(opt.libfilter)
-    group = row.mt_project + "_" + filter.to_s
-    group.gsub!("IOSM","")
-    group.gsub!("IOLG","")
-  else
-    if (row.genus =~/Pelagibacter/)
-      group = "Pelagibacter"
-    elsif (row.family =~/Prochlorococcus/)
-      group = "Prochlorococcus"
-    elsif (row.ord =~/Synechococcus/)
-      group = "Synechococcus"
-    elsif (row.cl == "Alphaproteobacteria")
-      group = "Other alphaproteobacteria"
-    elsif (group == "Cyanobacteria")
-      group = "Other cyanobacteria"
-    elsif (group =~/Bacteroidetes|Chlorobi/)
-      group = "Bacteroidetes/Chlorobi"
-    elsif (row.cl =~/Betaproteobacteria/)
-      group = "Betaproteobacteria"
-    elsif (row.cl =~/Gammaproteobacteria/)
-      group = "Gammaproteobacteria"
-    elsif (row.cl =~/Deltaproteobacteria/)
-      group = "Deltaproteobacteria"
-    elsif (row.cl =~/Epsilonproteobacteria/)
-      group = "Epsilonproteobacteria"
-    elsif (group =~/Proteobacteria/)
-      group = "Other proteobacteria"
-    elsif (group =~/Rhodobacterales/)
-      group = "Rhodobacterales"
-    elsif (group =~/Actinobacteria/)
-      group = "Actinobacteria"  
-    elsif (group =~/Firmicutes/)
-      group = "Firmicutes" 
-    elsif (group =~/Chlamydiae|Verrucomicrobia/)
-      group = "Chlamydiae/Verrucomicrobia"
-    elsif (group =~/Spirochaetes/)
-      group = "Spirochaetes"
-    elsif (group =~/Thermotogae/)
-      group = "Thermotogae"
-    elsif (group =~/Planctomycetes/)
-      group = "Planctomycetes"  
-    elsif (group =~/Unknown/)
-      group = "Unknown bacteria" 
-    else 
-      group = "Other bacteria"
-    end
-  end
-  groups[group] = Hash.new if groups[group].nil?
-  groups[group][family] = 0 if groups[group][family].nil?
-  groups[group][family] += 1
-  families[family] = 0 if families[family].nil?
-  families[family] += 1
-end
-
-if (names.empty?)
-  header = [""]
-else
-  header = ["", "Transporter Name"]
-end
-
-header += groups.keys.sort + groups.keys.sort.collect{|x| "% " + x}
+header = [""] + taxa
 print header.to_csv
-order = families.keys.sort if order.empty?
-order.each do |family|
-  percents = []
-  row = [family]
-  row.push(names[family].to_s) if (!names.empty?)
-  groups.keys.sort.each do |group|
-    groups[group][family] = 0 if groups[group][family].nil?
-    if (opt.libfilter)
-      site, filter = group.split("_")
-      filter = filter.to_f
-      groups[group][family] /= ($genomeEquiv[site][filter].to_f) if opt.genome
-    end
-    row.push(groups[group][family])
-    begin
-      percents.push((1000*groups[group][family] / families[family])/10.0)
-    rescue
-      percents.push(0)
+
+datasets.each do |dataset|
+  families.each do |family|
+    next if family == ""
+    ["old", "new"].each do |condition|
+      line = [dataset + " " + family + " " + condition]
+      taxa.each do |taxon|
+        if (condition == "old")
+          line.push(Sequence.joins(:transporter, :gosgroup).where("gosgroups.taxon = ? AND transporters.family = ?",taxon, family).count)
+        else
+          line.push(Sequence.joins(:newtransporter, :gosgroup).where("gosgroups.taxon = ? AND newtransporters.family = ?",taxon, family).count)
+        end
+      end
+      print line.to_csv
     end
   end
-  row += percents
-  print row.to_csv
 end
 

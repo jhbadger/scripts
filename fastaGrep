@@ -33,7 +33,7 @@ seen = Hash.new
 if (opt.file)
   express = false
   File.new(opt.file).each do |line|
-    seen[line.chomp] = true
+    seen[line.chomp.split(" ").first] = true
   end
 else
   express = ARGV.shift
@@ -46,10 +46,10 @@ ARGV.each do |fasta|
     next if (opt.unique && printed[seq.entry_id])
     if (express)
       if (!opt.inverse)
-        print seq if (seq.definition =~/#{express}/)
+        print seq if (seq.definition == express)
         printed[seq.entry_id]=true
       else
-        print seq if (seq.definition !~/#{express}/)
+        print seq if (seq.definition != express)
         printed[seq.entry_id]=true
       end
     else

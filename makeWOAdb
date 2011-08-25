@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+
+num = 1
+
+class Array
+  def avg
+    return self.reduce(:+).to_f / size
+  end
+end
+
+1.upto(12) do |i|
+  month = i.to_s
+  month = "0" + month if i < 10
+  1.upto(17) do |j|
+    depth = j.to_s
+    depth = "0" + depth if j < 10
+    avg = Hash.new
+    Dir.glob("*_#{month}_#{depth}_1d.csv").each do |file|
+      var = file.split("_").first
+      File.new(file).each do |line|
+        if (line !~/^#/)
+          lat, long, depth, value = line.chomp.split(",")
+          lat = lat.to_f.round
+          long = long.to_f.round
+          lat = lat - 1 if (lat % 2 == 1)
+          long = long - 1 if (long % 2 == 1)
+          key = lat.to_s + " " + long.to_s
+          avg[key] = Hash.new if (!avg[key])
+          avg[key][var] = [] if (!avg[key][var])
+          value = value.to_f
+          avg[key][var].push(value)
+        end
+      end
+    end
+    avg.keys.each do |key|
+      lat, long = key.split(" ")
+      printf("%d\t%d\t%d\t%d\t%d", num, month.to_i, depth.to_i, lat, long)
+      avg[key].keys.sort.each do |var|
+        printf("\t%.3f",avg[key][var].avg)
+      end
+      printf("\n")
+      num += 1
+    end
+  end
+end
