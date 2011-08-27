@@ -29,20 +29,20 @@ ActiveRecord::Base.establish_connection(:adapter  => 'sqlite3',
 headers = nil
 CSV.foreach(gos) do |row|
   if (headers.nil?)
-    headers = row + ["Depth (m)", "Temperature (deg C)","Phosphate (umol/L)",
-      "Nitrate (umol/L)","Silicate (umol/L)","Oxygen (mL/L)","Salinity (unitless)"]
+    headers = row + ["Temperature (deg C)","Phosphate (umol/L)", "Nitrate (umol/L)",
+      "Silicate (umol/L)","Oxygen (mL/L)","Salinity (unitless)"]
     print headers.to_csv
   else
-    lat, long, date, time, site, desc = row
+    lat, long, date, time, site, desc, depth = row
     lat = lat.to_f
     long = long.to_f
     month = date.split("/").first.to_i
-    depth = 0
-    row.push(depth)
+    depth = depth.to_i
     hit = nil
     dist = 0.5
     while (!hit && dist < 3)
-      hit = Woa.where(:month => month, :depth => depth,
+      hit = Woa.where(:month => month, 
+        :depth => depth - 5 .. depth + 5,
         :lat => lat - dist .. lat + dist,
         :long => long - dist .. long + dist).first
       dist += 0.5

@@ -8,16 +8,11 @@ require 'csv'
 
 class Sequence < ActiveRecord::Base
   has_one :transporter
-  has_one :newtransporter
   has_one :gosgroup
 end
 
 class Transporter < ActiveRecord::Base
-  belongs_to :sequence
-  has_one :gosgroup, :through => :sequence
-end
-
-class Newtransporter < ActiveRecord::Base
+  set_table_name "newtransporters"
   belongs_to :sequence
   has_one :gosgroup, :through => :sequence
 end
@@ -60,27 +55,50 @@ end
 
 
 connectDB(opt.host + "/" + ARGV.first)
-families = Transporter.select("distinct(family)").collect{|x| x.family}.sort
-datasets = Sequence.select("distinct(dataset)").collect{|x| x.dataset}.sort
-taxa = Gosgroup.select("distinct(taxon)").collect{|x| x.taxon}.sort
 
-header = [""] + taxa
-print header.to_csv
+pepCounts = Hash.new
+totals = Hash.new
+counts = Hash.new
+families = Hash.new
+taxa = Hash.new
 
-datasets.each do |dataset|
-  families.each do |family|
-    next if family == ""
-    ["old", "new"].each do |condition|
-      line = [dataset + " " + family + " " + condition]
-      taxa.each do |taxon|
-        if (condition == "old")
-          line.push(Sequence.joins(:transporter, :gosgroup).where("gosgroups.taxon = ? AND transporters.family = ?",taxon, family).count)
-        else
-          line.push(Sequence.joins(:newtransporter, :gosgroup).where("gosgroups.taxon = ? AND newtransporters.family = ?",taxon, family).count)
-        end
-      end
-      print line.to_csv
+STDERR << "Counting Sequences....\n"
+Sequence.includes(:gosgroup).group(:dataset, :taxon).count.each do |key, value|
+  dataset, taxon = key
+  totals[dataset] = 0 if (!totals[dataset])
+  pepCounts[dataset] = Hash.new if (!pepCounts[dataset])
+  pepCounts[dataset][taxon] = value
+  totals[dataset] += value
+end 
+
+STDERR << "Counting Transporters...\n"
+ActiveRecord::Base.connection.execute("select count(seq_name), dataset, taxon, family 
+from sequences, newtransporters,gosgroups 
+where newtransporters.sequence_id=sequences.id and gosgroups.sequence_id=sequences.id 
+group by dataset, family,taxon;").each do |row|
+  count, dataset, taxon, family = row
+  next if family.nil? || family == ""
+  families[family] = true if (!families[family])
+  taxa[taxon] = true if (!taxa[taxon])
+  counts[dataset] = Hash.new if !counts[dataset]
+  counts[dataset][taxon] = Hash.new if !counts[dataset][taxon]
+  counts[dataset][taxon][family] = count
+end
+
+print ([""] + taxa.keys.sort).to_csv
+counts.keys.each do |dataset|
+  row = [dataset + " peptides"]
+  taxa.keys.sort.each do |taxon|
+    row.push(pepCounts[dataset][taxon])
+  end
+  row.push(totals[dataset])
+  print row.to_csv
+  families.keys.sort.each do |family|
+    row = [dataset + " " + family]
+    taxa.keys.sort.each do |taxon|
+      row.push(counts[dataset][taxon][family])
     end
+    print row.to_csv
   end
 end
 
