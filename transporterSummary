@@ -11,12 +11,6 @@ class Sequence < ActiveRecord::Base
   has_one :gosgroup
 end
 
-class Transporter < ActiveRecord::Base
-  set_table_name "newtransporters"
-  belongs_to :sequence
-  has_one :gosgroup, :through => :sequence
-end
-
 class Gosgroup < ActiveRecord::Base
   belongs_to :sequence
 end
@@ -37,10 +31,12 @@ end
 
 opt = OpenStruct.new
 opt.host = "mysql://jbadger:plankton@localhost"
+opt.table = "newtransporters"
 
 o = OptionParser.new
-o.banner << " table"
+o.banner << " database"
 o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
+o.on("-t ", "--table ", String, "transporter table (#{opt.table})") {|t| opt.table = t}
 begin
   o.parse!
 rescue
@@ -73,8 +69,8 @@ end
 
 STDERR << "Counting Transporters...\n"
 ActiveRecord::Base.connection.execute("select count(seq_name), dataset, taxon, family 
-from sequences, newtransporters,gosgroups 
-where newtransporters.sequence_id=sequences.id and gosgroups.sequence_id=sequences.id 
+from sequences, #{opt.table},gosgroups 
+where #{opt.table}.sequence_id=sequences.id and gosgroups.sequence_id=sequences.id 
 group by dataset, family,taxon;").each do |row|
   count, dataset, taxon, family = row
   next if family.nil? || family == ""
@@ -85,7 +81,7 @@ group by dataset, family,taxon;").each do |row|
   counts[dataset][taxon][family] = count
 end
 
-print ([""] + taxa.keys.sort).to_csv
+print ([""] + taxa.keys.sort + ["Total"]).to_csv
 counts.keys.each do |dataset|
   row = [dataset + " peptides"]
   taxa.keys.sort.each do |taxon|
@@ -95,9 +91,13 @@ counts.keys.each do |dataset|
   print row.to_csv
   families.keys.sort.each do |family|
     row = [dataset + " " + family]
+    tot = 0
     taxa.keys.sort.each do |taxon|
-      row.push(counts[dataset][taxon][family])
+      value = counts[dataset][taxon][family].to_i
+      row.push(value)
+      tot += value
     end
+    row.push(tot)
     print row.to_csv
   end
 end
