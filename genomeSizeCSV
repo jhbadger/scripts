@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+
+if (ARGV.size == 0)
+  STDERR << "Usage: " << File.basename($0) << " pep [..pep...]\n"
+  exit(1) 
+end
+
+STDOUT << ["Sample", "Peptides", "Genomes", "Genome Size (Mb)"].to_csv
+
+ARGV.each do |pep|
+  genomes = nil
+  count = `grep -c ">" #{pep}`.to_i
+  if (File.exists?(pep + ".out"))
+    File.new(pep + ".out").each do |line|
+      if (line =~/Genomes: \(([0-9|.]*), ([0-9|.]*)\) \+\/\- \(([0-9|.]*), ([0-9|.]*)\)/)
+        genomes = $1.to_f
+        break
+      end
+    end
+    pepsPerGenome = count / genomes
+    genomeSize =  (-174749.5+(1130.1*pepsPerGenome))/1000000
+    STDOUT << [File.basename(pep,".pep"), count, genomes, 
+      genomeSize.round(2)].to_csv
+  else
+    STDERR << "No such file " << pep + ".out" << "\n"
+  end
+end
