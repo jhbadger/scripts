@@ -15,7 +15,7 @@ class Array
       return (sorted[mid] + sorted[mid - 1]) / 2.0
     end
   end
-  def sum
+  def sumit
     tot = 0
     self.size.times {|i|
       tot += self[i]

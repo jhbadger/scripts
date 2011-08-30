@@ -73,7 +73,7 @@ end
 
 # return filter size based on sample name
 def classifySample(sample)
-  if sample =~/VIR/
+  if sample =~/VIR|viral/
     return "VIR"
   elsif sample =~/LG/ || sample =~/01a/
     return 3.0
@@ -91,33 +91,17 @@ def siteName(sample)
   s = sample
   s = s.gsub("GS0","GS")
   s = s.gsub("GS-","GS")
+  s = s.gsub("GOS", "GS")
   s = s.gsub(/^0[0-9]+-/,"")
   s = s.gsub("IOSM","")
   s = s.gsub("IOLG","") 
-  s = s.gsub("IOVIR","") 
+  s = s.gsub("IOVIR","")
+  s = s.gsub("XLRVAL","")
+  s = s.gsub("viral","")
+  s = s.gsub("LG","") 
   return s.split("-").first
 end
 
-# compute counts of peptides in different samples and filters
-def printSampleCounts(table)
-  counts = Hash.new
-  File.new(table).each {|line|
-    fields = line.chomp.split(",") 
-    site = fields[1] 
-    tax = fields[4] 
-    dir = fields[7]
-    filter = classifySample(dir)
-    counts[site] = Hash.new if counts[site].nil?
-    counts[site][filter] = 0 if counts[site][filter].nil?
-    counts[site][filter] += 1
-  }
-  counts.keys.sort.each {|sample|
-    printf("sampleCounts[\"%s\"] = Hash.new\n", sample)
-    counts[sample].keys.sort {|x,y| y.to_s <=> x.to_s}.each {|filter|
-      printf("sampleCounts[\"%s\"][%s] = %d\n", sample, filter, counts[sample][filter])
-    }
-  }
-end
 
 # load metadata
 def loadMetaData(csv)

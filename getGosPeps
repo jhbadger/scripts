@@ -1,23 +1,21 @@
 #!/usr/bin/env ruby
 
-require 'dm-core'
+require 'Apis_Active'
 require 'optparse'
 require 'ostruct'
 require 'GOS'
-require 'csv'
 
 opt = OpenStruct.new
-opt.host = "mysql://access:access@mysql-lan-pro"
-opt.storage = "gosii_io_apis"
+opt.host = "mysql://access:access@mysql-lan-pro/gosii_io_454_apis"
 opt.filter = false
+opt.exp = nil
 opt.cl = nil
 
 o = OptionParser.new
-o.banner << " site [..site...]"
+o.banner << " dataset [dataset...]"
 o.on("-c ", "--classification ", String, "classification string like kingdom = 'Bacteria'") {|t| opt.cl = t}
 o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
 o.on("-e ", "--expression ", String, "include datasets matching substring") {|t| opt.exp = t}
-o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
 o.on("-z ", "--filter ", Float, "limit to a specific filter") {|t| opt.filter = t}
 begin
   o.parse!
@@ -26,45 +24,40 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size < 1)
+if (ARGV.size < 1 && !opt.exp)
   STDERR << o
   exit(1)
 end
 
-DataMapper.setup(:default, opt.host + "/" + opt.storage)
-db = repository(:default).adapter
-datasets = db.select("SELECT dataset FROM dataset WHERE dataset NOT LIKE '%.v2'")
+connectDB(opt.host)
+
+if (opt.exp)
+  datasets = Apisrun.select(:dataset).where("dataset like '%#{opt.exp}%'").collect{|x| x.dataset}
+else
+  datasets = ARGV
+end
 
 
-ARGV.each do |site|
-  seen = Hash.new
-  outName = site
-  outName += "_" + opt.cl.split("=").last.gsub("'","") if (opt.cl)
-  outName += "_" + opt.filter.to_s if (opt.filter) 
-  out = File.new(outName + ".pep", "w")
-  datasets.each do |dataset|
-    siteName = siteName(dataset)
-    filter = classifySample(dataset)
-    if (site == siteName)
-      next if opt.filter && opt.filter != filter
-      count = 0
-      query = "SELECT sequence.seq_name, sequence FROM sequence"
-      query += " JOIN classification ON classification.seq_name = sequence.seq_name" if (opt.cl)
-      query += " AND classification.dataset = sequence.dataset" if (opt.cl)
-      query += " WHERE sequence.dataset = '#{dataset}'"
-      query += " AND #{opt.cl}" if (opt.cl)
-      db.select(query).each do |row|
-        if (!seen[row.seq_name])
-          out.printf(">%s\n%s", row.seq_name, row.sequence.gsub(Regexp.new(".{1,60}"), "\\0\n"))
-         count += 1
-         seen[row.seq_name] = true
-       end
-      end
-      if (count > 0)
-        STDERR.printf("Processed %d peptides from %s as %s (%s)\n", 
-        			 count,dataset, siteName, filter)
-      end
-    end
-  end
-  out.close
+datasets.each do |dataset|
+ site, filter = siteName(dataset),classifySample(dataset)
+ outName = site
+ outName += "_" + opt.cl.split("=").last.gsub("'","") if (opt.cl)
+ outName += "_" + filter.to_s
+ next if (opt.filter && opt.filter.to_s != filter.to_s)
+ query = "SELECT sequence.seq_name, sequence from sequence"
+ if (opt.cl)
+   query += " JOIN classification ON classification.dataset = sequence.dataset"
+   query += " AND classification.seq_name = sequence.seq_name"
+ end
+ query += " WHERE sequence.dataset = '#{dataset}'"
+ query += " AND " + opt.cl if (opt.cl)
+ p dataset
+ STDERR << "Writing #{outName}...\n"
+ results = Sequence.connection.execute(query)
+ out = File.new(outName + ".pep", "w+")
+ results.each do |row|
+   out.printf(">%s\n%s", row.first, 
+    row.last.gsub(Regexp.new(".{1,60}"), "\\0\n"))
+ end
+ out.close
 end
