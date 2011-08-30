@@ -51,10 +51,9 @@ datasets.each do |dataset|
  end
  query += " WHERE sequence.dataset = '#{dataset}'"
  query += " AND " + opt.cl if (opt.cl)
- p dataset
- STDERR << "Writing #{outName}...\n"
+ STDERR << "Writing #{outName} (#{dataset})...\n"
  results = Sequence.connection.execute(query)
- out = File.new(outName + ".pep", "w+")
+ out = File.new(outName + ".pep", "a")
  results.each do |row|
    out.printf(">%s\n%s", row.first, 
     row.last.gsub(Regexp.new(".{1,60}"), "\\0\n"))
