@@ -75,7 +75,7 @@ ARGV.each {|fasta|
   end
   aliHash = aliasFasta(fasta, nil, tname, opt.trim)
   fasta2Phylip(tname, tname + ".phy")
-  system("cd #{tmpdir};#{phyml} -d #{opt.data} -m #{opt.model} -i #{tname}.phy")
+  system("cd #{tmpdir};#{phyml} --no_memory_check -d #{opt.data} -m #{opt.model} -i #{tname}.phy")
   tree = NewickTree.fromFile("#{tmpdir}/#{name}.phy_phyml_tree.txt")
   tree.unAlias(aliHash)
   if (opt.outgroup)
