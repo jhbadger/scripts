@@ -1,0 +1,112 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+require 'csv'
+
+defaultcolors = {
+  "Bacteria; Proteobacteria" => "lightgrey", 
+  "Bacteria; Firmicutes" => "red", 
+  "Bacteria; Actinobacteria" => "yellow", 
+  "Bacteria; Bacteroidetes" => "green",
+  "Bacteria; Fusobacteria" => "red", 
+  "Bacteria; Spirochaetes" => "aqua",
+  "Bacteria; Tenericutes" => "olive", 
+  "Bacteria; Deinococcus-Thermus" => "lime",
+  "Bacteria; Chloroflexi" => "teal",
+  "Bacteria; Chlorobi" => "purple",
+  "Bacteria; Synergistetes" => "maroon",
+  "Bacteria; Verrucomicrobia" => "brown",
+  "Bacteria; Thermotogae" => "cyan",
+  "Bacteria; Chlamydiae" => "darkorange", 
+  "Bacteria; Aquificae" => "orange",
+  "Bacteria; Planctomycetes" => "darkgrey", 
+  "Bacteria; Acidobacteria" => "silver",
+  "Bacteria; Nitrospirae" => "pink"
+}
+
+def generateRandomColor(mix) 
+  red = rand(256)
+  green = rand(256)
+  blue = rand(256)
+  red = (red + mix[0]) / 2
+  green = (green + mix[1]) / 2
+  blue = (blue + mix[2]) / 2
+  color = "#" + red.to_s(base=16) + green.to_s(base=16) + blue.to_s(base=16)
+  return color.upcase
+end
+  
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " tree-info classified-fasta"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+info, fasta = ARGV
+
+seen = Hash.new
+colors = Hash.new
+taxinfo = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  sname = seq.entry_id
+  tax = seq.definition.split(" ")[1]
+  next if tax =~/^unclassified/
+  if (tax)
+    tax = tax.split(";")
+    next if tax[1].nil?
+    taxinfo[sname] = tax[0] + "; " + tax[1]
+    if (defaultcolors[taxinfo[sname]])
+      colors[taxinfo[sname]] = defaultcolors[taxinfo[sname]]
+    else
+      colors[taxinfo[sname]] = generateRandomColor([255,255,255])
+    end
+  end
+end
+infof = File.new(info + ".class", "w")
+File.new(info).each do |line|
+  fields = line.split(" ", 4)
+  num, dist, type, sp = line.chomp.split("\t")
+  if (line =~/^font/)
+    line = "font\t1.0\tVerdana\t#000000\n"
+  elsif (type == "r")
+    if (taxinfo[sp])
+      line = num + "\t" + dist + "\t" + type + "\t" + sp + "\t" + taxinfo[sp] + "\n"
+    end
+  end
+  infof.print line
+end
+infof.printf("ttclr\tq\torange\tblue\n")
+colors.keys.each do |key|
+  infof.printf("htax\t%s\t%s\n", key, colors[key])
+end
+infof.close
+system("treeinfo2svg.pl #{info}.class > svg.tmp")
+svgf = File.new(info + ".class.svg", "w")
+y = -1500
+File.new("svg.tmp").each do |line|
+  if line =~/<\/svg>/
+    colors.keys.each do |key|
+      y += 2100
+      svgf.printf("<rect x=\"1000\" y=\"#{y}\" width=\"60000\"  height=\"3000\" fill=\"#{colors[key]}\"/>
+        <text x=\"1000\" y=\"#{y+2000}\" font-size=\"2900\" font-weight=\"bold\" font-family=\"Verdana\" fill=\"black\">#{key}</text>\n")
+      end
+  else
+    svgf.print line
+  end
+end
+svgf.printf("</svg>\n")
+svgf.close
+File.unlink("svg.tmp")

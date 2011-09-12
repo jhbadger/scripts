@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'rubygems'
+require 'rsruby'
+require 'bio'
+
+ARGV.options {|opts|
+  opts.banner << " fasta-file [fasta-file...]"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+}
+
+
+r = RSRuby.instance
+ARGV.each {|fasta|
+  name = fasta.split(".").first
+  gcs = []
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each {|seq|
+    gcs.push(seq.seq.count("GCgc")*100/seq.length)
+  }
+  r.pdf("#{name}_gc_histo.pdf")
+  r.hist(gcs, :main => "GC distribution for #{name}", :xlab => "GC Bins", :breaks=>50)
+  r.dev_off.call
+}

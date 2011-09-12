@@ -3,11 +3,11 @@
 require 'rubygems'
 require 'Phylogeny'
 
-if (ARGV.size != 2)
-  STDERR.printf("usage: %s alignfile fraction-gaps-allowed\n", $0)
+if (ARGV.size != 2 && ARGV.size != 3)
+  STDERR.printf("Usage: %s alignfile fraction-gaps-allowed [exclude-regexp]\n", File.basename($0))
   exit(1)
 end
 
-alignment, fraction = ARGV
+alignment, fraction, exclude = ARGV
 
-trimAlignment(File.basename(alignment, ".afa") + "_trim.afa", alignment, fraction.to_f)
+trimAlignment(File.basename(alignment, ".afa") + "_trim.afa", alignment, fraction.to_f, exclude)

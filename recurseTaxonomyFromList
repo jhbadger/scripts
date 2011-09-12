@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+
+if (ARGV.size != 2)
+  STDERR.printf("Usage: %s taxonomy.txt sp.txt\n", File.basename($0))
+  exit(1)
+end
+
+taxonomy, sp = ARGV
+
+ranks = Hash.new
+taxa = Hash.new
+parents = Hash.new
+seen = Hash.new
+
+STDERR << "Loading taxonomy....\n"
+File.new(taxonomy).each do |line|
+  id, name, parent, rank = line.chomp.split("\t")
+  id = id.to_i
+  parent = parent.to_i
+  taxa[id] = name
+  parents[id] = parent
+  ranks[id] = rank
+end
+
+STDERR << "Loading species...\n"
+
+printf("%d\t%s\t%s\t%s\n", 1, "root", 1, "root")
+File.new(sp).each do |line|
+  id, rest = line.chomp.split(" ")
+  id = id.to_i
+  if (taxa[id])
+    while (parents[id] > 1)
+      if (!seen[id])
+        printf("%d\t%s\t%s\t%s\n", id, taxa[id], parents[id], ranks[id])
+        seen[id] = true
+      end
+      id = parents[id]
+    end
+  end
+end

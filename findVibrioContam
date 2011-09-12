@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " tab-file"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+tab, rest = ARGV
+
+hits = Hash.new
+percents = Hash.new
+
+File.new(tab).each do |line|
+  read, hit, percent, length = line.chomp.split("\t")
+  percent = percent.to_f
+  length = length.to_i
+  next if length < 100
+  if (hits[read].nil? || percents[read] < percent)
+    percents[read] = percent
+    hits[read] = line
+  end
+end
+
+hits.keys.each do |read|
+  if (percents[read] > 95 && hits[read] !~/Bacteriovorax/)
+    print hits[read]
+  end
+end
