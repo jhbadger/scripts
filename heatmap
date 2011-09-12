@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+require 'ColorGradient'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " csv-file [exp file]"
+o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1 && ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+csv, exp = ARGV
+
+csv = CSV.read(csv, :headers => true, :converters => :numeric)
+grad = ColorGradient.new([255,0,0], [255,255,255])
+
+printf("<svg width=\"1500px\" height = \"3100px\" xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\">\n")
+printf("<defs>\n")
+printf("<linearGradient id=\"grad1\" x1=\"0%%\" y1=\"0%%\" x2=\"100%%\" y2=\"0%%\">\n")
+printf("<stop offset=\"0%%\" style=\"stop-color:rgb(255,0,0);stop-opacity:1\"/>\n")
+printf("<stop offset=\"100%%\" style=\"stop-color:rgb(255,255,255);stop-opacity:1\"/>\n")
+printf("</linearGradient>\n")
+printf("</defs>\n")
+
+printf("<text x=\"10\" y=\"50\">low</text>\n")
+printf("<rect width=\"1000\" height=\"25\" x=\"20\" y=\"50\" fill=\"url(#grad1)\"/>\n")
+printf("<text x=\"1010\" y=\"50\">high</text>\n")
+x = 20
+y = 100
+width = 50
+height = 25
+maxX = 0
+
+csv.by_row.each do |row|
+  name = row.first.last
+  x = 0
+  row.each do |field|
+    next if field.last == name
+    color = grad.getColor(field.last/row.fields[1..row.size].max)
+    printf("<rect width=\"#{width}\" height=\"#{height}\" x = \"#{x}\" y = \"#{y}\"")
+    printf(" style=\"fill:rgb(#{color[0]},#{color[1]},#{color[2]});stroke-width:1;stroke:rgb(0,0,0)\"/>\n")
+    x += width
+  end
+  maxX = x
+  x += width/2
+  printf("<text x=\"#{x}\" y=\"#{y+0.6*height}\">#{name}</text>\n")
+  y += height
+end
+x = 20
+y += height/2
+csv.headers.each do |header|
+  next if header == ""
+  printf("<text x=\"#{x}\" y=\"#{y}\" transform=\"rotate(90, #{x}, #{y})\">#{header}</text>\n")
+  x += width
+end
+if (!exp.nil?)
+  exp = CSV.read(exp, :headers => true, :converters => :numeric)
+  y = 100
+  values = exp.by_col[1]
+  min = values.min
+  max = values.max
+  dist = max - min
+  scale = maxX/(dist + 0.1)
+  points = []
+  values.each do |value|
+    x = (10 + ((value - min)*scale)).round
+    points.push([x,y+0.5*height])
+    y += height
+  end
+  0.upto(points.size - 2) do |i|
+    printf("<line x1=\"#{points[i][0]}\" y1=\"#{points[i][1]}\"")
+    printf(" x2=\"#{points[i+1][0]}\" y2=\"#{points[i+1][1]}\"")
+    printf(" style=\"stroke:rgb(0,0,0);stroke-width:3\"/>\n")
+    printf("<text font-size=\"10\" x=\"#{points[i][0]}\" y=\"#{points[i][1]}\">#{values[i].round(2)}</text>\n")
+  end
+  printf("<text font-size=\"10\" x=\"#{points.last[0]}\" y=\"#{points.last[1]}\">#{values.last.round(2)}</text>\n")
+end
+printf("</svg>")
