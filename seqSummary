@@ -39,11 +39,15 @@ ARGV.each do |file|
   tat = 0
   tam = 0
   count  = 0
+  min = 1e99
+  max = 0
   stream = ZFile.new(file)
   Bio::FlatFile.new(Bio::FastaFormat, stream).each do |seq|
     gc =  seq.seq.count("GCgc")
     at =  seq.seq.count("ATUatu")
     ambig = seq.seq.count("NRYWSnryws")
+    max = seq.length if seq.length > max
+    min = seq.length if seq.length < min
     if (!opt.total)
       gcper = ((gc*100.0) / (gc + at)).round(1)
       amper = ((ambig*100.0)/seq.length).round(1)
@@ -74,6 +78,7 @@ ARGV.each do |file|
       printf("---%s---\n", file)
       printf("Sequences: %d\n", count)
       printf("Length: %d (%.1f megabases)\n", tLen, tLen / 1.0e6)
+      printf("Minimum length: %d Maximum length: %d\n", min, max)
       printf("Average length: %d (%.1f megabases)\n", avg, avg / (count*1.0e6))
       printf("%% Ambiguous: %d%\n", amper)
       printf("GC:     %d%%\n", gcper)
