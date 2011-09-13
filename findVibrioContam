@@ -2,10 +2,11 @@
 
 require 'optparse'
 require 'ostruct'
+require 'bio'
 
 opt = OpenStruct.new
 o = OptionParser.new
-o.banner << " tab-file"
+o.banner << " dna-file tab-file"
 begin
   o.parse!
 rescue
@@ -13,12 +14,17 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size != 1)
+if (ARGV.size != 2)
   STDERR << o
   exit(1)
 end
 
-tab, rest = ARGV
+dna, tab = ARGV
+gc = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(dna)).each do |seq|
+  gc[seq.entry_id] = seq.seq.count("GCgc")*100/seq.length
+end
 
 hits = Hash.new
 percents = Hash.new
@@ -35,7 +41,9 @@ File.new(tab).each do |line|
 end
 
 hits.keys.each do |read|
-  if (percents[read] > 95 && hits[read] !~/Bacteriovorax/)
+  next if hits[read] =~/Bacteriovorax/
+  
+  if ((percents[read] > 95 && hits[read] =~/326423644|326424156/) || (percents[read] > 70 && hits[read] =~/888/))
     print hits[read]
   end
 end
