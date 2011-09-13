@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'ZFile'
+require 'csv'
+
+if (ARGV.size != 2)
+  STDERR << "Usage: " << File.basename($0) << " dist-file query-regexp\n"
+  exit(1)
+end
+
+dist, exp = ARGV
+
+names = []
+ZFile.new(dist).each do |line|
+  next if line[0] == " "
+  name, rest = line.split(" ")
+  names.push(name)
+end
+
+count = 0
+ZFile.new(dist).each do |line|
+  next if line[0] == " "
+  name, rest = line.split(" ", 2)
+  if (name =~/#{exp}/)
+    min = 1e6
+    minName = nil
+    dists = rest.split(" ").collect{|x| x.to_f}
+    dists.size.times do |i|
+      if (names[i] !~/#{exp}/ && dists[i] < min)
+        min = dists[i]
+        minName = names[i]
+      end
+    end
+    print [name, minName, min].to_csv
+  end
+  count += 1
+end
