@@ -1,0 +1,68 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+opt = OpenStruct.new
+
+opt.user = ENV["USER"]
+opt.password = nil
+$VERBOSE = nil
+
+# returns true if a fasta file has amino acid sequences, false if dna/rna
+def prot?(fasta)
+  string = ""
+  count = 0
+  File.new(fasta).each do |line|
+    next if (line =~ /^>/)
+    string += line.chomp.upcase
+    count += 1
+     break if count == 1000
+  end
+  agtc = 1.0 * string.count("AGTCNU")
+  if (agtc / string.size > 0.90)
+    return false
+  else 
+    return true
+  end
+end
+
+ARGV.options do |opts|
+  opts.banner << " fasta description"
+  opts.on("-p ", "--password ", String, 
+          "password (required!)") {|t| opt.password = t}
+  opts.on("-u ", "--user ", String, 
+          "username (#{opt.user})") {|t| opt.user = t} 
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size != 2)
+    STDERR.puts opts
+    exit(1)
+  end
+end
+
+if (opt.password.nil?)
+  STDERR.puts "A password is required!\n"
+  exit(1)
+end
+
+
+fasta, desc  = ARGV
+
+if (prot?(fasta))
+  param = "format_aa_into_aa"
+else
+  param = "format_nt_into_nt"
+end
+
+["tmlsrv1","tmlsrv2"].each do |server|
+  cmd = "dc_run -parameters #{param} -query #{fasta} "
+  cmd += "-database #{File.basename(fasta)} "
+  cmd += "-server #{server} -description #{desc} "
+  cmd += "-user #{opt.user} -password #{opt.password}"
+  system(cmd)
+end
