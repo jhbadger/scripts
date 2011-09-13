@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size != 3)
+  STDERR.printf("usage: %s prot.fasta min-gc max-gc\n", $0)
+  exit(1)
+end
+
+prot, min, max = ARGV
+min = min.to_i
+max = max.to_i
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(prot)).each do |seq|
+  gc = seq.seq.count("GCgc")*100/seq.length
+  print seq if (gc >= min && gc <= max) 
+end
