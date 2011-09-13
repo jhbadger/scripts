@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+
+if (ARGV.size != 3)
+  STDERR << "Usage: " << File.basename($0) << " closest.csv otuv1v3.tsv otuv3v5.tsv\n"
+  exit(1)
+end
+
+closest, v1v3, v3v5 = ARGV
+files = {"v1v3" => v1v3, "v3v5" => v3v5}
+
+dists = Hash.new
+CSV.foreach(closest) do |row|
+  dists[row.first] = row.last.to_f
+end
+
+print ["Name", "Distance", "Fraction", "Chimera", "Wanted", "RDP", "Sequence"].to_csv
+
+["v1v3", "v3v5"].each do |otu|
+  CSV.foreach(files[otu], :col_sep => "\t", :converters => [:numeric], :headers=>true) do |row|
+    name = otu + "_" + row["otuID"].to_s
+    chimera = false
+    wanted = false
+    row.headers.grep(/uchime/).each do |col|
+      chimera = true if row[col].to_s == "true"
+    end
+    wanted = true if row["isMostWanted"] == "true"
+    fraction = row["maxFraction"]
+    print [name, dists[name], fraction, chimera, wanted, row["rdpSummary"], row["Sequence"]].to_csv
+  end
+end
