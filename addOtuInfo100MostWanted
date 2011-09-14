@@ -27,6 +27,8 @@ print ["Name", "Distance", "Fraction", "Chimera", "Wanted", "RDP", "Sequence"].t
     end
     wanted = true if row["isMostWanted"] == "true"
     fraction = row["maxFraction"]
-    print [name, dists[name], fraction, chimera, wanted, row["rdpSummary"], row["Sequence"]].to_csv
+    if (fraction >= 0.3 && chimera == false)
+      print [name, dists[name], fraction, chimera, wanted, row["rdpSummary"], row["Sequence"]].to_csv
+    end
   end
 end
