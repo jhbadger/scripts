@@ -8,7 +8,6 @@ require 'ColorGradient'
 opt = OpenStruct.new
 o = OptionParser.new
 o.banner << " csv-file [exp file]"
-o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
 begin
   o.parse!
 rescue
@@ -23,29 +22,54 @@ end
 
 csv, exp = ARGV
 
-csv = CSV.read(csv, :headers => true, :converters => :numeric)
-grad = ColorGradient.new([255,0,0], [255,255,255])
-
-printf("<svg width=\"1500px\" height = \"3100px\" xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\">\n")
-printf("<defs>\n")
-printf("<linearGradient id=\"grad1\" x1=\"0%%\" y1=\"0%%\" x2=\"100%%\" y2=\"0%%\">\n")
-printf("<stop offset=\"0%%\" style=\"stop-color:rgb(255,0,0);stop-opacity:1\"/>\n")
-printf("<stop offset=\"100%%\" style=\"stop-color:rgb(255,255,255);stop-opacity:1\"/>\n")
-printf("</linearGradient>\n")
-printf("</defs>\n")
-
-printf("<text x=\"10\" y=\"50\">low</text>\n")
-printf("<rect width=\"1000\" height=\"25\" x=\"20\" y=\"50\" fill=\"url(#grad1)\"/>\n")
-printf("<text x=\"1010\" y=\"50\">high</text>\n")
-x = 20
-y = 100
+startColor = [255, 0, 0]
+midColor = [255, 255, 0]
+stopColor = [255, 255, 255]
 width = 50
 height = 25
+csv = CSV.read(csv, :headers => true, :converters => :numeric)
+tot_width = (csv.headers.size - 1)* width
+
+grad = ColorGradient.new(startColor, midColor, stopColor)
+
+printf("<svg width=\"#{2*csv.headers.size*width}px\" height = \"#{1.5*csv.size*height}px\" xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\">\n")
+printf("<defs>\n")
+printf("<linearGradient id=\"grad1\" x1=\"0%%\" y1=\"0%%\" x2=\"100%%\" y2=\"0%%\">\n")
+printf("<stop offset=\"0%%\" style=\"stop-color:rgb(#{startColor[0]},#{startColor[1]},#{startColor[2]});stop-opacity:1\"/>\n")
+printf("<stop offset=\"50%%\" style=\"stop-color:rgb(#{midColor[0]},#{midColor[1]},#{midColor[2]});stop-opacity:1\"/>\n")
+printf("<stop offset=\"100%%\" style=\"stop-color:rgb(#{stopColor[0]}, #{stopColor[1]}, #{stopColor[2]});stop-opacity:1\"/>\n")
+printf("</linearGradient>\n")
+printf("</defs>\n")
+printf("<rect width=\"#{tot_width}\" height=\"25\" x=\"20\" y=\"50\" style=\"fill:url(#grad1);stroke-width:1;stroke:rgb(0,0,0)\"/>\n")
+
+if (!exp.nil?)
+  exp = CSV.read(exp, :headers => true, :converters => :numeric)
+  values_exp = exp.by_col[1]
+  max_exp = values_exp.max
+  min_exp = values_exp.min
+  dist_exp = max_exp - min_exp
+  x = 20
+  min_exp.step(max_exp, dist_exp / 10) do |i|
+    printf("<text x=\"#{x}\" y=\"40\">#{i.round(1)}</text>\n")
+    x += ((csv.headers.size - 1)* width) / 10
+  end
+else
+  exp = nil
+  values_exp = nil
+  max_exp = nil
+  min_exp = nil
+  dist_exp = nil
+end
+
+x = 0
+y = 100
 maxX = 0
+old_exp_x = nil
+old_exp_y = nil
 
 csv.by_row.each do |row|
   name = row.first.last
-  x = 0
+  x = 20
   row.each do |field|
     next if field.last == name
     color = grad.getColor(field.last/row.fields[1..row.size].max)
@@ -53,38 +77,27 @@ csv.by_row.each do |row|
     printf(" style=\"fill:rgb(#{color[0]},#{color[1]},#{color[2]});stroke-width:1;stroke:rgb(0,0,0)\"/>\n")
     x += width
   end
-  maxX = x
   x += width/2
   printf("<text x=\"#{x}\" y=\"#{y+0.6*height}\">#{name}</text>\n")
+  if (exp)
+    val = values_exp.shift
+    exp_x = 20 + (((val - min_exp)/dist_exp)*tot_width)
+    exp_y = y + (height/2)
+    if (old_exp_x)
+      printf("<line x1=\"#{old_exp_x}\" y1=\"#{old_exp_y}\"")
+      printf(" x2=\"#{exp_x}\" y2=\"#{exp_y}\"")
+      printf(" style=\"stroke:rgb(0,0,0);stroke-width:3\"/>\n")
+    end
+    old_exp_x = exp_x
+    old_exp_y = exp_y
+  end
   y += height
 end
-x = 20
+x = 40
 y += height/2
 csv.headers.each do |header|
-  next if header == ""
+  next if header.nil?
   printf("<text x=\"#{x}\" y=\"#{y}\" transform=\"rotate(90, #{x}, #{y})\">#{header}</text>\n")
   x += width
-end
-if (!exp.nil?)
-  exp = CSV.read(exp, :headers => true, :converters => :numeric)
-  y = 100
-  values = exp.by_col[1]
-  min = values.min
-  max = values.max
-  dist = max - min
-  scale = maxX/(dist + 0.1)
-  points = []
-  values.each do |value|
-    x = (10 + ((value - min)*scale)).round
-    points.push([x,y+0.5*height])
-    y += height
-  end
-  0.upto(points.size - 2) do |i|
-    printf("<line x1=\"#{points[i][0]}\" y1=\"#{points[i][1]}\"")
-    printf(" x2=\"#{points[i+1][0]}\" y2=\"#{points[i+1][1]}\"")
-    printf(" style=\"stroke:rgb(0,0,0);stroke-width:3\"/>\n")
-    printf("<text font-size=\"10\" x=\"#{points[i][0]}\" y=\"#{points[i][1]}\">#{values[i].round(2)}</text>\n")
-  end
-  printf("<text font-size=\"10\" x=\"#{points.last[0]}\" y=\"#{points.last[1]}\">#{values.last.round(2)}</text>\n")
 end
 printf("</svg>")
