@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR.printf("Usage: removeBadReadsFromList bad.list read.list\n")
+  exit(1)
+end
+
+bad, good = ARGV
+
+badList = Hash.new
+
+File.new(bad).each do |line|
+  name = line.chomp
+  badList[name] = true
+end
+
+File.new(good).each do |line|
+  name = line.chomp
+  print line if !badList[name]
+end

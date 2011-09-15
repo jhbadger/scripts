@@ -14,6 +14,6 @@ min = min.to_i
 max = max.to_i
 
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(prot)).each do |seq|
-  gc = seq.seq.count("GCgc")*100/seq.length
+  gc = seq.seq.count("GCgc")*100/seq.seq.count("AGCTUagctu")
   print seq if (gc >= min && gc <= max) 
 end

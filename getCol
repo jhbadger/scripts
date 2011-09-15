@@ -39,7 +39,7 @@ else
   file = STDIN
 end
 col = col.to_i
-toPrint = []
+toPrint = Hash.new
 
 opt.delimiter = "\t" if opt.delimiter == "\\t"
 
@@ -51,11 +51,11 @@ else
   file = ZFile.new(file) if file != STDIN
   file.each {|line|
     fields = line.chomp.split(opt.delimiter)
-    toPrint.push(fields[col]) if (!fields[col].nil? && (!toPrint.include?(fields[col]) || opt.redundant))
+    toPrint[fields[col]] = true 
   }
 end
 
-toPrint.sort.each {|field|
+toPrint.keys.sort.each {|field|
   printf("%s\n", field)
 }
 

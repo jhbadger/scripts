@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+require 'bio'
+
+if (ARGV.size != 1)
+  STDERR.printf("Usage %s scaffolds.fna\n", File.basename($0))
+  exit(1)
+end
+
+scaffolds, rest = ARGV
+
+list = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(scaffolds)).each do |seq|
+  list[seq.entry_id] = true
+end
+
+contigs = Hash.new
+File.new("454Scaffolds.txt").each do |line|
+  fields = line.chomp.split("\t")
+  if (list[fields[0]])
+    contigs[fields[5]] = true
+  end
+end
+
+File.new("posmap.txt").each do |line|
+  fields = line.chomp.split("\t")
+  if (contigs[fields[0]])
+    printf("%s\n", fields[1])
+  end
+end
