@@ -7,7 +7,7 @@ require 'ColorGradient'
 
 opt = OpenStruct.new
 o = OptionParser.new
-o.banner << " csv-file [exp file]"
+o.banner << " csv-file"
 begin
   o.parse!
 rescue
@@ -15,24 +15,40 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size != 1 && ARGV.size != 2)
+if (ARGV.size != 1)
   STDERR << o
   exit(1)
 end
 
-csv, exp = ARGV
+csv, rest = ARGV
 
-startColor = [255, 0, 0]
+startColor = [255, 255, 255]
 midColor = [255, 255, 0]
-stopColor = [255, 255, 255]
+stopColor = [255, 0, 0]
+
 width = 50
 height = 25
 csv = CSV.read(csv, :headers => true, :converters => :numeric)
+if (csv.headers.grep(/^exp/))
+  exp_index = csv.headers.index(csv.headers.grep(/^exp/).first)
+  exp = csv.by_col[exp_index]
+  csv.by_col.delete(exp_index)
+  max_exp = exp.max
+  min_exp = exp.min
+  dist_exp = max_exp - min_exp
+else
+  exp = nil
+  max_exp = nil
+  min_exp = nil
+  dist_exp = nil
+end
 tot_width = (csv.headers.size - 1)* width
-
+tot_height = csv.size*height
+longest_row_header = csv.by_col[0].collect{|x| x.to_s.length}.max
+longest_col_header = csv.headers.collect{|x| x.to_s.length}.max
 grad = ColorGradient.new(startColor, midColor, stopColor)
 
-printf("<svg width=\"#{2*csv.headers.size*width}px\" height = \"#{1.5*csv.size*height}px\" xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\">\n")
+printf("<svg width=\"#{tot_width+longest_row_header*8}px\" height = \"#{tot_height+longest_col_header*15}px\" xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\">\n")
 printf("<defs>\n")
 printf("<linearGradient id=\"grad1\" x1=\"0%%\" y1=\"0%%\" x2=\"100%%\" y2=\"0%%\">\n")
 printf("<stop offset=\"0%%\" style=\"stop-color:rgb(#{startColor[0]},#{startColor[1]},#{startColor[2]});stop-opacity:1\"/>\n")
@@ -41,28 +57,20 @@ printf("<stop offset=\"100%%\" style=\"stop-color:rgb(#{stopColor[0]}, #{stopCol
 printf("</linearGradient>\n")
 printf("</defs>\n")
 printf("<rect width=\"#{tot_width}\" height=\"25\" x=\"20\" y=\"50\" style=\"fill:url(#grad1);stroke-width:1;stroke:rgb(0,0,0)\"/>\n")
-
-if (!exp.nil?)
-  exp = CSV.read(exp, :headers => true, :converters => :numeric)
-  values_exp = exp.by_col[1]
-  max_exp = values_exp.max
-  min_exp = values_exp.min
-  dist_exp = max_exp - min_exp
+printf("<text x=\"20\" y=\"40\">low</text>\n")
+printf("<text x=\"#{tot_width}\" y=\"40\">high</text>\n")
+if (exp)
   x = 20
   min_exp.step(max_exp, dist_exp / 10) do |i|
-    printf("<text x=\"#{x}\" y=\"40\">#{i.round(1)}</text>\n")
+    printf("<text x=\"#{x - 10}\" y=\"130\">#{i.round(1)}</text>\n")
+    printf("<line x1=\"#{x}\" y1=\"135\"")
+    printf(" x2=\"#{x}\" y2=\"150\"")
+    printf(" style=\"stroke:rgb(0,0,0);stroke-width:1\"/>\n")
     x += ((csv.headers.size - 1)* width) / 10
   end
-else
-  exp = nil
-  values_exp = nil
-  max_exp = nil
-  min_exp = nil
-  dist_exp = nil
 end
-
 x = 0
-y = 100
+y = 150
 maxX = 0
 old_exp_x = nil
 old_exp_y = nil
@@ -80,7 +88,7 @@ csv.by_row.each do |row|
   x += width/2
   printf("<text x=\"#{x}\" y=\"#{y+0.6*height}\">#{name}</text>\n")
   if (exp)
-    val = values_exp.shift
+    val = exp.shift
     exp_x = 20 + (((val - min_exp)/dist_exp)*tot_width)
     exp_y = y + (height/2)
     if (old_exp_x)
