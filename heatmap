@@ -1,22 +1,10 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
-require 'ostruct'
 require 'csv'
 require 'ColorGradient'
 
-opt = OpenStruct.new
-o = OptionParser.new
-o.banner << " csv-file"
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
-end
 if (ARGV.size != 1)
-  STDERR << o
+  STDERR << "Usage: " << File.basename($0) << " csv-file\n"
   exit(1)
 end
 

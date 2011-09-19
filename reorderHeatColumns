@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+
+if (ARGV.size != 1)
+  STDERR << "Usage: " << File.basename($0) << " csv-file\n"
+  exit(1)
+end
+
+csv, rest = ARGV
+csv = CSV.read(csv, :headers => true, :converters => :numeric)
+
+headers = csv.headers
+if (csv.headers.grep(/^exp/))
+  exp_index = csv.headers.index(csv.headers.grep(/^exp/).first)
+  exp = csv.by_col[exp_index]
+  exp_name = headers[exp_index]
+  headers.delete(headers[exp_index])
+else
+  exp = nil
+  exp_name = nil
+end
+
+totals = Hash.new
+1.upto(headers.size - 1) do |i|
+  totals[headers[i]] = 0
+  csv.size.times do |j|
+    totals[headers[i]] += (csv.by_col[i][j].to_f/csv.by_row[j].fields[1..csv.by_row[j].size].max)
+  end
+end
+
+sorted = [headers.first]
+sorted  += totals.keys.sort{|x,y| totals[x] <=> totals[y]}
+sorted.push(exp_name) if (exp)
+
+print sorted.to_csv
+csv.by_row.each do |row|
+  srow = []
+  sorted.each do |name|
+    srow.push(row[name])
+  end
+  print srow.to_csv
+end
