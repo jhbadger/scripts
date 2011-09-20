@@ -36,6 +36,10 @@ File.new(sp).each do |line|
         seen[id] = true
       end
       id = parents[id]
+      if (parents[id].nil?)
+        STDERR.printf("%s has no parent!\n", id)
+        exit(1)
+      end
     end
   end
 end
