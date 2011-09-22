@@ -18,21 +18,6 @@ opt.trim = false
 opt.numboot = 100
 opt.project = nil
 
-pflag = ARGV.index("-p")
-pflag = ARGV.index("--project") if (pflag.nil?)
-if (pflag)
-  opt.project = ARGV[pflag + 1]
-  ARGV[pflag] = ""
-  ARGV[pflag + 1] = ""
-  cmd = $0
-  ARGV.each {|arg|
-    cmd += (" " + arg.to_s) if (arg != "")
-  }
-  qsub = "qsub -P #{opt.project} -e stderr -cwd -o stdout "
-  system("#{qsub} \"#{cmd}\"")
-  exit(0)
-end
-
 def cleanup(dir)
   system("rm -rf #{dir}")	
 end
@@ -48,7 +33,6 @@ ARGV.options {|opts|
   opts.on("-m ", "--method ", String, 
           "method (default #{opt.algorithm} -  nj, pars, ml valid)") {|alg| opt.algorithm = alg}
   opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
-  opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}
   opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}
   opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
   begin

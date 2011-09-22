@@ -4,25 +4,22 @@ require 'ostruct'
 require 'rubygems'
 require 'Phylogeny'
 require 'optparse'
+require 'fpdf'
+
 opt = OpenStruct.new
 
 opt.dist = false
-opt.ecnums = false
-opt.file = nil
 opt.noroot = false
 opt.outgroup = nil
-$VERBOSE = nil
 opt.numboot = 100
 
-ARGV.options {|opts|
+ARGV.options do |opts|
   opts.banner << " prot.fasta [prot.fasta...]"
   opts.on("-d", "--dist", "output distance matrix") {|t| opt.dist = t}    
-  opts.on("-e", "--ecnums", "label with EC numbers") {|t| opt.ecnums = t}    
-  opts.on("-f", "--file", "write to files (default stdout)") {|t| opt.file = t}
   opts.on("-n ", "--numboot ", Integer, 
         "number of bootstrap reps  (default #{opt.numboot})") {|t| opt.numboot = t}
-  opts.on("-r", "--noroot", "don't midpoint root trees") {|t| opt.noroot = t}    
-  opts.on("-o ", "--outgroup ", String, "outgroup") {|t| opt.outgroup = t}    
+  opts.on("-o ", "--outgroup ", String, "outgroup") {|t| opt.outgroup = t}
+  opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}    
   begin
     opts.parse!
   rescue
@@ -34,14 +31,14 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-}
+end
 
 
-ARGV.each {|prot|
+ARGV.each do |prot|
   fasta2Stockholm(prot + ".stock", prot)
   if (!opt.dist)
     tree = NewickTree.new(`quicktree -boot #{opt.numboot} #{prot + '.stock'}`.tr("\n",""))
-    if (!opt.noroot)
+    if (!opt.unrooted)
       if (opt.outgroup.nil?)
         tree = tree.midpointRoot
       else
@@ -56,15 +53,12 @@ ARGV.each {|prot|
     end
   else
     dist = `quicktree -out m #{prot + '.stock'}`
-    print dist
+    out = File.new(File.basename(prot).split(".").first + ".dist", "w")
+    out.print dist
+    out.close
   end
-  tree.addECnums(prot) if (opt.ecnums)
-  if (opt.file.nil?)
-    print tree.to_s + "\n"
-  else
-    outFile = File.new(File.basename(prot).split(".").first + "_nj.tree", "w")
-    outFile.print tree.to_s + "\n"
-    outFile.close
-  end
+  filename = File.basename(prot).split(".").first + "_quicktree.tree"
+  tree.write(filename)
+  tree.draw(filename + ".pdf")
   File.unlink(prot + '.stock')
-}
+end
