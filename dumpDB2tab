@@ -27,17 +27,17 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size !=  1 && ARGV.size != 2)
+if (ARGV.size <  1)
   STDERR << o
   exit(1)
 end
 
-database, table = ARGV
+database = ARGV.shift
 
 db = Mysql::new(opt.host, opt.user, opt.password, database)
 
-if (table)
-  tables = [table]
+if (!ARGV.empty?)
+  tables = ARGV
 else
   tables = []
   db.query("SHOW TABLES").each do |table|
