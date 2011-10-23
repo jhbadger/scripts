@@ -9,14 +9,17 @@ opt = OpenStruct.new
 opt.host = "mysql-lan-pro"
 opt.user = ENV["USER"]
 opt.password = ""
+opt.where = false
 
 
 
 o = OptionParser.new
 o.banner << " database-name [table]"
+o.on("-f ", "--file ", String, "file with WHERE conditional string") {|t| opt.where = File.read(t)}
 o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
 o.on("-u ", "--user ", String, "database user (#{opt.user})") {|t| opt.user = t}
 o.on("-p ", "--password ", String, "database password") {|t| opt.password = t}
+o.on("-w ", "--where ", String, "WHERE conditional string") {|t| opt.where = t}
 begin
   o.parse!
 rescue
@@ -24,17 +27,17 @@ rescue
   STDERR << o
   exit(1)
 end
-if (ARGV.size !=  1 && ARGV.size != 2)
+if (ARGV.size <  1)
   STDERR << o
   exit(1)
 end
 
-database, table = ARGV
+database = ARGV.shift
 
 db = Mysql::new(opt.host, opt.user, opt.password, database)
 
-if (table)
-  tables = [table]
+if (!ARGV.empty?)
+  tables = ARGV
 else
   tables = []
   db.query("SHOW TABLES").each do |table|
@@ -44,7 +47,9 @@ end
 
 tables.each do |table|
   out = File.new(table + ".txt", "w")
-  db.query("SELECT * from #{table}").each do |row|
+  query = "SELECT * FROM #{table}"
+  query += " WHERE " + opt.where if (opt.where)
+  db.query(query).each do |row|
     out.print row.join("\t") + "\n"
   end
   out.close
