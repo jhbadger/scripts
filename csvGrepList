@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+require 'ZFile'
+
+if (ARGV.size != 6)
+  STDERR << "Usage: " << File.basename($0) << " csv1 delim1 col1 csv2 delim2 col2\n"
+  exit(1)
+end
+
+csv1, delim1, col1, csv2, delim2, col2 = ARGV
+col1 = col1.to_i
+col2 = col2.to_i
+
+need = Hash.new
+
+STDERR << "Loading " << csv1 << "...\n"
+ZFile.new(csv1).each do |line|
+  row = line.chomp.split(delim1)
+  need[row[col1]] = true
+end
+
+STDERR << "Loading " << csv2 << "...\n"
+ZFile.new(csv2).each do |line|
+  row = line.chomp.split(delim2)
+  print line if need[row[col2]]
+end
+
