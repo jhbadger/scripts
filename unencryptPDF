@@ -1,0 +1,11 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size == 0)
+  STDERR << "Usage: " << File.basename($0) << " pdf [..pdf..]\n"
+  exit(1)
+else
+  ARGV.each do |pdf|
+   name = File.basename(pdf, ".pdf")
+   system("gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -sOutputFile='#{name}_unencrypted.pdf' -c .setpdfwrite -f '#{pdf}'")
+  end
+end
