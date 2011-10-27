@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+require 'ZFile'
+
+if (ARGV.size < 1)
+  STDERR << "Usage: " << File.basename($0) << " csv [..csv..[cluster-file]\n"
+  exit(1)
+end
+
+if (!ARGV.last.index(".csv"))
+  cluster = Hash.new
+  STDERR << "Loading clusters...\n"
+  ZFile.new(ARGV.pop).each do |line|
+    pep, c1, c2 = line.chomp.split("\t")
+    cluster[pep] = c1 + "|| " + c2
+  end
+else
+  cluster = nil
+end
+
+ARGV.each do |file|
+  tab = File.basename(file).split(".csv").first + ".tab"
+  out = File.new(tab, "w")
+  CSV.foreach(file, :headers => true) do |line|
+    meta = [line["Seq Name"], line["Dataset"], line["Annotation"], "APIS"]
+    p meta
+    exit(1)
+  end
+  out.close
+end
