@@ -2,8 +2,9 @@
 
 require 'ostruct'
 require 'optparse'
-opt.include = ""
 opt = OpenStruct.new
+opt.include = ""
+opt.exclude = false
 
 ARGV.options {|opts|
   opts.banner << " cluster-file site [site...]"
