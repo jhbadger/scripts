@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+reads = Hash.new
+contigs = Hash.new
+
+if (ARGV.size != 1)
+  STDERR << "Usage " << File.basename($0) << " posmap.txt\n"
+end
+
+oldC = nil
+oldR = nil
+
+printf("contigs,reads\n")
+File.new(ARGV.first).each do |line|
+  contig, read = line.chomp.split("\t")
+  reads[read] = true
+  contigs[contig] = true
+  csize = contigs.size
+  rsize = reads.size
+  printf("%d,%d\n", csize, rsize) if (csize != oldC || oldR != rsize)
+  oldC = csize
+  oldR = rsize
+end
