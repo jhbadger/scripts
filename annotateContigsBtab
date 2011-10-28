@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 2)
+  STDERR << "Usage: " << File.basename($0) << " contig.txt btab-file [...btab-file...]"
+  exit(1)
+end
+
+contigs = ARGV.shift
+
+need = Hash.new
+
+File.new(contigs).each do |line|
+  need[line.chomp] = true
+end
+
+ARGV.each do |btab|
+  File.new(btab).each do |line|
+    fields = line.chomp.split("\t")
+    name = fields[0].split(" ").first
+    if (need[name])
+      printf("%s\t%s\n", name, fields[14])
+      need[name] = false
+    end
+  end
+end
