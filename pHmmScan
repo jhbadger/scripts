@@ -48,6 +48,8 @@ end
 
 
 ARGV.each do |file|
+  outName = File.basename(file, ".pep") + "_" + File.basename(db)
+  next if File.exist?(outName + ".tbl")
   opt.gridSize = `grep -c ">" #{file}`.to_i / 1000 if (opt.gridSize.nil?)
   hout = File.basename(file) + "_vs_" + File.basename(db) + ".out"
   tblout = File.basename(file) + "_vs_" + File.basename(db) + ".tbl"
@@ -72,7 +74,6 @@ ARGV.each do |file|
   end
   out.close
   grid.submit(sync = true)
-  outName = File.basename(file, ".pep") + "_" + File.basename(db)
   out = File.new(outName + ".tbl", "w")
   Dir.glob("*input*.tbl").each do |tbl|
     File.new(tbl).each do |line|
