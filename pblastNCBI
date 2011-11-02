@@ -63,7 +63,7 @@ end
 
 blast = "blastall -p #{opt.blast} -d #{db} -b#{opt.maxHits}"
 blast += " -v#{opt.maxHits} -e#{opt.evalue} -i "
-blast = [blast, "btab"] if (opt.btab)
+blast = [blast, "badgerBtab"] if (opt.btab)
 ARGV.each do |file|
   opt.gridSize = `grep -c ">" #{file}`.to_i / 1000 if (opt.gridSize.nil?)
   opt.gridSize = 150 if opt.gridSize == 0
