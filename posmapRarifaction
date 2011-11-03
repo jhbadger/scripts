@@ -5,6 +5,7 @@ contigs = Hash.new
 
 if (ARGV.size != 1)
   STDERR << "Usage " << File.basename($0) << " posmap.txt\n"
+  exit(1)
 end
 
 oldC = nil
