@@ -44,7 +44,7 @@ end
 
 ARGV.each do |file|
   opt.gridSize = 10000 if (opt.gridSize.nil?)
-  outName = File.new(File.basename(file, ".pep")) + "_tmhmm.txt"
+  outName = File.basename(file, ".pep") + "_tmhmm.txt"
   next if File.exist?(outName) 
   if (!File.exists?(file))
     STDERR.printf("File %s does not exist!\n", file)

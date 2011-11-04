@@ -8,8 +8,10 @@ require 'csv'
 
 opt = OpenStruct.new
 opt.size = 100
+opt.filter = false
 o = OptionParser.new
 o.banner << " sqlite.db"
+o.on("-f", "--filter", "calculate on filter size (#{opt.filter})") {opt.filter = true}
 o.on("-s ", "--size ", Integer, "min cluster size (#{opt.size})") {|t| opt.size = t}
 begin
   o.parse!
@@ -33,7 +35,7 @@ bins = Hash.new
 STDERR << "Processing dataset counts...\n"
 db.execute("SELECT dataset FROM dataset").each do |row|
   site, filter = siteName(row.first), classifySample(row.first)
-  next if filter == "VIR"
+  next if filter == "VIR" || site == "GS114"
   bins[site] = Hash.new if !bins[site]
   bins[site][filter] = [] if !bins[site][filter]
   bins[site][filter].push(row.first)
@@ -41,12 +43,16 @@ end
 complete = (bins.keys.collect{|x|  x if bins[x].size > 2} - [nil]).sort
 
 counts = Hash.new
+filtCounts = Hash.new
 complete.each do |site|
   counts[site] = Hash.new
   bins[site].keys.each do |filter|
+    filtCounts[filter] = 0 if !filtCounts[filter]
     counts[site][filter] = 0
     bins[site][filter].each do |library|
-      counts[site][filter] += db.get_first_value("SELECT count(*) from sequence WHERE dataset='#{library}'")
+      val = db.get_first_value("SELECT count(*) from sequence WHERE dataset='#{library}'")
+      counts[site][filter] += val
+      filtCounts[filter] += val
     end
   end
 end
@@ -67,25 +73,27 @@ inexp += ")"
 
 STDERR << "Calculating Frequencies per site/filter...\n"
 freq = Hash.new
+filtFreq = Hash.new
 clusters = Hash.new
 combo = []
+combo = [0.1, 0.8, 3.0] if (opt.filter)
 counts.keys.sort.each do |site|
   freq[site] = Hash.new
   counts[site].keys.sort.each do |filter|
-    combo.push(site + "_" + filter.to_s)
+    combo.push(site + "_" + filter.to_s) if (!opt.filter)
+    filtFreq[filter] = Hash.new if !filtFreq[filter]
     freq[site][filter] = Hash.new
     bins[site][filter].each do |library|
       db.execute("SELECT dataset, cluster_num, count(*) FROM sequence, cluster WHERE cluster.seq_name = sequence.seq_name AND cluster_num IN #{inexp} AND dataset = '#{library}' GROUP BY dataset, cluster_num").each do |row|
         dataset, cluster, num = row
         freq[site][filter][cluster] = 0 if !freq[site][filter][cluster]
         freq[site][filter][cluster] += num
+        filtFreq[filter][cluster] = 0 if (!filtFreq[filter][cluster])
+        filtFreq[filter][cluster] += num
         if (!clusters[cluster])
           clusters[cluster] = db.get_first_value("SELECT annotation FROM cluster_ann WHERE cluster_num = #{cluster}")
         end
       end
-    end
-    freq[site][filter].keys.each do |cluster|
-      freq[site][filter][cluster] /= counts[site][filter].to_f
     end
   end
 end
@@ -96,7 +104,13 @@ clusters.keys.sort.each do |cluster|
   row = [cluster.to_s + ": " + clusters[cluster].to_s]
   freq.keys.sort.each do |site|
     freq[site].keys.sort.each do |filter|
-      row.push(freq[site][filter][cluster].to_f)
+      if (opt.filter)
+        if (site == freq.keys.sort.first)
+          row.push(filtFreq[filter][cluster].to_f/filtCounts[filter])
+        end
+      else
+        row.push(freq[site][filter][cluster].to_f/counts[site][filter])
+      end
     end
   end
   print row.to_csv
