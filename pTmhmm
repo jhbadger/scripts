@@ -6,7 +6,7 @@ require 'bio'
 require 'SunGrid'
 
 opt = OpenStruct.new
-opt.command = "hmmscan"
+opt.command = "tmhmm"
 opt.project = nil
 opt.queue = "default"
 opt.gridSize = nil
@@ -14,7 +14,7 @@ $VERBOSE = nil
 
 
 ARGV.options do |opts|
-  opts.banner << " hmm-db fasta [fasta...]"
+  opts.banner << " fasta [fasta...]"
   opts.on("-c ", "--command ", String,
          "command to run hmm search (#{opt.command})") {|t| opt.command = t}
   opts.on("-p", "--project ", String,  
@@ -30,7 +30,7 @@ ARGV.options do |opts|
     STDERR.puts opts
     exit(1)
   end
-  if (ARGV.size < 2)
+  if (ARGV.size < 1)
     STDERR.puts opts
     exit(1)
   end
@@ -41,26 +41,16 @@ if (opt.project.nil?)
   exit(1)
 end
 
-db = ARGV.shift
-if (File.basename(db) == db)
-  db = Dir.pwd + "/" + db
-end
-
 
 ARGV.each do |file|
-  outName = File.basename(file, ".pep") + "_" + File.basename(db)
-  next if File.exist?(outName + ".tbl")
   opt.gridSize = 10000 if (opt.gridSize.nil?)
-  hout = File.basename(file) + "_vs_" + File.basename(db) + ".out"
-  tblout = File.basename(file) + "_vs_" + File.basename(db) + ".tbl"
-  domout = File.basename(file) + "_vs_" + File.basename(db) + ".dom"
+  outName = File.new(File.basename(file, ".pep")) + "_tmhmm.txt"
+  next if File.exist?(outName) 
   if (!File.exists?(file))
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
-  hmm = "#{opt.command} --cut_tc -Z 15930 -o hmmscan_input.$SGE_TASK_ID.out "
-  hmm += "--tblout hmmscan_input.$SGE_TASK_ID.tbl "
-  hmm += "--domtblout hmmscan_input.$SGE_TASK_ID.dom #{db} "
+  hmm = "#{opt.command} tmhmm_input.$SGE_TASK_ID.out "
   grid = SunGrid.new(hmm, opt.project, "4G")
   count = 0
   out = nil
@@ -74,19 +64,38 @@ ARGV.each do |file|
   end
   out.close
   grid.submit(sync = true)
-  out = File.new(outName + ".tbl", "w")
-  Dir.glob("*input*.tbl").each do |tbl|
-    File.new(tbl).each do |line|
-      out.print line
-    end
-  end
-  out.close
-  out = File.new(outName + ".dom", "w")
-  Dir.glob("*input*.dom").each do |dom|
-    File.new(dom).each do |line|
-      out.print line
-    end
-  end
-  out.close
   grid.cleanup
+  outFile = File.new(outName, "w")
+  out = "";
+  File.new("tmhmm.out").each do |line|
+    line.chomp!
+    if (line !~ /\/usr\/local\/bin/ )
+      if (line =~ /\#/ )
+        if (line =~ /^\# ([^\s]+) Length: (\d+)\s*/ ) 
+          if (out != "") 
+            outFile.print out + "\n"
+            out = ""
+          end
+          a = $1;
+          outFile.printf("%s len=%s ", a, $2)
+        elsif (line =~ /^\# ([^\s]+) Number of predicted TMHs:\s+(\d+)\s*/ )
+          a = $1;
+          outFile.printf("PredHel = %s ", $2)
+        end
+      else 
+        out += "Topology=" if (out !~ /Topology/) 
+        (a, b, property, topology) = line.split("\t")
+        if (property == "inside") 
+          out += "i"
+        elsif (property ==  "outside") 
+          out += "o"
+        else 
+          topology =~ /\s+(\d+)\s+(\d+)/
+          out += $1 + "-" + $2
+        end
+      end
+    end
+  end
+  outFile.close
+  File.unlink("tmhmm.out")
 end
