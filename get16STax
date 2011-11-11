@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size != 2)
+  STDERR << File.basename($0) << " list.txt SSU.tax\n"
+  exit(1)
+end
+
+list, tax = ARGV
+
+ab = Hash.new
+found = Hash.new
+
+File.new(list).each do |line|
+  a, abbr, b, sp = line.chomp.split("\t")
+  sp = sp.split(" (").first
+  ab[sp] = abbr
+end
+
+
+ZFile.new(tax).each do |line|
+  line.gsub!("substr. ","")
+  line.gsub!("str. ","")
+  (ab.keys - found.keys).each do |sp|
+    if line.index(sp)
+      printf("%s\t%s--%s--%s\n", line.split(" ").first, ab[sp], sp, line.split(" ").first)
+      found[sp] = true
+      break
+    end
+  end
+end
+
+(ab.keys - found.keys).each do |sp|
+  STDERR << sp << " not found\n"
+end
