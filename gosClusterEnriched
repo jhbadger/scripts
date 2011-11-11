@@ -4,15 +4,14 @@ require 'optparse'
 require 'ostruct'
 require 'sqlite3'
 require 'GOS'
+require 'statistics2'
 require 'csv'
 
 opt = OpenStruct.new
-opt.size = 100
-opt.filter = false
 o = OptionParser.new
+
+
 o.banner << " sqlite.db"
-o.on("-f", "--filter", "calculate on filter size (#{opt.filter})") {opt.filter = true}
-o.on("-s ", "--size ", Integer, "min cluster size (#{opt.size})") {|t| opt.size = t}
 begin
   o.parse!
 rescue
@@ -29,89 +28,111 @@ dbname, rest = ARGV
 
 db = SQLite3::Database.new(dbname)
 
+class Float
+  def sci_round(precision = 2)
+	  return ("%.#{precision}e" % self).to_f
+  end
+end
+
+def chi2Test(observed, expected)
+  chi2 = 0
+  observed.size.times do |i|
+    chi2 += (observed[i] - expected[i])**2/expected[i].to_f
+  end
+  return [chi2.round(2), Statistics2.chi2_x(expected.size - 1,chi2).sci_round(2)]
+end
+
+def calculateExpected(observed, totals)
+  expected = []
+  obsum = observed.reduce(:+)
+  totsum = totals.reduce(:+)
+  observed.size.times do |i|
+    expected[i] = ((obsum/totsum.to_f)*totals[i]).round
+  end
+  return expected
+end
 
 bins = Hash.new
 
-STDERR << "Processing dataset counts...\n"
+STDERR << "Processing datasets...\n"
 db.execute("SELECT dataset FROM dataset").each do |row|
   site, filter = siteName(row.first), classifySample(row.first)
   next if filter == "VIR" || site == "GS114"
-  bins[site] = Hash.new if !bins[site]
+  bins[site] = Hash.new if (!bins[site])
   bins[site][filter] = [] if !bins[site][filter]
   bins[site][filter].push(row.first)
 end
-complete = (bins.keys.collect{|x|  x if bins[x].size > 2} - [nil]).sort
 
-counts = Hash.new
-filtCounts = Hash.new
-complete.each do |site|
-  counts[site] = Hash.new
+libs = Hash.new
+
+bins.reject! {|key, value| bins[key].keys.size != 3}
+
+bins.keys.each do |site|
   bins[site].keys.each do |filter|
-    filtCounts[filter] = 0 if !filtCounts[filter]
-    counts[site][filter] = 0
-    bins[site][filter].each do |library|
-      val = db.get_first_value("SELECT count(*) from sequence WHERE dataset='#{library}'")
-      counts[site][filter] += val
-      filtCounts[filter] += val
-    end
+    libs[filter] = [] if !libs[filter]
+    libs[filter] += bins[site][filter]
   end
 end
 
-STDERR << "Finding highly abundant clusters...\n"
+
+STDERR << "Computing cluster sizes...\n"
 clusters = Hash.new
-inexp = "("
-db.execute("SELECT cluster_num, count(*) AS count FROM cluster GROUP BY cluster_num").each do |row|
-  cluster, count = row
-  if count > opt.size
-    clusters[cluster] = count
-    inexp += cluster.to_s + ","
-  end
+db.execute("SELECT cluster_num, count(*) FROM cluster GROUP BY cluster_num").each do |row|
+  num, count = row
+  clusters[num] = count
 end
-inexp.chop!
-inexp += ")"
 
-
-STDERR << "Calculating Frequencies per site/filter...\n"
-freq = Hash.new
-filtFreq = Hash.new
-clusters = Hash.new
-combo = []
-combo = [0.1, 0.8, 3.0] if (opt.filter)
-counts.keys.sort.each do |site|
-  freq[site] = Hash.new
-  counts[site].keys.sort.each do |filter|
-    combo.push(site + "_" + filter.to_s) if (!opt.filter)
-    filtFreq[filter] = Hash.new if !filtFreq[filter]
-    freq[site][filter] = Hash.new
-    bins[site][filter].each do |library|
-      db.execute("SELECT dataset, cluster_num, count(*) FROM sequence, cluster WHERE cluster.seq_name = sequence.seq_name AND cluster_num IN #{inexp} AND dataset = '#{library}' GROUP BY dataset, cluster_num").each do |row|
-        dataset, cluster, num = row
-        freq[site][filter][cluster] = 0 if !freq[site][filter][cluster]
-        freq[site][filter][cluster] += num
-        filtFreq[filter][cluster] = 0 if (!filtFreq[filter][cluster])
-        filtFreq[filter][cluster] += num
-        if (!clusters[cluster])
-          clusters[cluster] = db.get_first_value("SELECT annotation FROM cluster_ann WHERE cluster_num = #{cluster}")
-        end
-      end
+STDERR << "Counting cluster distribution...\n"
+counts = Hash.new
+totCounts = Hash.new
+libs.keys.each do |filter|
+  counts[filter] = Hash.new 
+  libs[filter].each do |lib|
+    db.execute("SELECT cluster_num, count(*) FROM sequence, cluster WHERE sequence.seq_name = cluster.seq_name AND dataset = '#{lib}' GROUP BY cluster_num").each do |row|
+      num, count = row
+      totCounts[filter] = 0 if (!totCounts[filter])
+      counts[filter][num] = 0 if (!counts[filter][num])
+      counts[filter][num] += count
+      totCounts[filter] += count
     end
   end
 end
 
-print ([""] + combo).to_csv
-row = []
-clusters.keys.sort.each do |cluster|
-  row = [cluster.to_s + ": " + clusters[cluster].to_s]
-  freq.keys.sort.each do |site|
-    freq[site].keys.sort.each do |filter|
-      if (opt.filter)
-        if (site == freq.keys.sort.first)
-          row.push(filtFreq[filter][cluster].to_f/filtCounts[filter])
-        end
-      else
-        row.push(freq[site][filter][cluster].to_f/counts[site][filter])
-      end
-    end
-  end
-  print row.to_csv
+
+cluster_ann = Hash.new
+clusters.keys.each do |num|
+  cluster_ann[num] = num.to_s + ":" + "no annotation"
+end
+
+db.execute("SELECT cluster_num, annotation FROM cluster_ann").each do |row|
+  num, ann = row
+  cluster_ann[num] = num.to_s + ":" + ann
+end
+
+print (["Cluster"] + ["Size in IO"] + counts.keys.sort.collect{|x| "Observed " + x.to_s} + counts.keys.sort.collect{|x| "Expected " + x.to_s} + 
+  counts.keys.sort.collect{|x| "Normalized " + x.to_s} + ["Chi-square", "p-value"]).to_csv
+totals = counts.keys.sort.collect{|x| totCounts[x]}
+
+rows = Hash.new
+chiv = Hash.new
+sig = Hash.new
+
+clusters.keys.sort.each do |num|
+  row = [cluster_ann[num], clusters[num]]
+  observed = counts.keys.sort.collect{|x| counts[x][num].to_i}
+  next if (observed.reduce(:+) < 10)
+  expected = calculateExpected(observed, totals)
+  normalized =  counts.keys.sort.collect{|x| counts[x][num].to_f / totCounts[x]}
+  chi2 = chi2Test(observed, expected)
+  row += observed + expected + normalized + chi2
+  rows[num] = row
+  chiv[num] = chi2.first
+  sig[num] = chi2.last
+end
+
+bonferroni = 0.05 / rows.size
+STDERR << "Rows: " << rows.size << " Bonferroni: " << bonferroni.sci_round << "\n"
+
+chiv.keys.sort {|x, y| chiv[y] <=> chiv[x]}.each do |num|
+  print rows[num].to_csv if sig[num] <= bonferroni
 end

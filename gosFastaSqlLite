@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'sqlite3'
+require 'GOS'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+
+o.banner << " sqlite.db site [...site...]"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+dbname, rest = ARGV
+
+db = SQLite3::Database.new(dbname)
+
+combo = Hash.new
+db.execute("SELECT dataset FROM dataset").each do |row|
+  site, filter = siteName(row.first), classifySample(row.first)
+  key = site + "x" + filter.to_s
+  combo[key] = [] if (!combo[key])
+  combo[key].push(row.first)
+end
+
+
+ARGV.each do |site|
+  combo.keys.grep(/#{site}/).each do |key|
+    outPep = File.new(key + ".pep", "w")
+    outClass = File.new(key + "_class.txt", "w")
+    STDERR << "Writing #{key}...\n"
+    combo[key].each do |library|
+      db.execute("SELECT seq_name, sequence FROM sequence WHERE dataset = '#{library}'").each do |row|
+        outPep.print ">#{row.first}\n#{row.last.gsub(Regexp.new(".{1,60}"), "\\0\n")}"
+      end
+      db.execute("SELECT seq_name, kingdom, phylum, class, ord, family, genus, species FROM classification WHERE dataset = '#{library}'").each do |row|
+        outClass.print row.join("\t") + "\n"
+      end
+    end
+    outPep.close
+    outClass.close
+    
+  end
+end
