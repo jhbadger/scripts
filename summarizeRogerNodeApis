@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+
+if (ARGV.size != 1)
+  STDERR << "Usage: " << File.basename($0) << " csv-file\n"
+  exit(1)
+end
+
+csv = ARGV.first
+
+assignment = Hash.new
+CSV.foreach(csv, :headers => true) do |row|
+  name, tax = row["Seq Name"], row["Relaxed Classification"]
+  next if tax == ""
+  contig, rest = name.split("_length")
+  assignment[contig] = [] if assignment[contig].nil?
+  tax = tax.split("; ")
+  0.upto(6) do |i|
+    assignment[contig][i] = Hash.new if !assignment[contig][i]
+    tax[i] = "Mixed" if !tax[i]
+    assignment[contig][i][tax[i]] = 0 if !assignment[contig][i][tax[i]]
+    assignment[contig][i][tax[i]] += 1
+  end
+end
+
+print ["Contig", "Orfs", "Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"].to_csv
+
+assignment.keys.sort.each do |contig|
+  row = [contig]
+  0.upto(6) do |i|
+    tot = assignment[contig][i].values.reduce(:+)
+    row.push(tot) if (row.size == 1)
+    tx = ""
+    assignment[contig][i].keys.sort {|x, y| assignment[contig][i][y] <=> assignment[contig][i][x]}.each do |taxon|
+      tx += taxon + " " + ((assignment[contig][i][taxon]*100)/tot).to_s + "% "
+    end
+    row.push(tx)
+  end
+  print row.to_csv
+end

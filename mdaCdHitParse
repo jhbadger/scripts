@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+opt.size = 2
+
+o = OptionParser.new
+o.banner << " clstr"
+o.on("-s ", "--size ", Integer, "Min cluster size (#{opt.size})") {|t| opt.size = 2}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+clstr, rest = ARGV
+
+sites = Hash.new
+representative = Hash.new
+num = 0
+
+File.new(clstr).each do |line|
+  if (line =~/>Cluster ([0-9]+)/)
+    num = $1.to_i
+    sites[num] = Hash.new
+  elsif (line =~/^[0-9]/)
+    id, len, name, percent = line.chomp.split(" ")
+    if (name =~/>(\w+)\.\.\./)
+      name = $1
+      site, rest = name.split("_")
+      sites[num][site] = name
+      representative[num] = name if percent == "*" 
+    end
+  end
+end
+
+print ["Cluster", "Sites", "Representative"].to_csv
+sites.keys.sort.each do |cluster|
+  if (sites[cluster].size >= opt.size)
+    row = [cluster, sites[cluster].values.sort.join(" "), representative[cluster]]
+    print row.to_csv
+  end
+end
+  
