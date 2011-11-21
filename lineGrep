@@ -50,7 +50,7 @@ File.new(file).each {|line|
     if (!opt.v)
       print line if (seen[fields[0]])
     else
-      print seq if (!seen[fields[0]])
+      print line if (!seen[fields[0]])
   end
 end
 }
