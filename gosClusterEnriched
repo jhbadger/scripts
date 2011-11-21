@@ -9,10 +9,11 @@ require 'csv'
 
 opt = OpenStruct.new
 o = OptionParser.new
-
+opt.filters = 3
 
 o.banner << " sqlite.db"
 begin
+  o.on("-f ", "--filters ", Integer, "minimum filters/site (#{opt.filters})") {|t| opt.filters = t}
   o.parse!
 rescue
   STDERR << $!.message << "\n"
@@ -65,7 +66,7 @@ end
 
 libs = Hash.new
 
-bins.reject! {|key, value| bins[key].keys.size != 3}
+bins.reject! {|key, value| bins[key].keys.size < opt.filters}
 
 bins.keys.each do |site|
   bins[site].keys.each do |filter|
@@ -81,6 +82,7 @@ db.execute("SELECT cluster_num, count(*) FROM cluster GROUP BY cluster_num").eac
   num, count = row
   clusters[num] = count
 end
+
 
 STDERR << "Counting cluster distribution...\n"
 counts = Hash.new
@@ -120,7 +122,7 @@ sig = Hash.new
 clusters.keys.sort.each do |num|
   row = [cluster_ann[num], clusters[num]]
   observed = counts.keys.sort.collect{|x| counts[x][num].to_i}
-  next if (observed.reduce(:+) < 10)
+  next if (observed.empty? || observed.reduce(:+) < 10)
   expected = calculateExpected(observed, totals)
   normalized =  counts.keys.sort.collect{|x| counts[x][num].to_f / totCounts[x]}
   chi2 = chi2Test(observed, expected)

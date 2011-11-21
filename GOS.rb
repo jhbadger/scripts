@@ -77,7 +77,7 @@ def classifySample(sample)
     return "VIR"
   elsif sample =~/LG/ || sample =~/01a/
     return 3.0
-  elsif sample =~/SM/ || sample =~/01b/ || sample =~/GS-25-/
+  elsif sample =~/SM/ || sample =~/01b/ || sample =~/GS-25-/ || sample =~/GOS108XLRVAL-4F-1-400_FG5HGJH01/ || sample =~/GOS108XLRVAL-4F-1-400_FG5HGJH02/ || sample =~/GOS108XLRVAL-4F-1-400_FJGGSX101/
     return 0.8
   elsif sample =~/00[b|c|d]/
     return 0.22
