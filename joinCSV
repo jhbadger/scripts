@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+o.banner << " csv1 csv2"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+csv1, csv2 = ARGV
+
+lines = Hash.new
+size = 0
+CSV.foreach(csv1) do |line|
+  lines[line.first] = line[1..line.size]
+  size = line.size if line.size > size
+end
+
+size = size - 1
+
+CSV.foreach(csv2) do |line|
+  lines[line.first] = [] if (!lines[line.first])
+  while (lines[line.first].size < size)
+    lines[line.first].push("")
+  end
+  lines[line.first] += line[1..line.size]
+end
+
+
+lines.keys.sort.each do |key|
+  print ([key] + lines[key]).to_csv
+end

@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+rev = false
+if (ARGV.first == "-r")
+  ARGV.shift
+  rev = true
+end
+
+if (ARGV.size != 2)
+  STDERR.printf("usage: %s [-r] fasta-file alias-file\n", $0)
+  exit(1)
+end
+
+inF, aliasF = ARGV
+
+realNames = Hash.new
+
+File.new(aliasF).each do |line|
+  line.chomp!
+  ali, real = line.split("\t")
+  if (!rev)
+    realNames[ali] = real
+  else
+    realNames[real] = ali
+  end
+end
+
+File.new(inF).each do |line|
+  if (line =~/>/)
+    id = line[1..line.length].split(" ").first
+    line =  line.chomp + " " + realNames[id] + "\n"
+  end
+  print line
+end
+

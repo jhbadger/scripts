@@ -136,5 +136,81 @@ def corr(hash, metadata, property)
   return counts.correlationWith(meta)
 end
 
+# compute taxonomy breakdown for given db and group
+def clusterTaxonDist(db, kingdom)
+  dist = Hash.new
+  ranks = Hash.new
+  counts = Hash.new
+  STDERR << "Computing taxononomy distro for " << kingdom << "...\n"
+  db.execute("SELECT phylum, class, ord, family, genus, cluster_num FROM classification " +
+    "JOIN cluster ON cluster.seq_name = classification.seq_name WHERE kingdom = '#{kingdom}'").each do |row|
+    phylum, cl, ord, family, genus, cluster_num = row
+    group = phylum
+    counts[cluster_num] = 0 if (!counts[cluster_num])
+    counts[cluster_num] += 1
+    if (kingdom == "Bacteria")
+      if (genus =~/Pelagibacter/)
+        group = "Pelagibacter"
+      elsif (genus =~/Prochlorococcus/)
+        group = "Prochlorococcus"
+      elsif (genus =~/Synechococcus/)
+        group = "Synechococcus"
+      elsif (cl == "Alphaproteobacteria")
+        group = "Other alphaproteobacteria"
+      elsif (group == "Cyanobacteria")
+        group = "Other cyanobacteria"
+      elsif (group =~/Bacteroidetes|Chlorobi/)
+        group = "Bacteroidetes/Chlorobi"
+      elsif (cl =~/Betaproteobacteria/)
+        group = "Betaproteobacteria"
+      elsif (cl =~/Gammaproteobacteria/)
+        group = "Gammaproteobacteria"
+      elsif (cl =~/Deltaproteobacteria/)
+        group = "Deltaproteobacteria"
+      elsif (cl =~/Epsilonproteobacteria/)
+        group = "Epsilonproteobacteria"
+      elsif (group =~/Proteobacteria/)
+        group = "Other proteobacteria"
+      elsif (group =~/Rhodobacterales/)
+        group = "Rhodobacterales"
+      elsif (group =~/Actinobacteria/)
+        group = "Actinobacteria"  
+      elsif (group =~/Firmicutes/)
+        group = "Firmicutes" 
+      elsif (group =~/Chlamydiae|Verrucomicrobia/)
+        group = "Chlamydiae/Verrucomicrobia"
+      elsif (group =~/Spirochaetes/)
+        group = "Spirochaetes"
+      elsif (group =~/Thermotogae/)
+        group = "Thermotogae"
+      elsif (group =~/Planctomycetes/)
+        group = "Planctomycetes"  
+      elsif (group =~/Unknown/)
+        group = "Unknown" 
+      else
+        group = "Other bacteria"
+      end
+    elsif (kingdom == "Eukaryota")
+      group = phylum
+    elsif (kingdom == "Viruses")
+      group = phylum
+      group = "Other viruses" if (group =~/\(phylum\)/)
+    end
+    next if group == "Mixed"
+    group = kingdom + ": " + group
+    dist[cluster_num] = Hash.new if (!dist[cluster_num])
+    dist[cluster_num][group] = 0 if (!dist[cluster_num][group])
+    dist[cluster_num][group] += 1
+    ranks[group] = 0 if (!ranks[group])
+    ranks[group] += 1
+  end
+  dist.keys.each do |cluster|
+    sum = dist[cluster].values.reduce(:+)
+    dist[cluster].keys.each do |key|
+      dist[cluster][key] = ((dist[cluster][key]*1000) / sum) / 10.0
+    end
+  end
+  return dist, ranks.keys.sort {|x, y| ranks[y] <=> ranks[x]}, counts
+end
 
 

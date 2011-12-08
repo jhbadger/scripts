@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+
+opt = OpenStruct.new
+opt.split = "N{5,}"
+
+o = OptionParser.new
+o.banner << " seq.fasta"
+o.on("-s ", "--split ", String, "split regexp (default #{opt.split})") {|t| opt.split = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+contig = "contig00001"
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each do |seq|
+  seq.seq.split(/#{opt.split}/i).each do |subseq|
+    print Bio::Sequence::NA.new(subseq).to_fasta(contig, 60)
+    contig.succ!
+  end
+end

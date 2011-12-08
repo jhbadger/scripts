@@ -11,6 +11,8 @@ opt = OpenStruct.new
 o = OptionParser.new
 opt.filters = 3
 
+#ARGV.push("/Users/jbadger/clusters/sanger_io.db")
+
 o.banner << " sqlite.db"
 begin
   o.on("-f ", "--filters ", Integer, "minimum filters/site (#{opt.filters})") {|t| opt.filters = t}
@@ -54,12 +56,15 @@ def calculateExpected(observed, totals)
 end
 
 bins = Hash.new
-
+siteTots = Hash.new
 STDERR << "Processing datasets...\n"
-db.execute("SELECT dataset FROM dataset").each do |row|
+db.execute("SELECT dataset, count(*) FROM sequence GROUP BY dataset").each do |row|
   site, filter = siteName(row.first), classifySample(row.first)
   next if filter == "VIR" || site == "GS114"
+  siteTots[site] = Hash.new if (!siteTots[site])
   bins[site] = Hash.new if (!bins[site])
+  siteTots[site][filter] = 0 if (!siteTots[site][filter])
+  siteTots[site][filter] += row.last
   bins[site][filter] = [] if !bins[site][filter]
   bins[site][filter].push(row.first)
 end
@@ -67,6 +72,8 @@ end
 libs = Hash.new
 
 bins.reject! {|key, value| bins[key].keys.size < opt.filters}
+siteTots.reject! {|key, value| siteTots[key].keys.size < opt.filters}
+
 
 bins.keys.each do |site|
   bins[site].keys.each do |filter|
@@ -83,27 +90,40 @@ db.execute("SELECT cluster_num, count(*) FROM cluster GROUP BY cluster_num").eac
   clusters[num] = count
 end
 
-
 STDERR << "Counting cluster distribution...\n"
 counts = Hash.new
+siteCounts = Hash.new
 totCounts = Hash.new
 libs.keys.each do |filter|
   counts[filter] = Hash.new 
   libs[filter].each do |lib|
+    site = siteName(lib)
+    siteCounts[site] = Hash.new if (!siteCounts[site])
+    siteCounts[site][filter] = Hash.new if (!siteCounts[site][filter])
     db.execute("SELECT cluster_num, count(*) FROM sequence, cluster WHERE sequence.seq_name = cluster.seq_name AND dataset = '#{lib}' GROUP BY cluster_num").each do |row|
       num, count = row
       totCounts[filter] = 0 if (!totCounts[filter])
       counts[filter][num] = 0 if (!counts[filter][num])
+      siteCounts[site][filter][num] = 0 if (!siteCounts[site][filter][num])
       counts[filter][num] += count
       totCounts[filter] += count
+      siteCounts[site][filter][num] += count
     end
   end
 end
 
+siteFilterList = []
+siteCounts.keys.sort.each do |site|
+  siteCounts[site].keys.sort.each do |filter|
+    siteFilterList.push(site + " " + filter.to_s)
+  end
+end
 
 cluster_ann = Hash.new
+cluster_go = Hash.new
 clusters.keys.each do |num|
   cluster_ann[num] = num.to_s + ":" + "no annotation"
+  cluster_go[num] = ""
 end
 
 db.execute("SELECT cluster_num, annotation FROM cluster_ann").each do |row|
@@ -111,22 +131,55 @@ db.execute("SELECT cluster_num, annotation FROM cluster_ann").each do |row|
   cluster_ann[num] = num.to_s + ":" + ann
 end
 
-print (["Cluster"] + ["Size in IO"] + counts.keys.sort.collect{|x| "Observed " + x.to_s} + counts.keys.sort.collect{|x| "Expected " + x.to_s} + 
-  counts.keys.sort.collect{|x| "Normalized " + x.to_s} + ["Chi-square", "p-value"]).to_csv
-totals = counts.keys.sort.collect{|x| totCounts[x]}
+db.execute("SELECT cluster_num, go FROM cluster2go").each do |row|
+  num, go = row
+  cluster_go[num] = go
+end
+
+bacTax, bacRanks, bactCounts = clusterTaxonDist(db, "Bacteria")
+eukTax, eukRanks, eukCounts = clusterTaxonDist(db, "Eukaryota")
+virTax, virRanks, virCounts = clusterTaxonDist(db, "Viruses")
+
+filters = counts.keys.sort
+
+print (["Cluster"] + ["GO Ids"] + ["Size in IO"] + filters.collect{|x| "Observed " + x.to_s} + filters.collect{|x| "Expected " + x.to_s} + 
+  filters.collect{|x| "Normalized " + x.to_s} + siteFilterList.collect{|x| "Normalized " + x} + ["% Bacterial"] + 
+    bacRanks + ["% Eukaryotic"] + eukRanks + ["% Viral"] + virRanks + 
+    ["Chi-square", "p-value", "Enriched In"]).to_csv
+totals = filters.collect{|x| totCounts[x]}
 
 rows = Hash.new
 chiv = Hash.new
 sig = Hash.new
 
 clusters.keys.sort.each do |num|
-  row = [cluster_ann[num], clusters[num]]
-  observed = counts.keys.sort.collect{|x| counts[x][num].to_i}
+  row = [cluster_ann[num], cluster_go[num], clusters[num]]
+  observed = filters.collect{|x| counts[x][num].to_i}
   next if (observed.empty? || observed.reduce(:+) < 10)
   expected = calculateExpected(observed, totals)
-  normalized =  counts.keys.sort.collect{|x| counts[x][num].to_f / totCounts[x]}
+  normalized =  filters.collect{|x| counts[x][num].to_f / totCounts[x]}
+  siteNormalized = []
+  siteCounts.keys.sort.each do |site|
+    siteCounts[site].keys.sort.each do |filter|
+      siteNormalized.push(siteCounts[site][filter][num].to_f / siteTots[site][filter])
+    end
+  end
   chi2 = chi2Test(observed, expected)
-  row += observed + expected + normalized + chi2
+  maxNorm = normalized.max
+  enriched = nil
+  filters.size.times do |i|
+    enriched = filters[i] if normalized[i] == maxNorm
+  end
+  bacTax[num] = Hash.new if (!bacTax[num])
+  eukTax[num] = Hash.new if (!eukTax[num])
+  virTax[num] = Hash.new if (!virTax[num])
+  taxCount = bactCounts[num].to_i + eukCounts[num].to_i + virCounts[num].to_i
+  taxCount = 1 if (taxCount == 0) # don't divide by zero!
+  bactPercent = ((bactCounts[num].to_i * 1000) / taxCount) / 10.0
+  eukPercent = ((eukCounts[num].to_i * 1000) / taxCount) / 10.0
+  virPercent = ((virCounts[num].to_i * 1000) / taxCount) / 10.0
+  row += observed + expected + normalized + siteNormalized + [bactPercent] + bacRanks.collect{|x| bacTax[num][x].to_f} + 
+    [eukPercent] + eukRanks.collect{|x| eukTax[num][x].to_f} + [virPercent] + virRanks.collect{|x| virTax[num][x].to_f} + chi2 + [enriched]
   rows[num] = row
   chiv[num] = chi2.first
   sig[num] = chi2.last
