@@ -121,6 +121,7 @@ end
 
 cluster_ann = Hash.new
 cluster_go = Hash.new
+cluster_go_num = Hash.new
 clusters.keys.each do |num|
   cluster_ann[num] = num.to_s + ":" + "no annotation"
   cluster_go[num] = ""
@@ -133,7 +134,13 @@ end
 
 db.execute("SELECT cluster_num, go FROM cluster2go").each do |row|
   num, go = row
-  cluster_go[num] = go
+  cluster_go_num[num] = go
+  cluster_go[num] = ""
+  next if go.index("#")
+  inClause = go.split(";").join(",")
+  db.execute("SELECT go_ann FROM go_terms WHERE go_num IN (#{inClause})").each do |row2|
+    cluster_go[num] += row2.first + "; "
+  end
 end
 
 bacTax, bacRanks, bactCounts = clusterTaxonDist(db, "Bacteria")
@@ -142,7 +149,7 @@ virTax, virRanks, virCounts = clusterTaxonDist(db, "Viruses")
 
 filters = counts.keys.sort
 
-print (["Cluster"] + ["GO Ids"] + ["Size in IO"] + filters.collect{|x| "Observed " + x.to_s} + filters.collect{|x| "Expected " + x.to_s} + 
+print (["Cluster"] + ["GO Nums"] + ["GO Terms"] + ["Size in IO"] + filters.collect{|x| "Observed " + x.to_s} + filters.collect{|x| "Expected " + x.to_s} + 
   filters.collect{|x| "Normalized " + x.to_s} + siteFilterList.collect{|x| "Normalized " + x} + ["% Bacterial"] + 
     bacRanks + ["% Eukaryotic"] + eukRanks + ["% Viral"] + virRanks + 
     ["Chi-square", "p-value", "Enriched In"]).to_csv
@@ -153,7 +160,7 @@ chiv = Hash.new
 sig = Hash.new
 
 clusters.keys.sort.each do |num|
-  row = [cluster_ann[num], cluster_go[num], clusters[num]]
+  row = [cluster_ann[num], cluster_go_num[num], cluster_go[num], clusters[num]]
   observed = filters.collect{|x| counts[x][num].to_i}
   next if (observed.empty? || observed.reduce(:+) < 10)
   expected = calculateExpected(observed, totals)

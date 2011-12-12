@@ -1,0 +1,88 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'sqlite3'
+require 'GOS'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.filters = 3
+opt.rank = "kingdom"
+
+#ARGV.push("/Users/jbadger/clusters/sanger_io.db")
+
+o.banner << " sqlite.db"
+begin
+  o.on("-f ", "--filters ", Integer, "minimum filters/site (#{opt.filters})") {|t| opt.filters = t}
+  o.on("-r ", "--rank ", String, "taxonomic rank to compute (#{opt.rank})") {|t| opt.rank = t}
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+dbname, rest = ARGV
+
+db = SQLite3::Database.new(dbname)
+
+
+bins = Hash.new
+STDERR << "Processing datasets...\n"
+db.execute("SELECT dataset, count(*) FROM sequence GROUP BY dataset").each do |row|
+  site, filter = siteName(row.first), classifySample(row.first)
+  next if filter == "VIR" || site == "GS114"
+  bins[site] = Hash.new if (!bins[site])
+  bins[site][filter] = [] if !bins[site][filter]
+  bins[site][filter].push(row.first)
+end
+
+libs = Hash.new
+
+bins.reject! {|key, value| bins[key].keys.size < opt.filters}
+
+bins.keys.each do |site|
+  bins[site].keys.each do |filter|
+    libs[filter] = [] if !libs[filter]
+    libs[filter] += bins[site][filter]
+  end
+end
+
+STDERR << "Counting classified...\n"
+totals = Hash.new
+libs.keys.each do |filter|
+  totals[filter] = 0 if (!totals[filter])
+  libs[filter].each do |dataset|
+    totals[filter] += db.get_first_value("SELECT count(*) FROM classification WHERE dataset='#{dataset}'")
+  end
+end
+
+taxa = Hash.new
+STDERR << "Counting taxonomy...\n"
+taxonomy = Hash.new
+libs.keys.each do |filter|
+  taxonomy[filter] = Hash.new if (!taxonomy[filter])
+  libs[filter].each do |dataset|
+    db.execute("SELECT #{opt.rank}, count(*) FROM classification WHERE dataset='#{dataset}' GROUP BY #{opt.rank}").each do |row|
+      rank, count = row
+      taxonomy[filter][rank] = 0 if (!taxonomy[filter][rank])
+      taxonomy[filter][rank] += count
+      taxa[rank] = true if (!taxa[rank])
+    end
+  end
+end
+
+print ([""] + taxa.keys.sort).to_csv
+taxonomy.keys.sort.each do |filter|
+  row = [filter]
+  taxa.keys.sort.each do |taxon|
+    row.push((taxonomy[filter][taxon].to_i*1000/totals[filter])/10.0)
+  end
+  print row.to_csv 
+end
