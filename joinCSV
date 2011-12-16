@@ -6,8 +6,10 @@ require 'csv'
 
 opt = OpenStruct.new
 o = OptionParser.new
+opt.merge = []
 
 o.banner << " csv1 csv2"
+o.on("-m ", "--merge ", "merge given rows") {|t| opt.merge = t.split(",")}
 begin
   o.parse!
 rescue
@@ -24,23 +26,29 @@ end
 csv1, csv2 = ARGV
 
 lines = Hash.new
-size = 0
-CSV.foreach(csv1) do |line|
-  lines[line.first] = line[1..line.size]
-  size = line.size if line.size > size
+headers = nil
+CSV.foreach(csv1, :headers => true) do |line|
+  headers = line.headers if !headers
+  rowName = line[headers.first]
+  lines[rowName] = line
 end
 
-size = size - 1
-
-CSV.foreach(csv2) do |line|
-  lines[line.first] = [] if (!lines[line.first])
-  while (lines[line.first].size < size)
-    lines[line.first].push("")
+lines2 = Hash.new
+headers2 = nil
+CSV.foreach(csv2, :headers => true) do |line|
+  headers2 = line.headers if !headers2
+  rowName = line[headers2.first]
+  lines2[rowName] = line
+  lines[rowName] = Hash.new if (!lines[rowName])
+  lines[rowName][headers2.first] = lines2[rowName][headers2.first]
+  opt.merge.each do |col|
+    lines[rowName][col] = lines2[rowName][col] if lines[rowName][col].to_s.length < lines2[rowName][col].to_s.length
   end
-  lines[line.first] += line[1..line.size]
 end
 
-
-lines.keys.sort.each do |key|
-  print ([key] + lines[key]).to_csv
+print (headers + headers2).to_csv
+(lines.keys + lines2.keys).sort.uniq.each do |key|
+  lines[key] = Hash.new if (!lines[key])
+  lines2[key] = Hash.new if (!lines2[key])
+  print (headers.collect{|x| lines[key][x]} + headers2.collect{|x| lines2[key][x]}).to_csv
 end

@@ -119,5 +119,29 @@ def approxBinom(x, y, p)
   return 2*normalP(computeZScore(x, expected, x + y))
 end
 
+class Float
+  def sci_round(precision = 2)
+	  return ("%.#{precision}e" % self).to_f
+  end
+end
+
+def chi2Test(observed, expected)
+  chi2 = 0
+  observed.size.times do |i|
+    chi2 += (observed[i] - expected[i])**2/expected[i].to_f
+  end
+  return [chi2.round(2), Statistics2.chi2_x(expected.size - 1,chi2).sci_round(2)]
+end
+
+def calculateExpected(observed, totals)
+  expected = []
+  obsum = observed.reduce(:+)
+  totsum = totals.reduce(:+)
+  observed.size.times do |i|
+    expected[i] = ((obsum/totsum.to_f)*totals[i]).round
+  end
+  return expected
+end
+
 
 

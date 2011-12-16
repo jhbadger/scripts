@@ -1,0 +1,127 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'statistics2'
+require 'Stats'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+o.banner << " cluster.csv go-ann.txt"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+csv, go = ARGV
+
+funcs = Hash.new
+File.new(go).each do |line|
+  num, sec, func = line.chomp.split("\t")
+  if (num =~/GO:([0-9]*)/)
+    num = $1.to_i
+    funcs[num] = func
+  end
+end
+
+
+ioSize = Hash.new
+observed = Hash.new
+totals = []
+tax = Hash.new
+bact, euk, vir, percents = nil
+CSV.foreach(csv, :headers=>true) do |row|
+  next if row["GO Nums"].nil?
+  row["GO Nums"].split(";").collect{|x| x.to_i}.each do |go|
+    observed[go] = {0.1 => 0, 0.8 => 0, 3.0 => 0} if (!observed[go])
+    ioSize[go] = 0 if (!ioSize[go])
+    ioSize[go] += row["Size in IO"].to_i
+    tax[go] = Hash.new if (!tax[go])
+    observed[go][0.1] += row["Observed 0.1"].to_i
+    observed[go][0.8] += row["Observed 0.8"].to_i
+    observed[go][3.0] += row["Observed 3.0"].to_i
+    totals[0] = (row["Observed 0.1"].to_i/row["Normalized 0.1"].to_f).to_i if (observed[go][0.1] > 0 && !totals[0])
+    totals[1] = (row["Observed 0.8"].to_i/row["Normalized 0.8"].to_f).to_i if (observed[go][0.8] > 0 && !totals[1])
+    totals[2] = (row["Observed 3.0"].to_i/row["Normalized 3.0"].to_f).to_i if (observed[go][3.0] > 0 && !totals[2])
+    bact = row.headers.grep(/Bacteria:/) if (!bact)
+    euk = row.headers.grep(/Eukaryota:/) if (!euk)
+    vir = row.headers.grep(/Viruses:/) if (!vir)
+    percents = row.headers.grep(/\%/) if (!percents)
+    ctot = row["Observed 0.1"].to_i + row["Observed 0.8"].to_i + row["Observed 3.0"].to_i
+    bp = ctot*row[percents[0]].to_f/100
+    ep = ctot*row[percents[1]].to_f/100
+    vp = ctot*row[percents[2]].to_f/100
+    bact.each do |taxon|
+      tax[go][taxon] = 0 if (!tax[go][taxon])
+      tax[go][taxon] += bp*row[taxon].to_f/100
+    end
+    euk.each do |taxon|
+      tax[go][taxon] = 0 if (!tax[go][taxon])
+      tax[go][taxon] += ep*row[taxon].to_f/100
+    end
+    vir.each do |taxon|
+      tax[go][taxon] = 0 if (!tax[go][taxon])
+      tax[go][taxon] += vp*row[taxon].to_f/100
+    end
+  end
+end
+
+headers = ["GO Num", "GO Term", "Size in IO", "Observed 0,1", "Observed 0.8", "Observed 3.0", "Expected 0.1", "Expected 0.8", "Expected 3.0"]
+headers += ["Normalized 0.1", "Normalized 0.8", "Normalized 3.0"] + [percents[0]] + bact + [percents[1]] + euk + [percents[2]] + vir
+headers += ["Chi-square", "p-value", "Enriched In"]
+print headers.to_csv
+
+rows = Hash.new
+chiv = Hash.new
+sig = Hash.new
+
+funcs.keys.sort.each do |go|
+  if (observed[go])
+    obs = [observed[go][0.1],observed[go][0.8],observed[go][3.0]]
+    expected = calculateExpected(obs, totals)
+    chi2 = chi2Test(obs, expected)
+    normalized = [0,1,2].collect{|x|obs[x].to_f/totals[x]}
+    maxNorm = normalized.max
+    if (maxNorm == normalized[0])
+      enriched = 0.1
+    elsif (maxNorm == normalized[1])
+      enriched = 0.8
+    elsif (maxNorm == normalized[2])
+      enriched = 3.0
+    end
+    btot = bact.reduce(0) {|sum,x| sum+=tax[go][x].to_f}
+    etot = euk.reduce(0) {|sum,x| sum+=tax[go][x].to_f}
+    vtot = vir.reduce(0) {|sum,x| sum+=tax[go][x].to_f}
+    bp = (btot*1000/(btot+etot+vtot)).to_i/10.0
+    ep = (etot*1000/(btot+etot+vtot)).to_i/10.0
+    vp = (vtot*1000/(btot+etot+vtot)).to_i/10.0
+    btot = 1 if (btot == 0)
+    etot = 1 if (etot == 0)
+    vtot = 1 if (vtot == 0)
+    bper = bact.map {|x| (tax[go][x].to_f*1000/btot).to_i/10.0}
+    eper = euk.map {|x| (tax[go][x].to_f*1000/etot).to_i/10.0}
+    vper = vir.map {|x| (tax[go][x].to_f*1000/vtot).to_i/10.0}
+    row = [go, funcs[go], ioSize[go]] + obs + expected + normalized
+    row += [bp] + bper + [ep] + eper + [vp] + vper
+    row += chi2 + [enriched]
+    rows[go] = row
+    chiv[go] = chi2.first
+    sig[go] = chi2.last
+  end
+end
+
+bonferroni = 0.05 / rows.size
+STDERR << "Rows: " << rows.size << " Bonferroni: " << bonferroni.sci_round << "\n"
+
+chiv.keys.sort {|x, y| chiv[y] <=> chiv[x]}.each do |num|
+  print rows[num].to_csv if sig[num] <= bonferroni
+end
