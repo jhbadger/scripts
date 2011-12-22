@@ -11,11 +11,13 @@ require 'csv'
 opt = OpenStruct.new
 o = OptionParser.new
 opt.filters = 3
+opt.all = false
 
 #ARGV.push("/Users/jbadger/clusters/sanger_io.db")
 
 o.banner << " sqlite.db"
 begin
+  o.on("-a", "--all", "print all clusters not just significant") {opt.all = true}
   o.on("-f ", "--filters ", Integer, "minimum filters/site (#{opt.filters})") {|t| opt.filters = t}
   o.parse!
 rescue
@@ -173,5 +175,5 @@ bonferroni = 0.05 / rows.size
 STDERR << "Rows: " << rows.size << " Bonferroni: " << bonferroni.sci_round << "\n"
 
 chiv.keys.sort {|x, y| chiv[y] <=> chiv[x]}.each do |num|
-  print rows[num].to_csv if sig[num] <= bonferroni
+  print rows[num].to_csv if sig[num] <= bonferroni || opt.all
 end

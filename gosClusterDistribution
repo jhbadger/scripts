@@ -1,0 +1,112 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'sqlite3'
+require 'GOS'
+require 'statistics2'
+require 'Stats'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.filters = 3
+
+o.banner << " sqlite.db"
+begin
+  o.on("-f ", "--filters ", Integer, "minimum filters/site (#{opt.filters})") {|t| opt.filters = t}
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+dbname, rest = ARGV
+type = File.basename(dbname).split("_").first.capitalize
+
+db = SQLite3::Database.new(dbname)
+
+bins = Hash.new
+STDERR << "Processing datasets...\n"
+db.execute("SELECT dataset FROM sequence GROUP BY dataset").each do |row|
+  site, filter = siteName(row.first), classifySample(row.first)
+  next if filter == "VIR" || site == "GS114"
+  bins[site] = Hash.new if (!bins[site])
+  bins[site][filter] = [] if !bins[site][filter]
+  bins[site][filter].push(row.first)
+end
+
+libs = Hash.new
+
+bins.reject! {|key, value| bins[key].keys.size < opt.filters}
+
+bins.keys.each do |site|
+  bins[site].keys.each do |filter|
+    libs[filter] = [] if !libs[filter]
+    libs[filter] += bins[site][filter]
+  end
+end
+
+cluster_ann = Hash.new
+cluster_go = Hash.new
+cluster_go_num = Hash.new
+
+db.execute("SELECT cluster_num, annotation FROM cluster_ann").each do |row|
+  num, ann = row
+  cluster_ann[num] = num.to_s + ":" + ann
+end
+
+db.execute("SELECT cluster_num, go FROM cluster2go").each do |row|
+  num, go = row
+  cluster_go_num[num] = go
+  cluster_go[num] = ""
+  next if go.index("#")
+  inClause = go.split(";").join(",")
+  db.execute("SELECT go_ann FROM go_terms WHERE go_num IN (#{inClause})").each do |row2|
+    cluster_go[num] += row2.first + "; "
+  end
+end
+
+
+counts = Hash.new
+totCounts = Hash.new
+seenCluster = Hash.new
+cSize = Hash.new
+
+libs.keys.sort.each do |filter|
+  inClause = "(\"" + libs[filter].join("\",\"") + "\")"
+  query = "SELECT cluster_num, count(*), kingdom FROM sequence, cluster, classification "
+  query += "WHERE sequence.seq_name = cluster.seq_name AND sequence.dataset IN #{inClause} "
+  query += "AND classification.seq_name = cluster.seq_name "
+  query += "GROUP BY cluster_num, kingdom"
+  STDERR << "Counting cluster distribution for #{filter}...\n"
+  db.execute(query).each do |row|
+    num, count, kingdom = row
+    cSize[num] = 0 if (!cSize[num])
+    totCounts[filter] = 0 if (!totCounts[filter])
+    key = kingdom + " " + filter.to_s
+    counts[key] = Hash.new if !counts[key]
+    counts[key][num] = 0 if (!counts[key][num])
+    counts[key][num] += count
+    totCounts[filter] += count
+    cSize[num] += count
+    seenCluster[num] = true if (!seenCluster[num])
+  end
+end
+
+
+print (["Cluster", "Annotation", "GO", "GO ANN", "#{type} Cluster size"] + totCounts.keys.sort.collect{|x| "Total #{type} #{x}"} + counts.keys.sort.collect{|x| type + " " + x}).to_csv
+
+seenCluster.keys.sort.each do |num|
+  next if cSize[num] < 50
+  row = [num, cluster_ann[num], cluster_go_num[num], cluster_go[num], cSize[num]]
+  row += totCounts.keys.sort.collect{|x| totCounts[x].to_i}
+  row += counts.keys.sort.collect{|x| counts[x][num].to_i}
+  print row.to_csv
+end
+
