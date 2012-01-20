@@ -14,7 +14,7 @@ rows = CSV.read(csv)
 quarter = rows.size / 4
 count = 0
 colors = ["0000FF", "0099FF", "00FFFF", "9900FF", "6699FF", "FF00FF", "CCCCFF", 
-    "66FF00", "669900", "FFFF00", "CC9900", "003300", "CC0000", "000033"]
+    "66FF00", "669900", "FFFF00", "CC9900", "003300", "CC0000", "333333"]
 
 rows.each do |row|
   if (count < quarter)
