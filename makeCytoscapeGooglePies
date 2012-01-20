@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+require 'gchart'
+
+if (ARGV.size != 1)
+  STDERR << "Usage: " << File.basename($0) << " csv-file\n"
+  exit(1)
+end
+
+csv = ARGV.first
+
+rows = CSV.read(csv)
+quarter = rows.size / 4
+count = 0
+colors = ["0000FF", "0099FF", "00FFFF", "9900FF", "6699FF", "FF00FF", "CCCCFF", 
+    "66FF00", "669900", "FFFF00", "CC9900", "003300", "CC0000", "000033"]
+
+rows.each do |row|
+  if (count < quarter)
+    height = 400
+    width = 200
+  elsif (count < 2*quarter)
+    height = 350
+    width = 175
+  elsif (count < 3*quarter)
+    height = 250
+    width = 175
+  else
+    height = 220
+    width = 100
+  end
+  name, eq, values = row
+  if (name == "pie-data")
+    print row.to_csv
+  else
+    values = values.tr("()","").split("::").collect{|x| x.to_f}
+    chart = Gchart.pie(:data => values, :width => width, :height => height, 
+      :background => "00000000", :line_colors => colors)
+    print [name,  eq, chart].to_csv
+    count += 1
+  end
+end
