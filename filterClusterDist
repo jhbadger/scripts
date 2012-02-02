@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+require 'csv'
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+o.banner << " filter taxon clustDist.csv"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 3)
+  STDERR << o
+  exit(1)
+end
+
+filter, taxon, csv = ARGV
+
+
+headers = ["Cluster", "Annotation", "Size", "Norm", "Percent"]
+print headers.to_csv
+
+CSV.foreach(csv, :headers => true) do |row|
+  nrow = [row["Cluster"], row["Annotation"], row["Size"], row["Normalized #{filter}"]]
+  nrow += [row["% #{taxon} #{filter}"]]
+  print nrow.to_csv if nrow.last.to_i > 50
+end

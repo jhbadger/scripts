@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+require 'csv'
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+
+o.banner << " raw_clustDist.csv"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+csv, rest = ARGV
+
+filters = ["0.1", "0.8", "3.0"]
+kingdoms = ["Bacteria", "Eukaryota", "Viruses"]
+
+headers = ["Cluster", "Annotation", "GO", "GO ANN", "Size"]
+headers += ["Normalized 0.1", "% Bacterial 0.1", "% Eukaryotic 0.1", "% Viral 0.1"]
+headers += ["Normalized 0.8", "% Bacterial 0.8", "% Eukaryotic 0.8", "% Viral 0.8"]
+headers += ["Normalized 3.0", "% Bacterial 3.0", "% Eukaryotic 3.0", "% Viral 3.0"]
+print headers.to_csv
+
+CSV.foreach(csv, :headers => true) do |row|
+  nrow = [row["Cluster"], row["Annotation"], row["GO"], row["GO ANN"], row["Sanger Cluster size"].to_i + 
+  row["454 Cluster size"].to_i]
+  filters.each do |filter|
+    ftotal = row.headers.grep(/Total/).grep(/#{filter}/).collect{|x| row[x].to_i}.reduce(:+)
+    counts = Hash.new
+    kingdoms.each do |kingdom|
+      counts[kingdom] = row.headers.grep(/#{filter}/).grep(/#{kingdom}/).collect{|x| row[x].to_i}.reduce(:+)
+    end
+    ctot = counts.values.reduce(:+)
+    percents = Hash.new
+    counts.keys.collect{|x| if (ctot > 0);percents[x] = (counts[x]*1000/ctot)/10.0;else;percents[x] = 0;end}
+    if ftotal > 0
+      norm = (counts["Bacteria"] + counts["Eukaryota"] + counts["Viruses"])/ftotal.to_f
+    else
+      norm = 0
+    end
+    nrow += [norm]
+    nrow += [percents["Bacteria"], percents["Eukaryota"], percents["Viruses"]]
+  end
+  print nrow.to_csv
+end

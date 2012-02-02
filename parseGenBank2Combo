@@ -1,0 +1,246 @@
+#!/usr/bin/env ruby
+
+Encoding.default_external="ASCII-8BIT"
+
+require 'optparse'
+require 'bio'
+require 'ostruct'
+require 'ZFile'
+require 'ApisDB'
+
+opt = OpenStruct.new
+opt.sep = false
+opt.tax = false
+ApisDB.loadOptions(opt)
+
+ARGV.options do |opts|
+  opts.banner << " gbk-file [..gbk-file...]"
+  opts.on("-d ", "--database ", String, 
+       "protein database to use (default #{opt.database})") {|d| opt.database = d}
+  opts.on("-s", "--separate", 
+          "output in separate files for each accession (#{opt.sep})") {|t| opt.sep = t}
+  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
+  opts.on("-t", "--taxonomy", 
+          "use taxonomy from combodb database, not file (#{opt.tax})") {|t| opt.tax = t}
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+end
+
+# classify type of molecule given definition string
+def classifyMolecule(definition)
+  if (definition =~ /plasmid/i)
+    return "Plasmid"
+  elsif (definition =~ /mitochon/i) 
+    return "Mitochondria"
+  elsif (definition =~ /plastid|chloroplast/i) 
+    return "Plastid"
+  elsif (definition =~ /chromosome\s*([^\s,]+)/i ) 
+    return "Chromosome " + $1
+  else
+    return "Chromosome"
+  end
+end
+
+# return sequence from genbank range
+def getSequence(seq, locations)
+  subseq = ""
+  locations.each do |loc|
+    if (loc.strand == 1)
+      subseq +=  seq[(loc.from - 1)..(loc.to - 1)]
+    elsif (loc.strand == -1)
+      subseq += Bio::Sequence::NA.new(seq[(loc.from - 1)..(loc.to - 1)]).complement.seq
+    else
+      STDERR.printf("Error: I don't know how to handle #{locations}\n")
+      exit(1)
+    end
+  end
+  return subseq
+end
+
+
+pep, cds, rna, trna, ent, con = nil
+
+if (!opt.sep)
+  pep = File.new("all.pep", "w")
+  cds = File.new("all.cds", "w")
+  rna = File.new("all.rRNA", "w")
+  trna = File.new("all.tRNA", "w")
+  ent = File.new("all.ent", "w")
+  att = File.new("all.att", "w")
+  con = File.new("all.con", "w")
+end
+
+org = ""
+ARGV.each do |gb|
+  Bio::FlatFile.new(Bio::GenBank, ZFile.new(gb)).each do |genome|
+    organism = genome.organism
+    if (organism == "")
+      organism = genome.definition.split(" ")[0] + " " + genome.definition.split(" ")[1]
+    end
+    acc = genome.accession || ""
+    acc = genome.locus.entry_id || "" if acc == ""
+    if (genome.definition =~/Contig (scaffold[0-9]*)/)
+      acc = $1
+    end
+    if (acc.index("scaffold:")) # EnsEmbl format
+      acc = acc.gsub("scaffold:","").split(":")[0..1].join("_")
+    end
+    orfname = "ORF0000"
+    rnaname = "RNA0000"
+    proteins = 0
+    trnas = 0
+    rrnas = 0
+    strain = ""
+    taxonid = ""
+    gene_location = nil
+    gene_strand = nil
+    product = ""
+    dna = genome.seq
+    next if (dna.length == 0) # skip empty records
+    if (opt.sep)
+      pep = File.new(acc + ".pep", "w")
+      cds = File.new(acc + ".cds", "w")
+      rna = File.new(acc + ".rRNA", "w")
+      trna = File.new(acc + ".tRNA", "w")
+      ent = File.new(acc + ".ent", "w")
+      att = File.new(acc + ".att", "w")
+      con = File.new(acc + ".con", "w")
+    end
+    if (org != organism)
+      STDERR.printf("Processing %s...\n", organism) if (organism != "")
+		  org = organism  
+		end
+    # process each CDS, rRNA. tRNA
+    genome.features.each do |feature|
+      product = feature["product"].first if (product == "" && feature["product"])
+      if feature.feature == "source" # contains taxon_id info
+        feature.qualifiers.each do |qual|
+          if (qual.value =~/taxon:([0-9]+)/)
+            taxon_id = $1
+          end
+        end
+      elsif feature.feature == "gene"
+        feature.qualifiers.each do |qual|
+          product = qual.value if (qual.qualifier == "note")
+        end
+        gene_location = feature.position
+        if (gene_location =~/([0-9]+)\.\.([0-9]+)/)
+          gene_location = [$1,$2]
+          if (feature.position =~/complement/)
+            gene_strand = "-1"
+          else
+            gene_strand = "1"
+          end
+        end
+      elsif feature.feature == "CDS" # proteins and their associated cds
+        cds_name = nil
+        translation = nil
+        feature.qualifiers.each do |qual|
+          if (qual.value =~/GI:/)
+            cds_name = qual.value.downcase.gsub(":","")
+          elsif (!cds_name && qual.qualifier == "protein_id")
+            cds_name = qual.value
+          elsif (qual.qualifier == "translation")
+            translation = qual.value
+          end
+        end
+        seq = getSequence(dna, feature.locations)
+        if (cds_name.nil?) # give it an orf name if none exist
+          cds_name = orfname
+          orfname.succ!
+        end
+        if (translation.nil?) # make one if none given
+          translation = Bio::Sequence::NA.new(seq).translate.seq
+        end
+        key = cds_name + "-" + acc
+        header = key + " " + product.to_s + " {" + organism + "}"
+        pep.print Bio::Sequence::AA.new(translation).to_fasta(header, 60)
+        cds.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
+        if (gene_location)
+          location = gene_location
+          strand = gene_strand
+          gene_location = nil
+        else
+          location = [feature.locations.first.from, feature.locations.first.to]
+          strand = feature.locations.first.strand
+        end
+        ent.print key + "\t" + cds_name + "\t" + location[0].to_s +
+	        "\t" + location[1].to_s + "\t" + strand.to_s + "\t" + 
+	        product.to_s + "\n"
+        proteins += 1
+        product = ""
+      elsif feature.feature == "rRNA" || feature.feature == "tRNA" || feature.feature == "misc_RNA"
+        locus = ""
+        feature.qualifiers.each do |qual|
+          locus = qual.value if (qual.qualifier == "locus_tag")
+          product = qual.value if (qual.qualifier == "note" && product == "")
+        end
+        if (locus == "")
+          locus = rnaname
+          rnaname.succ!
+        end
+	      key = locus.to_s + "-" + acc.to_s
+	      header = key + " " + product.to_s + " {" + organism + "}"
+	      seq = getSequence(dna, feature.locations)
+	      if (product =~/rRNA|ribosomal/i || locus =~/rRNA/i)
+	        out = rna
+	        rrnas += 1
+        else
+          out = trna
+          trnas += 1
+        end
+	      out.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
+	      ent.print key + "\t" + locus + "\t" + feature.locations.first.from.to_s +
+	      "\t" + feature.locations.first.to.to_s + "\t" + 
+	      feature.locations.first.strand.to_s + "\t" + product.to_s + "\n"
+	      product = ""
+      end
+    end
+    if (opt.tax)
+      db = ApisDB.new(opt.host + "/" + opt.database, opt.database)
+      taxonomy = buildTaxFromTaxId(taxonid, true)
+      if (taxonomy.nil?)
+        STDERR.printf("No info for %d\n", taxonid)
+      end
+    else
+      taxonomy = genome.taxonomy.chop
+    end
+    att.print acc + "\t" + genome.seq.length.to_s + "\t"
+    att.print organism + "\t" + strain + "\t" + taxonid + "\t"
+    att.print taxonomy.gsub(",", "") + "\t" + classifyMolecule(genome.definition) + "\t"
+    att.print proteins.to_s + "\t" + rrnas.to_s + "\t" + trnas.to_s + "\t"
+    gc =  (dna.count("g") + dna.count("c")) / (1.0 * dna.length)  
+    att.print sprintf("%5.2f%%\n", gc * 100)
+    header = acc + " " + genome.definition
+    con.print Bio::Sequence::AA.new(dna).to_fasta(header, 60)
+    if(opt.sep)
+      att.close
+      pep.close
+      cds.close
+      rna.close
+      trna.close
+      ent.close
+      con.close
+    end
+  end
+end
+
+if(!opt.sep)
+  att.close
+  pep.close
+  cds.close
+  rna.close
+  trna.close
+  ent.close
+  con.close
+end
+

@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+
+if (ARGV.size != 2)
+  STDERR.printf("Usage: %s taxonomy.txt num\n", File.basename($0))
+  exit(1)
+end
+
+taxonomy, num = ARGV
+
+ranks = Hash.new
+taxa = Hash.new
+parents = Hash.new
+seen = Hash.new
+
+STDERR << "Loading taxonomy....\n"
+File.new(taxonomy).each do |line|
+  id, name, parent, rank = line.chomp.split("\t")
+  id = id.to_i
+  parent = parent.to_i
+  taxa[id] = name
+  parents[id] = parent
+  ranks[id] = rank
+end
+
+
+id = num.to_i
+
+if (taxa[id])
+  while (id != 1)
+    printf("%d\t%s\t%s\t%s\n", id, taxa[id], parents[id], ranks[id])
+    id = parents[id]
+  end
+end
