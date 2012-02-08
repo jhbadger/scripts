@@ -10,7 +10,7 @@ opt = OpenStruct.new
 
 opt.evalue = 0.1
 
-ARGV.options {|opts|
+ARGV.options do |opts|
   opts.banner << " pep pep [..pep]"
   opts.on("-e ", "--evalue ", Float, 
           "evalue cutoff (default #{opt.evalue})") {|t| opt.evalue = t}
@@ -25,16 +25,16 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-}
+end
 
 def merge(clusters, pvalue, genome)
-  clusters.each {|c1|
-    clusters.each {|c2|
+  clusters.each do |c1|
+    clusters.each do |c2|
       if (c1 - c2 != c1) #overlap
         ctmp = (c1 + c2).uniq
         seen = Hash.new
         bad = false
-        ctmp.each {|pep|
+        ctmp.each do |pep|
           if (seen[genome[pep]])
             bad = true
           else
@@ -44,10 +44,10 @@ def merge(clusters, pvalue, genome)
             c1 = ctmp.dup
             clusters.delete(c2)
           end
-        }
+        end
       end
-    }
-  }
+    end
+  end
 end
 
 
@@ -58,20 +58,20 @@ outName = ARGV[0].to_s + ".mcl"
 out = File.new(outName, "w")
 
 STDERR.printf("Loading Genomes...\n")
-ARGV.each {|pep|
-  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each {|seq|
-    key = seq.entry_id + "_%_" + pep
+ARGV.each do |pep|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each do |seq|
+    key = seq.definition.split(" ").first + "_%_" + pep
     score[key] = Hash.new
     score[key][key] = 10
     plen[key] = seq.length
     out.printf("%s\t%s\t%8.3f\n",key,key,score[key][key])
-  }
-}
+  end
+end
 
 
 STDERR.printf("Loading Pairwise Clusters...\n")
-ARGV.each {|pep1|
-  ARGV.each {|pep2|
+ARGV.each do |pep1|
+  ARGV.each do |pep2|
     next if pep1 == pep2
     vs = pep1 + "_vs_" + pep2
     rvs = pep2 + "_vs_" + pep1
@@ -83,7 +83,7 @@ ARGV.each {|pep1|
         exit(1)
       end
     end
-    File.new(vs + ".recip").each {|line|
+    File.new(vs + ".recip").each do |line|
       x, y, p1, p2, orth = line.chomp.split("\t")
       x = x + "_%_" + pep1
       y = y + "_%_" + pep2
@@ -94,34 +94,34 @@ ARGV.each {|pep1|
         score[y][x] = 200 if score[y][x] > 200
         out.printf("%s\t%s\t%8.3f\n",x,y,score[x][y])
       end
-    }
-  }
-}
+    end
+  end
+end
 out.close
 
 def averageScore(scoreHash)
   tot = 0
-  scoreHash.values.each {|value|
+  scoreHash.values.each do |value|
     tot += value
-  }
+  end
   return tot / scoreHash.keys.size
 end
 
 printf("Representative")
-ARGV.each {|g|
+ARGV.each do |g|
   printf(",%s", File.basename(g, ".pep"))
-}
+end
 printf("\n")
 
 def processmcl(out, score, plen, genomes, reps, globalSeen)
   bad = []
   $VERBOSE = nil
   STDERR.printf("Building Multi Clusters...\n")
-  `mcl #{out} --abc -o - 2>/dev/null`.split("\n").each {|line|
+  `mcl #{out} --abc -o - 2>/dev/null`.split("\n").each do |line|
     fields = line.chomp.split("\t")
     seen = Hash.new
     
-    fields.each {|field|
+    fields.each do |field|
       if (field.class == Array || field.nil?)
         fields.delete(field)
         next
@@ -137,26 +137,26 @@ def processmcl(out, score, plen, genomes, reps, globalSeen)
       else
         seen[genome] = field
       end
-    }
+    end
     fields = seen.values.sort {|x, y| plen[y]<=>plen[x]}
-    fields.each {|field|
+    fields.each do |field|
       fields.delete(field) if (globalSeen[field]) 
-    }
+    end
     if (!fields.empty?)
       longest = fields.first
       reps[longest.split("_%_").first] = true
       printf("%s", longest.split("_%_").first)
-      genomes.each {|genome|
+      genomes.each do |genome|
         if (seen[genome] && !globalSeen[seen[genome]])
           printf(",%s", seen[genome].split("_%_").first)
           globalSeen[seen[genome]] = true
         else
           printf(",")
         end
-      } 
+      end 
       printf("\n")
     end
-  }
+  end
   return bad
 end
 
@@ -167,21 +167,21 @@ globalSeen = Hash.new
 bad = processmcl(outName, score, plen, ARGV, reps, globalSeen)
 outName = ARGV[0].to_s + ".mcl"
 out = File.new(outName, "w")
-bad.each {|x|
+bad.each do |x|
   out.printf("%s\t%s\t%8.3f\n",x,x,score[x][x])
-  score[x].keys.each {|y|
+  score[x].keys.each do |y|
     out.printf("%s\t%s\t%8.3f\n",x,y,score[x][y]) if (bad.include?(y))
-  }
-}
+  end
+end
 out.close
 processmcl(outName, score, plen, ARGV, reps, globalSeen)
 File.unlink(outName)
 
 STDERR.printf("Writing Pangenome.fa...\n")
 out = File.new("Pangenome.fa", "w")
-ARGV.each {|pep|
-  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each {|seq|
+ARGV.each do |pep|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each do |seq|
     out.print seq if reps[seq.entry_id]
-  }
-}
+  end
+end
 out.close
