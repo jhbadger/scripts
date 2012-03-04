@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+require "csv"
+require "bio"
+require 'Newick'
+
+if (ARGV.size < 2)
+  STDERR << "Usage: " << File.basename($0) << " venn.csv peptide-file [...peptide-file...]\n"
+  exit(1)
+end
+
+csv = ARGV.shift
+
+peps = Hash.new
+
+ARGV.each do |pep|
+  peps[pep] = Hash.new
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each do |seq|
+    peps[pep][seq.definition.split(" ").first] = seq
+  end  
+end
+
+count = Hash.new
+CSV.foreach(csv, :headers => true) do |row|
+  name = row["Representative"].gsub("|","").split(".").first
+  hom = name + ".hom"
+  afa = name + ".afa"
+  tree = name + "_nj.tree"
+  if (!File.exists?(afa))
+    h = File.new(hom, "w")
+    row.headers.each do |pep|
+      h.print peps[pep][row[pep]].seq.to_fasta(pep, 60) if (peps[pep])
+    end
+    h.close
+    system("muscle -in \"#{hom}\" -out \"#{afa}\"")
+    File.unlink(hom)
+  end
+  if (!File.exist?(tree))
+    system("paupFasta -e \"#{afa}\"")
+  end
+  tree = NewickTree.fromFile(tree)
+  str = tree.to_s(false, false)
+  if (!count[str])
+    count[str] = 0
+  end
+  count[str] += 1
+end
+count.keys.sort{|x,y| count[y] <=> count[x]}.each do |tree|
+  printf("%d\t%s\n", count[tree], tree)
+end

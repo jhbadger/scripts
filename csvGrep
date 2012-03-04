@@ -7,7 +7,7 @@ require 'csv'
 
 opt = OpenStruct.new
 o = OptionParser.new
-o.banner << " pattern csv-file"
+o.banner << " csv-file"
 o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
 begin
   o.parse!

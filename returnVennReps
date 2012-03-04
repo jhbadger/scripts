@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+opt.skip = nil
+o = OptionParser.new
+o.banner << " csv"
+o.on("-s ", "--skip ", String, "skip orgs (sep by commas)") {|t| opt.skip = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+skip = opt.skip.split(",") if opt.skip
+
+csv, rest = ARGV
+CSV.foreach(csv, :headers => true) do |row|
+  if (skip)
+    skip.each do |h|
+      row.delete(h)
+    end
+  end
+  print row["Representative"] + "\n" if row.to_hash.values.count(nil) == 0
+end

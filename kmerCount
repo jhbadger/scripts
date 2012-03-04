@@ -1,0 +1,78 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+opt.kmer = 4
+opt.verbose = false
+opt.min = 1000
+
+o.banner << " fasta [...fasta...]"
+o.on("-k ", "--kmer ", Integer, "size of kmer (#{opt.kmer})") {|t| opt.kmer = t}
+o.on("-m ", "--min ", Integer, "minimum size of contig to count (#{opt.min})") {|t| opt.min = t}
+o.on("-v", "--verbose", "be verbose (#{opt.verbose})") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+class Bio::Sequence::NA
+  def knum
+    knum = 0
+    vals = {"T"=>0, "U"=>0, "C" => 1, "A" => 2, "G" => 3}
+    0.upto(size - 1) do |i|
+      fact = 4**(size - i - 1)
+      n = vals[self[i].upcase]
+      if n.nil?
+        return nil
+      else
+        knum += fact*n
+      end
+    end
+    return knum
+  end
+end
+
+
+names = Hash.new
+kmers = Hash.new
+printf "CONTIG"
+0.upto((4**opt.kmer) - 1) do |i|
+  printf("\t%d",i)
+end
+printf("\n")
+ARGV.each do |fasta|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+    next if seq.length < opt.min
+    count = [0] * 4**opt.kmer
+    name = seq.definition.split(" ").first
+    if (opt.verbose)
+      STDERR.printf("Processing %s...\n", name)
+    end
+    s = seq.naseq
+    1.upto(seq.length - opt.kmer) do |i|
+      kmer = s.subseq(i, i + opt.kmer - 1)
+      num = kmer.knum
+      count[num] += 1 if num
+    end
+    printf("%s", name)
+    total = count.reduce(:+)
+    0.upto(count.size - 1) do |i|
+      printf("\t%f", count[i].to_f/total)
+    end
+    printf("\n")
+  end
+end
+
+
+

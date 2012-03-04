@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+require 'bio'
+
+if (ARGV.size != 2)
+  STDERR << "Usage: " << File.basename($0) << " gff-file fasta-file\n"
+  exit(1)
+end
+
+gff, fasta = ARGV
+
+seqs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+  seqs[seq.entry_id] = seq
+end
+
+File.new(gff).each do |line|
+  next if line=~/^#/
+  seqname, source, feature, start, stop, score, strand, frame, attribute = line.chomp.split("\t")
+  subseq = seqs[seqname].naseq.subseq(start.to_i, stop.to_i)
+  if (strand == "-")
+    subseq = subseq.complement
+  end
+  print subseq.to_fasta(seqname + "_" + start + "_" + stop + "_" + strand + " " + attribute, 60)
+end

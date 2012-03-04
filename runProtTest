@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby 
+
+if (ARGV.size < 1)
+  STDERR << "Usage: " << File.basename($0) << " afa [...afa]...\n"
+  exit(1)
+end
+
+ARGV.each do |file|
+  file = File.absolute_path(file)
+  dir = File.dirname(file)
+  cmd =  "cd #{ENV["PROTTEST_HOME"]};java -jar prottest-3.0.jar -i #{file} "
+  cmd += "-all-matrices -all-distributions -threads 2"
+  if (!File.exist?("#{file}.prottest"))
+    system("#{cmd} > #{file}.prottest")
+  end
+end

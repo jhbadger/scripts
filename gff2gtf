@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR << "Usage: " << File.basename($0) << " gff-file\n"
+  exit(1)
+end
+
+gentran = 500000
+
+gff = ARGV.first
+
+inGene = false
+
+File.new(gff).each do |line|
+  seqname, source, feature, start, stop, score, strand, frame, attribute = line.chomp.split("\t")
+  if feature =~/CDS|exon|start_codon|stop_codon/
+    row = [seqname, source, feature, start, stop, score, strand, frame]
+    inGene = true if feature == "start_codon"
+    inGene = false if feature == "stop_codon"
+    if (feature != "CDS" || source != "GenBank")
+      geneId = nil
+      transcriptId = nil
+      if (attribute =~/name \"([^\"]*)\"/)
+        geneId = $1
+      end
+      if (attribute =~/transcriptId ([0-9]*)/)
+        transcriptId = $1
+      end
+      if source == "GenBank" && !transcriptId
+        transcriptId = gentran
+        gentran = gentran + 1
+      end
+      print row.join("\t") + "\t"
+      print "gene_id \"#{geneId}\"; " if (geneId)
+      print "transcript_id \"#{transcriptId}\";" if (transcriptId)
+      print "\n"
+    end
+  end
+end

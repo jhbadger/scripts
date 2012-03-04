@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+require 'bio'
+require 'ZFile'
+
+if (ARGV.size !=2)
+  STDERR.printf("Usage %s good.txt 16S.fa\n", File.basename($0))
+  exit(1)
+end
+
+good, fa = ARGV
+
+kid = Hash.new
+sp = Hash.new
+File.new(good).each do |line|
+  kegg, silva, tax = line.chomp.split(" ", 3)
+  sp[silva] = tax.split(";").last
+  kid[silva] = kegg
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fa)).each do |seq|
+  if (kid[seq.entry_id])
+    print seq.seq.to_fasta(kid[seq.entry_id] + "--" + sp[seq.entry_id] + "--" + seq.entry_id, 60)
+  end
+end

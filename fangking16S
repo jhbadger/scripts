@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 2)
+  STDERR << "Usage: " << File.basename($0) << " kegg-list silva.tax\n"
+  exit(1)
+end
+
+kegg, list = ARGV
+
+abbr = Hash.new
+File.new(kegg).each do |line|
+  n, a, gs, species = line.chomp.split("\t")
+  species, rest = species.split(" (")
+  abbr[species] = a
+end
+
+match = Hash.new
+match_abbr = Hash.new
+File.new(list).each do |line|
+  abbr.keys.each do |sp|
+    if line=~/#{sp}/
+      match[sp] = line
+      match_abbr[sp] = abbr[sp]
+      abbr.delete(sp)
+      break
+    end
+  end
+end
+
+match.keys.each do |sp|
+  print match_abbr[sp] + "\t" + match[sp]
+end
+
+abbr.keys.each do |sp|
+  STDERR.print sp + "\n"
+end
+

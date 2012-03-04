@@ -94,11 +94,11 @@ ARGV.each {|fasta|
     out.print("hsearch;\n")
   end
   
-  out.print "savetrees from=1 to=1 format=phylip file=#{tname}.tree;\n"
+  out.print "savetrees from=1 to=1 format=phylip file=#{tmpdir}/out.tree;\n"
   out.print "quit;\n"
   out.close
   system("paup #{tname}.nex")
-  tree = NewickTree.fromFile("#{tname}.tree")
+  tree = NewickTree.fromFile("#{tmpdir}/out.tree")
   tree.fixPhylip
   tree = estimateMLBranchLengths(tree, tname, tmpdir) if (opt.estimate)
   tree.unAlias(aliHash)
