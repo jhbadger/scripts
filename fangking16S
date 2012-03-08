@@ -16,22 +16,24 @@ end
 
 match = Hash.new
 match_abbr = Hash.new
+match_len = Hash.new
 File.new(list).each do |line|
   abbr.keys.each do |sp|
     if line=~/#{sp}/
-      match[sp] = line
-      match_abbr[sp] = abbr[sp]
-      abbr.delete(sp)
-      break
+      d, s, e = line.split(" ").first.split(".")
+      len = (s.to_i - e.to_i).abs
+      next if (len < 1600 || len > 2100)
+      if (!match_len[sp] || match_len[sp] < len)
+        next if match_len[sp].to_i > 1800
+        match[sp] = line
+        match_abbr[sp] = abbr[sp]
+        match_len[sp] = len
+      end
     end
   end
 end
 
 match.keys.each do |sp|
   print match_abbr[sp] + "\t" + match[sp]
-end
-
-abbr.keys.each do |sp|
-  STDERR.print sp + "\n"
 end
 

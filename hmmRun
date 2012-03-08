@@ -8,7 +8,7 @@ opt = OpenStruct.new
 
 opt.project = nil
 ARGV.options {|opts|
-  opts.banner << " cutoff-csv hmm-dir seq.pep"
+  opts.banner << " cutoff-tab hmm-dir seq.pep"
   opts.on("-p ", "--project ", Integer, 
           "JCVI project (for grid)") {|t| opt.project = t}    
   begin
@@ -25,17 +25,15 @@ ARGV.options {|opts|
   end
 }
 
-csv, db, pep = ARGV
+cut, db, pep = ARGV
 
 cutoff=Hash.new
 names=Hash.new
-File.new(csv).each {|line|
-  name,hmm,value=line.chomp.split(",")
-  cutoff[hmm]=value
+File.new(cut).each do |line|
+  name,hmm,value=line.chomp.split(" ")
+  cutoff[hmm]=value.to_f
   names[hmm]=name
-}
-
-
+end
 
 cutoff.keys.each do |hmm|
   cmd = "hmmsearch -T #{cutoff[hmm]} --tblout #{names[hmm]}.tbl #{db}/#{hmm}.HMM #{pep}"

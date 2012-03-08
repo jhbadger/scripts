@@ -1,7 +1,21 @@
 #!/usr/bin/env ruby
 
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " gff-file"
+o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
 if (ARGV.size != 1)
-  STDERR << "Usage: " << File.basename($0) << " gff-file\n"
+  STDERR << o
   exit(1)
 end
 
@@ -9,31 +23,46 @@ gentran = 500000
 
 gff = ARGV.first
 
-inGene = false
+def createStops(row)
+  newRow = row.dup
+  if (row[-3] == "+")
+    newRow[2] = "start_codon"
+    newRow[4] = row[3].to_i + 2
+    print newRow.join("\t")+"\n"
+    newRow[2] = "stop_codon"
+    newRow[3] = row[4].to_i - 2
+    newRow[4] = row[4]
+    print newRow.join("\t")+"\n"
+  else
+    newRow[2] = "stop_codon"
+    newRow[4] = row[3].to_i + 2
+    print newRow.join("\t")+"\n"
+    newRow[2] = "start_codon"
+    newRow[3] = row[4].to_i - 2
+    newRow[4] = row[4]
+    print newRow.join("\t")+"\n"
+  end
+end
 
+geneId = nil
+transcriptId = nil
 File.new(gff).each do |line|
   seqname, source, feature, start, stop, score, strand, frame, attribute = line.chomp.split("\t")
-  if feature =~/CDS|exon|start_codon|stop_codon/
+  if feature =~/CDS|exon/
     row = [seqname, source, feature, start, stop, score, strand, frame]
-    inGene = true if feature == "start_codon"
-    inGene = false if feature == "stop_codon"
-    if (feature != "CDS" || source != "GenBank")
-      geneId = nil
-      transcriptId = nil
-      if (attribute =~/name \"([^\"]*)\"/)
-        geneId = $1
-      end
-      if (attribute =~/transcriptId ([0-9]*)/)
-        transcriptId = $1
-      end
-      if source == "GenBank" && !transcriptId
-        transcriptId = gentran
-        gentran = gentran + 1
-      end
-      print row.join("\t") + "\t"
-      print "gene_id \"#{geneId}\"; " if (geneId)
-      print "transcript_id \"#{transcriptId}\";" if (transcriptId)
-      print "\n"
+    if (attribute =~/name \"([^\"]*)\"/)
+      geneId = $1
     end
+    if (attribute =~/transcriptId ([0-9]*)/)
+      transcriptId = $1
+    end
+    if source == "GenBank"
+      transcriptId = gentran
+      gentran = gentran + 1
+    end
+    geneId = transcriptId if (!geneId)
+    row.push("gene_id \"#{geneId}\"; transcript_id \"#{transcriptId}\";")
+    print row.join("\t") + "\n"
+    createStops(row) if (feature == "CDS")
   end
 end

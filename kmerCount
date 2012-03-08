@@ -51,11 +51,17 @@ printf "CONTIG"
   printf("\t%d",i)
 end
 printf("\n")
+seen = Hash.new
+
 ARGV.each do |fasta|
   Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
     next if seq.length < opt.min
     count = [0] * 4**opt.kmer
     name = seq.definition.split(" ").first
+    if (seen[name])
+      STDERR.printf("Duplicate %s\n", name)
+    end
+    seen[name] = true
     if (opt.verbose)
       STDERR.printf("Processing %s...\n", name)
     end
