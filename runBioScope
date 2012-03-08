@@ -1,0 +1,424 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.genome = nil
+
+o = OptionParser.new
+o.banner << " solid-library [...solid-library...]"
+o.on("-g ", "--genome ", String, "genome fasta file to map (required)") {|t| opt.genome = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+if (!opt.genome)
+  STDERR.printf("Mapping genome is required\n")
+  exit(1)
+end
+
+gtf = opt.genome.split(".fa").first + ".gtf"
+filter = opt.genome.split(".fa").first + ".filter.fa"
+
+if (!File.exists?(gtf))
+  STDERR.printf("Cannot open #{gtf}\n")
+  exit(1)
+end
+
+if (!File.exists?(filter))
+  STDERR.printf("Cannot open #{filter}\n")
+  exit(1)
+end
+
+cdir = Dir.pwd
+
+exp = nil
+ARGV.each do |dir|
+  paths = dir.split("/")
+  experiment = paths[paths.index("libraries") - 2]
+  if experiment != exp
+    STDERR << "Processessing experiment " + experiment + "...\n"
+    if !(File.exists?(cdir + "/" + experiment))
+      Dir.mkdir(cdir + "/" + experiment)
+    end
+    exp = experiment
+  end
+  library = paths.last
+  fullPath = cdir + "/" + experiment + "/" + library
+  if File.exists?(fullPath + "/output") && !Dir.glob(fullPath+"/output/*").empty?
+    STDERR << "skipping #{library} (already run)...\n"
+    next
+  end
+  reads = Dir.glob(dir + "/primary*/reads/*")
+  f3fa = reads.grep(/F3/).grep(/csfasta/).first
+  f3qual = reads.grep(/F3/).grep(/qual/).first
+  f5fa = reads.grep(/F5/).grep(/csfasta/).first
+  f5qual = reads.grep(/F5/).grep(/qual/).first
+  if f3fa.nil?
+    printf("I can't find F3 in #{dir}. Help!\n")
+    exit(1)
+  end
+  if f5fa.nil?
+    printf("I can't find F5 in #{dir}. Help!\n")
+    exit(1)
+  end
+  Dir.mkdir(fullPath) if !File.exists?(fullPath)
+  config = fullPath + "/config"
+  configF3 = config + "/F3"
+  configF5 = config + "/F5"
+  intermediate = fullPath + "/intermediate"
+  log = fullPath + "/log"
+  output = fullPath + "/output"
+  tmp = fullPath + "/tmp"
+  [config, configF3, configF5, intermediate, log, output, tmp].each do |t|
+    Dir.mkdir(t) if !(File.exists?(t))
+  end
+  out = File.new(config + "/analysis.plan", "w")
+  out.printf("=%s/F3/F3.ini\n=%s/F5/F5.ini\n%s/F3rescue.ini\n%s/WT_Paired_End.ini\n",
+    config, config, config, config)
+  out.close
+  out = File.new(config+"/F3rescue.ini", "w")
+  out <<
+<<eos
+pipeline.cleanup.middle.files=1
+pipeline.cleanup.temp.files=1
+
+output.dir=#{fullPath}/output
+tmp.dir=#{fullPath}/tmp
+intermediate.dir=#{fullPath}/intermediate
+log.dir=#{fullPath}/log
+scratch.dir=/scratch/solid
+
+######################################
+##  wt.f3.exon.table.rescue.plugin.run
+######################################
+wt.f3.exon.table.rescue.plugin.run=1
+wt.rescue.anchor.ma.dir=#{fullPath}/intermediate/f5_merge
+wt.rescue.target.ma.dir=#{fullPath}/intermediate/f3_merge
+wt.rescue.output.dir=#{fullPath}/intermediate/f3_rescue
+wt.rescue.gtf.file=#{gtf}
+wt.rescue.sequence.reference.file=#{opt.genome}
+wt.rescue.target.read.length=50
+wt.rescue.output.file=#{fullPath}/intermediate/f3_rescue/F3_exon_rescue_table.ma
+wt.rescue.rescue.input.file=
+wt.rescue.rescue.output.file=
+wt.rescue.scratch.dir=#{fullPath}/tmp/f3_rescue
+wt.rescue.report.file=#{fullPath}/intermediate/f3_rescue/F3RescueReport.txt
+wt.rescue.run.input.generation=1
+wt.rescue.run.rescue=1
+wt.rescue.input.generation.avg.insert.size=120
+wt.rescue.input.generation.std.insert.size=60
+wt.rescue.input.generation.rescue.only.unaligned.reads=0
+wt.rescue.input.generation.rescue.short.range=1
+wt.rescue.input.generation.rescue.only.for.the.best.anchor.alignment=0
+wt.rescue.input.generation.rescue.fuzzy.exon.borders=1
+wt.rescue.input.generation.rescue.anchor.alignments.not.overlapping.exons=1
+wt.rescue.input.generation.zLimit=100
+wt.rescue.input.generation.rescue.only.within.rescue.distance=1
+wt.rescue.input.generation.exon.fuzzy.border.width=10
+wt.rescue.input.generation.min.alignment.distance.for.rescue=100000
+wt.rescue.standalone.rescue.executable=rescue
+wt.rescue.max.mismatches.allowed=8
+wt.rescue.valid.adjacent.mismatches.count.as.one=0
+
+######################################
+##  wt.f3.rescue.ma.file.merger.into.ma.file.plugin.run
+######################################
+wt.f3.rescue.ma.file.merger.into.ma.file.plugin.run=1
+wt.merged.ma.output.dir=#{fullPath}/intermediate/f3_merge
+wt.rescue.output.dir=#{fullPath}/intermediate/f3_rescue
+wt.merged.filter.map.output.dir=#{fullPath}/intermediate/f3_filter_map
+wt.f3.f5.rescue.merge.output.dir=#{fullPath}/intermediate/f3_rescue_merge
+wt.filter.reference=#{filter}
+wt.gtf.file=#{gtf}
+wt.genome.reference=#{opt.genome}
+wt.merged.ma.start.offset=
+wt.merged.ma.end.offset=
+eos
+  out.close
+  out = File.new(configF3+"/F3.ini", "w")
+  out <<
+<<eos
+pipeline.cleanup.middle.files=1
+pipeline.cleanup.temp.files=1
+
+
+#    Global Parameters 
+
+run.name=#{experiment}
+sample.name=#{library}
+output.dir=#{fullPath}/output
+tmp.dir=#{fullPath}/tmp
+intermediate.dir=#{fullPath}/intermediate
+log.dir=#{fullPath}/log
+scratch.dir=/scratch/solid
+
+######################################
+##  wt.f3.genomic.mapping.plugin.run
+######################################
+wt.f3.genomic.mapping.plugin.run=1
+wt.f3.genomic.map.output.dir=#{fullPath}/intermediate/f3_genomic_map
+wt.genome.reference=#{opt.genome}
+matching.max.hits=10
+mapping.tagfiles=#{f3fa}
+read.length=50
+wt.f3.genomic.map.tmp.dir=#{fullPath}/tmp
+mapping.tagfiles.f3=#{f3fa}
+mapping.scratch.dir=/scratch/solid
+
+######################################
+##  wt.f3.filter.mapping.plugin.run
+######################################
+wt.f3.filter.mapping.plugin.run=1
+wt.f3.filter.map.output.dir=#{fullPath}/intermediate/f3_filter_map
+wt.filter.reference=#{filter}
+matching.max.hits=10
+mapping.tagfiles=#{f3fa}
+wt.f3.filter.map.tmp.dir=#{fullPath}/tmp
+mapping.tagfiles.f3=#{f3fa}
+
+######################################
+##  wt.f3.splice.junction.extractor.plugin.run
+######################################
+wt.f3.splice.junction.extractor.plugin.run=1
+wt.f3.splext.output.dir=#{fullPath}/intermediate/reference/f3_splice_junction_extraction
+wt.f3.splext.output.reference=#{fullPath}/intermediate/reference/f3_splice_junction_extraction/f3_junctions_reference.fasta
+wt.genome.reference=#{opt.genome}
+wt.gtf.file=#{gtf}
+
+######################################
+##  wt.f3.junction.mapping.plugin.run
+######################################
+wt.f3.junction.mapping.plugin.run=1
+wt.f3.splext.output.dir=#{fullPath}/intermediate/reference/f3_splice_junction_extraction
+wt.f3.splext.output.reference=#{fullPath}/intermediate/reference/f3_splice_junction_extraction/f3_junctions_reference.fasta
+wt.f3.junction.map.output.dir=#{fullPath}/intermediate/f3_junction_map
+matching.max.hits=10
+mapping.tagfiles=#{f3fa}
+wt.f3.junction.map.tmp.dir=#{fullPath}/tmp
+mapping.tagfiles.f3=#{f3fa}
+
+######################################
+##  wt.f3.junction.ma.to.genomic.ma.plugin.run
+######################################
+wt.f3.junction.ma.to.genomic.ma.plugin.run=1
+wt.f3.junction.map.output.dir=#{fullPath}/intermediate/f3_junction_map
+wt.genome.reference=#{opt.genome}
+wt.f3.splext.output.dir=#{fullPath}/intermediate/reference/f3_splice_junction_extraction
+wt.f3.juncmatogenomicma.output.dir=#{fullPath}/intermediate/f3_junction_genomic_ma
+
+######################################
+##  wt.f3.ma.file.merger.into.ma.file.plugin.run
+######################################
+wt.f3.ma.file.merger.into.ma.file.plugin.run=1
+wt.f3.genomic.map.output.dir=#{fullPath}/intermediate/f3_genomic_map
+wt.f3.juncmatogenomicma.output.dir=#{fullPath}/intermediate/f3_junction_genomic_ma
+wt.f3.filter.map.output.dir=#{fullPath}/intermediate/f3_filter_map
+wt.f3.mamerger.output.dir=#{fullPath}/intermediate/f3_merge
+wt.filter.reference=#{filter}
+wt.genome.reference=#{opt.genome}
+wt.gtf.file=#{gtf}
+eos
+out.close
+out = File.new(configF5 + "/F5.ini", "w")
+out <<
+<<eos
+pipeline.cleanup.middle.files=1
+pipeline.cleanup.temp.files=1
+
+
+#    Global Parameters 
+
+run.name=#{experiment}
+sample.name=#{library}
+output.dir=#{fullPath}/output
+tmp.dir=#{fullPath}/tmp
+intermediate.dir=#{fullPath}/intermediate
+log.dir=#{fullPath}/log
+scratch.dir=/scratch/solid
+
+######################################
+##  wt.f5.genomic.mapping.plugin.run
+######################################
+wt.f5.genomic.mapping.plugin.run=1
+wt.f5.genomic.map.output.dir=#{fullPath}/intermediate/f5_genomic_map
+wt.genome.reference=#{opt.genome}
+matching.max.hits=10
+mapping.tagfiles=#{f5fa}
+read.length=35
+wt.f5.genomic.map.tmp.dir=#{fullPath}/tmp
+mapping.tagfiles.f5=#{f5fa}
+######################################
+##  wt.f5.filter.mapping.plugin.run
+######################################
+wt.f5.filter.mapping.plugin.run=1
+wt.f5.filter.map.output.dir=#{fullPath}/intermediate/f5_filter_map
+wt.filter.reference=#{filter}
+matching.max.hits=10
+mapping.tagfiles=#{f5fa}
+wt.f5.filter.map.tmp.dir=#{fullPath}/tmp
+mapping.tagfiles.f5=#{f5fa}
+
+######################################
+##  wt.f5.exon.sequence.extractor.plugin.run
+######################################
+wt.f5.exon.sequence.extractor.plugin.run=1
+wt.f5.exseqext.output.dir=#{fullPath}/intermediate/reference/f5_exon_sequence_extraction
+wt.f5.exseqext.output.reference=#{fullPath}/intermediate/reference/f5_exon_sequence_extraction/f5_exons_reference.fasta
+wt.genome.reference=#{opt.genome}
+wt.gtf.file=#{gtf}
+
+######################################
+##  wt.f5.exon.mapping.plugin.run
+######################################
+wt.f5.exon.mapping.plugin.run=1
+wt.f5.exseqext.output.dir=#{fullPath}/intermediate/reference/f5_exon_sequence_extraction
+wt.f5.exseqext.output.reference=#{fullPath}/intermediate/reference/f5_exon_sequence_extraction/f5_exons_reference.fasta
+wt.f5.exon.map.output.dir=#{fullPath}/intermediate/f5_exon_map
+matching.max.hits=10
+mapping.tagfiles=#{f5fa}
+wt.f5.exon.map.tmp.dir=#{fullPath}/tmp
+mapping.tagfiles.f5=#{f5fa}
+
+######################################
+##  wt.f5.exon.ma.to.genomic.ma.plugin.run
+######################################
+wt.f5.exon.ma.to.genomic.ma.plugin.run=1
+wt.f5.exseqext.output.dir=#{fullPath}/intermediate/reference/f5_exon_sequence_extraction
+wt.f5.exon.map.output.dir=#{fullPath}/intermediate/f5_exon_map
+wt.f5.exmatogenma.output.dir=#{fullPath}/intermediate/f5_exon_genomic_ma
+wt.genome.reference=#{opt.genome}
+wt.gtf.file=#{gtf}
+
+######################################
+##  wt.f5.ma.file.merger.into.ma.file.plugin.run
+######################################
+wt.f5.ma.file.merger.into.ma.file.plugin.run=1
+wt.f5.genomic.map.output.dir=#{fullPath}/intermediate/f5_genomic_map
+wt.f5.exmatogenma.output.dir=#{fullPath}/intermediate/f5_exon_genomic_ma
+wt.f5.filter.map.output.dir=#{fullPath}/intermediate/f5_filter_map
+wt.f5.mamerger.output.dir=#{fullPath}/intermediate/f5_merge
+wt.filter.reference=#{filter}
+wt.gtf.file=#{gtf}
+wt.genome.reference=#{opt.genome}
+eos
+out.close
+out = File.new(config + "/F5rescue.ini", "w")
+out <<
+<<eos
+pipeline.cleanup.middle.files=1
+pipeline.cleanup.temp.files=1
+
+output.dir=#{fullPath}/output
+tmp.dir=#{fullPath}/tmp
+intermediate.dir=#{fullPath}/intermediate
+log.dir=#{fullPath}/log
+scratch.dir=/scratch/solid
+
+######################################
+##  wt.f5.exon.table.rescue.plugin.run
+######################################
+wt.f5.exon.table.rescue.plugin.run=1
+wt.rescue.anchor.ma.dir=#{fullPath}/intermediate/f3_merge
+wt.rescue.target.ma.dir=#{fullPath}/intermediate/f5_merge
+wt.rescue.output.dir=#{fullPath}/intermediate/f5_rescue
+wt.rescue.gtf.file=#{gtf}
+wt.rescue.sequence.reference.file=#{opt.genome}
+wt.rescue.target.read.length=35
+wt.rescue.output.file=#{fullPath}/intermediate/f5_rescue/F5_exon_rescue_table.ma
+wt.rescue.rescue.input.file=
+eos
+out.close
+out=File.new(config + "/WT_Paired_End.ini", "w")
+out <<
+<<eos
+pipeline.cleanup.middle.files=1
+pipeline.cleanup.temp.files=1
+
+
+#    Global Parameters 
+
+run.name=#{experiment}
+sample.name=#{library}
+output.dir=#{fullPath}/output
+tmp.dir=#{fullPath}/tmp
+intermediate.dir=#{fullPath}/intermediate
+log.dir=#{fullPath}/log
+scratch.dir=/scratch/solid
+
+######################################
+##  pairing.wt.run
+######################################
+pairing.wt.run=1
+mate.pairs.tagfile.dirs=#{fullPath}/intermediate/f3_merge,#{fullPath}/intermediate/f5_merge
+pairing.output.dir=#{fullPath}/output/pairing
+reference=#{opt.genome}
+primer.set=F3,F5-BC
+pairing.color.qual.file.path.1=#{f3qual}
+pairing.color.qual.file.path.2=#{f5qual}
+bam.file.name=#{experiment}-#{library}.bam
+unmapped.bam.file.name=#{experiment}-#{library}.unmapped.bam
+indel.preset.parameters=0
+max.base.qv=40
+insert.start=30
+insert.end=100000
+mate.pairs.rescue.level=4
+matching.max.hits=100
+mapping.mismatch.penalty=-2.0
+pairing.anchor.length=25
+use.template.rescue.file=1
+pair.uniqueness.threshold=10.0
+max.insert.estimate=20000
+min.insert.estimate=0
+pairing.mark.duplicates=1
+pairing.correct.to=reference
+pairing.tints=agy
+pairing.library.name=
+mates.stats.report.name=pairingStats.stats
+
+# Count Tag Plugin
+
+# Parameters:wt.counttag.input.bam.file, a .bam file
+# wt.counttag.exon.reference, an exons .gtf file.
+# wt.counttag.output.dir, output directory.
+# wt.counttag.output.file.name, output file name.
+# wt.counttag.score.clear.zone, clear zone.
+# wt.counttag.alignment.filter.mode, alignment filter mode.
+# wt.counttag.min.alignment.score, minimum alignment score.
+# wt.counttag.min.mapq, minimum map quality.
+# Output:A counttag result file in ${output.dir}/counttag.
+# Description:Counts tags from a .bam file.
+wt.counttag.run = 1
+wt.counttag.exon.reference = #{gtf}
+wt.counttag.input.bam.file = #{experiment}-#{library}.bam
+wt.counttag.output.dir = #{fullPath}/output/counttag 
+wt.counttag.output.file.name = #{experiment}-#{library}-counttag.txt
+eos
+out.close
+out = File.new(config + "/run1.sh", "w")
+out <<
+<<eos
+##### BIOSCOPEROOT=/share/apps/bioscope
+##### USERNAME=corona
+bash -c #{fullPath}/config/run2.sh > #{fullPath}/log/consoleOut.log 2>#{fullPath}/log/consoleError.log &
+eos
+out.close
+system("chmod a+x #{config}/run1.sh")
+out = File.new(config + "/run2.sh", "w")
+out <<
+<<eos
+cd ../.. 
+bioscope.sh #{fullPath}/config/analysis.plan
+eos
+out.close
+system("chmod a+x #{config}/run2.sh")
+end
