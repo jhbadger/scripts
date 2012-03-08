@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+  STDERR.printf("Usage: %s hmm.tbl\n", File.basename($0))
+  exit(1)
+end
+
+tbl = ARGV.first
+
+best = Hash.new
+bestScore = Hash.new
+File.new(tbl).each do |line|
+  next if line=~/^#/
+  target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
+  if (bestScore[query].nil? || score.to_f > bestScore[query])
+    best[query] = target
+    bestScore[query] = score.to_f
+  end
+end
+
+best.keys.sort.each do |query|
+  printf("%s\t%s\n", query, best[query])
+end
