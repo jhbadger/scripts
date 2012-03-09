@@ -48,7 +48,7 @@ geneId = nil
 transcriptId = nil
 File.new(gff).each do |line|
   seqname, source, feature, start, stop, score, strand, frame, attribute = line.chomp.split("\t")
-  if feature =~/CDS|exon/
+  if feature =~/CDS|exon|start_codon|stop_codon/
     row = [seqname, source, feature, start, stop, score, strand, frame]
     if (attribute =~/name \"([^\"]*)\"/)
       geneId = $1
@@ -63,6 +63,6 @@ File.new(gff).each do |line|
     geneId = transcriptId if (!geneId)
     row.push("gene_id \"#{geneId}\"; transcript_id \"#{transcriptId}\";")
     print row.join("\t") + "\n"
-    createStops(row) if (feature == "CDS")
+    createStops(row) if (feature == "CDS" && source != "JGI")
   end
 end

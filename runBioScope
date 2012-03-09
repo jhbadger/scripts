@@ -85,6 +85,23 @@ ARGV.each do |dir|
   out = File.new(config + "/analysis.plan", "w")
   out.printf("=%s/F3/F3.ini\n=%s/F5/F5.ini\n%s/F3rescue.ini\n%s/WT_Paired_End.ini\n",
     config, config, config, config)
+  out.printf("%s/counttags.ini\n", config)
+  out.close
+  out = File.new(config+"/counttags.ini", "w")
+  out <<
+<<eos
+#-------------------------------------------------------------
+#      count tag
+#-------------------------------------------------------------
+wt.counttag.run=1
+wt.counttag.score.clear.zone=3
+wt.counttag.alignment.filter.mode=unique
+wt.counttag.min.alignment.score=10
+wt.counttag.input.bam.file=#{fullPath}/output/pairing/#{experiment}-#{library}.bam
+wt.counttag.exon.reference=#{gtf}
+wt.counttag.output.file.name=#{experiment}-#{library}.count.txt
+wt.counttag.output.dir=#{fullPath}/output/pairing
+eos
   out.close
   out = File.new(config+"/F3rescue.ini", "w")
   out <<
@@ -384,24 +401,6 @@ pairing.correct.to=reference
 pairing.tints=agy
 pairing.library.name=
 mates.stats.report.name=pairingStats.stats
-
-# Count Tag Plugin
-
-# Parameters:wt.counttag.input.bam.file, a .bam file
-# wt.counttag.exon.reference, an exons .gtf file.
-# wt.counttag.output.dir, output directory.
-# wt.counttag.output.file.name, output file name.
-# wt.counttag.score.clear.zone, clear zone.
-# wt.counttag.alignment.filter.mode, alignment filter mode.
-# wt.counttag.min.alignment.score, minimum alignment score.
-# wt.counttag.min.mapq, minimum map quality.
-# Output:A counttag result file in ${output.dir}/counttag.
-# Description:Counts tags from a .bam file.
-wt.counttag.run = 1
-wt.counttag.exon.reference = #{gtf}
-wt.counttag.input.bam.file = #{experiment}-#{library}.bam
-wt.counttag.output.dir = #{fullPath}/output/counttag 
-wt.counttag.output.file.name = #{experiment}-#{library}-counttag.txt
 eos
 out.close
 out = File.new(config + "/run1.sh", "w")
@@ -421,4 +420,5 @@ bioscope.sh #{fullPath}/config/analysis.plan
 eos
 out.close
 system("chmod a+x #{config}/run2.sh")
+system("cd #{fullPath};bioscope.sh #{fullPath}/config/analysis.plan")
 end
