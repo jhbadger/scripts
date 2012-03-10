@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+# make spreadsheet based on abundance files at /usr/local/projects/GOSII/jmccrow/marker/gos_taxassign_v3
+
+require 'csv'
+
+if (ARGV.size < 1)
+  STDERR << "Usage: " << File.basename($0) << "file.abund [file.abund...]\n"
+  exit(1)
+end
+
+abund = Hash.new
+taxa = Hash.new
+ARGV.each do |file|
+  name = File.basename(file, ".abund").gsub("site_", "")
+  abund[name] = Hash.new
+  tot = 0
+  File.new(file).each do |line|
+    count, node, taxon = line.chomp.split("\t")
+    taxa[taxon] = true if !taxa[taxon]
+    abund[name][taxon] = 0 if (!abund[name][taxon])
+    abund[name][taxon] += count.to_f
+    tot += count.to_f
+  end
+  abund[name].keys.each do |taxon|
+    abund[name][taxon] /= tot
+  end
+end
+
+print ([""] + abund.keys.sort).to_csv
+taxa.keys.sort.each do |taxon|
+  row = [taxon]
+  abund.keys.sort.each do |site|
+    row.push(abund[site][taxon].to_f)
+  end
+  print row.to_csv
+end

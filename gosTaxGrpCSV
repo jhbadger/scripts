@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+# make spreadsheet based on taxgrp files at /usr/local/projects/GOSII/jmccrow/marker/gos_taxassign_v3
+
+require 'csv'
+
+if (ARGV.size < 1)
+  STDERR << "Usage: " << File.basename($0) << "file.taxgrp [file.taxgrp...]\n"
+  exit(1)
+end
+
+abund = Hash.new
+taxa = Hash.new
+ARGV.each do |file|
+  name = File.basename(file, ".taxgrp.txt").gsub("site_", "")
+  abund[name] = Hash.new
+  File.new(file).each do |line|
+    node, ab, taxon = line.chomp.split("\t")
+    next if taxon.nil?
+    taxa[taxon] = 0 if !taxa[taxon]
+    taxa[taxon] += ab.to_f
+    abund[name][taxon] = ab.to_f
+  end
+end
+print ([""] + abund.keys.sort).to_csv
+taxa.keys.sort.each do |taxon|
+  row = [taxon]
+  abund.keys.sort.each do |site|
+    row.push(abund[site][taxon].to_f)
+  end
+  print row.to_csv
+end
