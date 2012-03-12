@@ -58,6 +58,7 @@ File.new(gff).each do |line|
     end
     if source == "GenBank"
       transcriptId = gentran
+      geneId = gentran
       gentran = gentran + 1
     end
     geneId = transcriptId if (!geneId)

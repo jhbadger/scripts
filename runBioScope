@@ -54,10 +54,6 @@ ARGV.each do |dir|
   end
   library = paths.last
   fullPath = cdir + "/" + experiment + "/" + library
-  if File.exists?(fullPath + "/output") && !Dir.glob(fullPath+"/output/*").empty?
-    STDERR << "skipping #{library} (already run)...\n"
-    next
-  end
   reads = Dir.glob(dir + "/primary*/reads/*")
   f3fa = reads.grep(/F3/).grep(/csfasta/).first
   f3qual = reads.grep(/F3/).grep(/qual/).first
@@ -82,11 +78,6 @@ ARGV.each do |dir|
   [config, configF3, configF5, intermediate, log, output, tmp].each do |t|
     Dir.mkdir(t) if !(File.exists?(t))
   end
-  out = File.new(config + "/analysis.plan", "w")
-  out.printf("=%s/F3/F3.ini\n=%s/F5/F5.ini\n%s/F3rescue.ini\n%s/WT_Paired_End.ini\n",
-    config, config, config, config)
-  out.printf("%s/counttags.ini\n", config)
-  out.close
   out = File.new(config+"/counttags.ini", "w")
   out <<
 <<eos
@@ -95,12 +86,11 @@ ARGV.each do |dir|
 #-------------------------------------------------------------
 wt.counttag.run=1
 wt.counttag.score.clear.zone=3
-wt.counttag.alignment.filter.mode=unique
 wt.counttag.min.alignment.score=10
 wt.counttag.input.bam.file=#{fullPath}/output/pairing/#{experiment}-#{library}.bam
 wt.counttag.exon.reference=#{gtf}
 wt.counttag.output.file.name=#{experiment}-#{library}.count.txt
-wt.counttag.output.dir=#{fullPath}/output/pairing
+output.dir=#{fullPath}/output/pairing
 eos
   out.close
   out = File.new(config+"/F3rescue.ini", "w")
@@ -419,6 +409,22 @@ cd ../..
 bioscope.sh #{fullPath}/config/analysis.plan
 eos
 out.close
+runIt = false
+out = File.new(config + "/analysis.plan", "w")
+if !File.exists?("#{fullPath}/output/pairing/#{experiment}-#{library}.bam")
+  out.printf("=%s/F3/F3.ini\n=%s/F5/F5.ini\n%s/F3rescue.ini\n%s/WT_Paired_End.ini\n",
+    config, config, config, config)
+    runIt = true
+end
+if !File.exists?("#{fullPath}/output/pairing/countag/#{experiment}-#{library}.count.txt")
+  out.printf("%s/counttags.ini\n", config)
+  runIt = true
+end
+out.close
+
 system("chmod a+x #{config}/run2.sh")
-system("cd #{fullPath};bioscope.sh #{fullPath}/config/analysis.plan")
+if (runIt)
+  STDERR.printf("Launching #{fullPath}/config/analysis.plan...\n")
+  system("cd #{fullPath};bioscope.sh #{fullPath}/config/analysis.plan")
+end
 end
