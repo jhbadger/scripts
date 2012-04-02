@@ -5,9 +5,11 @@ require 'ostruct'
 
 opt = OpenStruct.new
 opt.genome = nil
+opt.annotation = nil
 
 o = OptionParser.new
 o.banner << " solid-library [...solid-library...]"
+o.on("-a ", "--annotation ", String, "annotation file to link to hits") {|t| opt.annotation = t}
 o.on("-g ", "--genome ", String, "genome fasta file to map (required)") {|t| opt.genome = t}
 begin
   o.parse!
@@ -416,7 +418,7 @@ if !File.exists?("#{fullPath}/output/pairing/#{experiment}-#{library}.bam")
     config, config, config, config)
     runIt = true
 end
-if !File.exists?("#{fullPath}/output/pairing/countag/#{experiment}-#{library}.count.txt")
+if !File.exists?("#{fullPath}/output/pairing/counttag/#{experiment}-#{library}.count.txt")
   out.printf("%s/counttags.ini\n", config)
   runIt = true
 end
@@ -426,5 +428,9 @@ system("chmod a+x #{config}/run2.sh")
 if (runIt)
   STDERR.printf("Launching #{fullPath}/config/analysis.plan...\n")
   system("cd #{fullPath};bioscope.sh #{fullPath}/config/analysis.plan")
+end
+
+if (!File.exists?("#{fullPath}/output/#{experiment}-#{library}.csv") && opt.annotation)
+  system("buildMappingSpreadsheet #{fullPath}/output/pairing/counttag/#{experiment}-#{library}.count.txt #{gtf} #{opt.annotation} > #{fullPath}/output/#{experiment}-#{library}.csv")
 end
 end

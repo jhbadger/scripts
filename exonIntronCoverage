@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " introncounts exoncounts [..introncounts ...exoncounts...]"
+o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+exons = ARGV.grep(/exons.counts/)
+
+
+def countHits(file)
+	hits = Hash.new
+	counts = Hash.new
+	ZFile.new(file).each do |line|
+		contig, start, stop, name, score, strand, hitn, bases, len, coverage = line.chomp.split("\t")
+		gene = name.split(/_exon|_intron/).first
+		hitn = hitn.to_i
+		hits[gene] = 0 if !hits[gene]
+		hits[gene] += hitn
+		counts[gene] = 0 if !counts[gene]
+		counts[gene] += 1
+	end
+	hits.keys.each do |gene|
+		hits[gene] /= counts[gene].to_f
+	end
+	return hits
+end
+
+exons.each do |exon|
+	intron = exon.gsub("exons", "introns")
+	ehits  = countHits(exon)
+	ihits = countHits(intron)
+	ratio = Hash.new
+	ehits.keys.each do |gene|
+		if (ihits[gene].to_f > 0 && ehits[gene].to_f > 0)
+			ratio[gene] = ihits[gene].to_f/ehits[gene].to_f
+		else
+			ratio[gene] = 0
+		end
+	end
+	name = exon.split("_exons").first
+	out = File.new(name + "intron_ratio.csv", "w")
+	out.print ["Gene","Average Exon","Average Intron", "Ratio I/E"].to_csv
+	ratio.keys.sort {|x, y| ratio[y] <=> ratio[x]}.each do |gene|
+		out.print [gene, ehits[gene], ihits[gene], ratio[gene]].to_csv if ratio[gene] > 0
+	end
+	out.close
+end
+
+

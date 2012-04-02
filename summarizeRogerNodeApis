@@ -12,8 +12,7 @@ csv = ARGV.first
 assignment = Hash.new
 CSV.foreach(csv, :headers => true) do |row|
   name, tax = row["Seq Name"], row["Relaxed Classification"]
-  next if tax == ""
-  if (name =~/(contig_[0-9]*)/)  
+  if (name =~/(NODE_[0-9]*)_/)  
     contig = $1
     assignment[contig] = [] if assignment[contig].nil?
     tax = tax.split("; ")
@@ -45,8 +44,6 @@ assignment.keys.sort.each do |contig|
   orfs[contig] = row[1]
   print row.to_csv
 end
-p orfs
-exit(1)
 
 rows.keys.sort {|x, y| orfs[y] <=> orfs[x]}.each do |key|
   print rows[key].to_csv

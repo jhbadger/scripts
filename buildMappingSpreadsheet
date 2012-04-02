@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+
+if (ARGV.size != 3)
+	STDERR << "Usage: " << File.basename($0) << " count.txt gtf-file annotation-file\n"
+	exit(1)
+end
+
+count, gtf, annotation = ARGV
+
+tlen = Hash.new
+
+File.new(gtf).each do |line|
+	seqname, source, feature, start, stop, score, strand, frame, meta = line.chomp.split("\t")
+	tid = nil
+	meta.split("; ").each do |field|
+		key, value = field.gsub('"','').gsub(";","").split(" ")
+		tid = value if (key == "transcript_id")
+	end
+	if (tid && feature=="exon")
+		tlen[tid] = 0 if !tlen[tid]
+		len = 1 + (stop.to_i - start.to_i)
+		len /= 1000.0
+		tlen[tid] += len
+	end
+end
+
+ann = Hash.new
+File.new(annotation).each do |line|
+	tid = line.chomp.split("\t").first
+	ann[tid] = line.chomp.split("\t") - [tid]
+end
+
+reads = Hash.new
+totReads = nil
+File.new(count).each do |row|
+	if (row =~/number_of_mapped_reads=([0-9]*)/)
+		totReads = $1.to_i
+		next
+	end
+	contig, source, feature, start, stop, score, strand, frame, meta = row.chomp.split("\t")
+	if (feature == "exon")
+		tid = nil
+		rpkm = nil
+		meta.split("; ").each do |field|
+			key, value = field.gsub('"','').split(" ")
+			tid = value if (key == "transcript_id")
+			rpkm = value.to_f if (key == "RPKM")
+		end
+		if (rpkm && tid)
+			read = rpkm * totReads * (1 + stop.to_i - start.to_i).abs/1000.0
+			reads[tid] = 0 if (!reads[tid])
+			reads[tid] += read
+		end
+	end 
+end
+
+rpkms = Hash.new
+reads.keys.each do |tid|
+	rpkms[tid] = reads[tid] / (totReads*tlen[tid])
+end
+
+print CSV.generate_line(["Transcript Id", "RPKM", "JGI", "GI", "Annotation", "SwissProt", "SwissProt Annotation", "KEGG", "KEGG Def", 
+		"GOS Cluster", "Phytax Cluster", "Phytax", "KO", "KO Def", "PFAM", "PFAM Def", "PFAM2GO", "TFAM", "TFAM Def",
+		"TFAM2GO", "COG", "COG Def", "Plant", "Animal"], ",") + "\n"
+rpkms.keys.sort {|x, y| rpkms[y] <=> rpkms[x]}.each do |tid|
+	if (rpkms[tid] > 0.1)
+		print CSV.generate_line([tid, rpkms[tid]]+ann[tid].to_a) + "\n"
+	end
+end

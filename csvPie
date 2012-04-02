@@ -4,18 +4,20 @@ require 'optparse'
 require 'rubygems'
 require 'csv'
 require 'gchart'
+require 'ostruct'
 
-level = 2
-field = 2
-stap = false
+opt = OpenStruct.new
+opt.level = 2
+opt.field = 4
+opt.stap = false
 
 ARGV.options {|opts|
   opts.banner << " [csv ... csv...]"
   opts.on("-l ", "--level ", Integer,
-          "taxonomic level (default #{level})") {|level|}
+          "taxonomic level (default #{opt.level})") {|t| opt.level = t}
   opts.on("-f ", "--field ", Integer, 
-          "field number for taxonomy (default #{field})")  {|field|}
-  opts.on("-s", "--stap", "parse STAP results file (default #{stap})")  {|stap|}
+          "field number for taxonomy (default #{opt.field})")  {|t| opt.field}
+  opts.on("-s", "--stap", "parse STAP results file (default #{opt.stap})")  {|t| opt.stap}
   begin
     opts.parse!
   rescue
@@ -31,10 +33,10 @@ ARGV.options {|opts|
 
 out = File.new("chart.html", "w")
 fieldNames =  ["kingdom","phylum","class","ord","family","genus","species"]
-rank = fieldNames[level]
+rank = fieldNames[opt.level]
 
 percents = Hash.new
-if (stap)
+if (opt.stap)
   col_sep = "\t"
   tax_sep = "|"
 else
@@ -42,42 +44,41 @@ else
   tax_sep = "; "
 end
 
-ARGV.each {|dataset|
+ARGV.each do |dataset|
   STDERR.printf("Processing %s...\n", dataset)
   counts = Hash.new
   total = 0
-  CSV.foreach(dataset, {:col_sep => col_sep}) {|row|
-    taxon = row[field].split(tax_sep)[level]
-    taxon = "Mixed" if taxon.nil?
-    next if taxon == "Undefined" 
+  CSV.foreach(dataset, {:col_sep => col_sep}) do |row|
+    taxon = row[opt.field].split(tax_sep)[opt.level]
+    next if taxon == "Undefined"  || taxon.nil?
     counts[taxon] = 0 if counts[taxon].nil?
     counts[taxon] += 1
-  }
-  counts.keys.each {|taxon|
+  end
+  counts.keys.each do |taxon|
     total += counts[taxon].to_f / 100
-  }
+  end
   percents[dataset] = Hash.new
   counts["Misc"] = 0
   percents[dataset]["Misc"] = 0
   
-  counts.keys.each {|key|
+  counts.keys.each do |key|
     percents[dataset][key] = counts[key]/total if total > 0
-  }
+  end
 
   printf("\nCategory in #{dataset}, Counts, Percent\n")
-  percents[dataset].keys.sort {|x,y| percents[dataset][y] <=> percents[dataset][x]}.each {|key|
+  percents[dataset].keys.sort {|x,y| percents[dataset][y] <=> percents[dataset][x]}.each do |key|
     printf("%s,%d,%5.2f\n", key, counts[key], percents[dataset][key]) if (percents[dataset][key]> 0.0)
-  }
+  end
   
-  counts.keys.each {|key|
+  counts.keys.each do |key|
     if (percents[dataset][key] < 2 && key != "Misc")
       percents[dataset]["Misc"] += percents[dataset][key]
       counts.delete(key)
       percents[dataset].delete(key)
     end
-  }
+  end
   percents[dataset].delete("Misc") if (percents[dataset]["Misc"] < 2)  
-}
+end
 
 colors = ["#90B8C0","#988CA0","#FF9999","#99FF99","#CE0000",
           "#000063","#5A79A5","#9CAAC6","#DEE7EF","#84596B",
