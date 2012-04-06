@@ -11,7 +11,7 @@ opt.project = 215011
 opt.queue = "medium"
 $VERBOSE = nil
 opt.blast = "blastp"
-
+opt.size = 1000
 
 ARGV.options {|opts|
   opts.banner << " fasta [fasta...fasta...]"
@@ -26,6 +26,7 @@ ARGV.options {|opts|
     opts.on("-q ", "--queue ", String, 
 	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
     opts.on("-x", "--btab", "run btab (default #{opt.btab})") {|t| opt.btab = t}
+    opts.on("-z ", "--size ", Integer,  "Size for blast jobs") {|t| opt.size = t}
     opts.parse!
   rescue
     STDERR.puts $!.message
@@ -44,7 +45,7 @@ ARGV.each {|pep1|
       if (opt.project.nil?)
                else
         if (Dir.glob("#{pep2}_vs_#{pep1}*").empty?)
-          system("pblastNCBI -b #{opt.blast} -e #{opt.evalue} -m #{opt.maxHits} -q #{opt.queue} -p #{opt.project} #{pep1} #{pep2}")
+          system("pblastNCBI -b #{opt.blast} -e #{opt.evalue} -m #{opt.maxHits} -q #{opt.queue} -p #{opt.project} -z #{opt.size} #{pep1} #{pep2}")
           system("btab #{pep2}_vs_#{pep1}.blastp") if opt.btab
         else
           STDERR.printf("Skipping #{pep1}_vs_#{pep2} due to existing results...\n")
