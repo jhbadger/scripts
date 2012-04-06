@@ -11,7 +11,7 @@ opt.cluster = nil
 
 o = OptionParser.new
 o.banner << " csv [...csv]"
-o.on("-c ", "--cluster-file ", String, "") {|c| opt.cluster = true}
+o.on("-c ", "--cluster-file ", String, "") {|c| opt.cluster = c}
 begin
   o.parse!
 rescue
@@ -34,16 +34,15 @@ if (opt.cluster)
 else
   cluster = nil
 end
-p cluster.size
-exit(1)
 
 ARGV.each do |file|
   tab = File.basename(file).split(".csv").first + ".tab"
   out = File.new(tab, "w")
-  CSV.foreach(file, :headers => true) do |line|
-    meta = [line["Seq Name"], line["Dataset"], line["Annotation"], "APIS"]
-    p meta
-    exit(1)
+  ZFile.new(file).each do |line|
+    line = line.parse_csv
+    sname, dataset, len, ann, tax, taxid, blastid, blastann, blaste, blastident, blastcov = line
+    next if sname == "Seq Name"
+    meta = [sname, dataset, ann, "APIS", go, gosrc, ec, ecsrc, hmm, blastid, blaste, blastident, blastcov, ""]
   end
   out.close
 end

@@ -26,9 +26,14 @@ end
 
 id = num.to_i
 
+arank=["kingdom","phylum","class","order","family","genus","species"]
+
 if (taxa[id])
+  num = 0
   while (id != 1)
-    printf("%d\t%s\t%s\t%s\n", id, taxa[id], parents[id], ranks[id])
+    printf("%d\t%s\tncbi=%s\tapis=%s (rank %d)\n", id, 
+    taxa[id],ranks[id], arank[6-num], 7 - num)
     id = parents[id]
+    num += 1
   end
 end
