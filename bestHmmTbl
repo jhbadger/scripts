@@ -1,23 +1,59 @@
 #!/usr/bin/env ruby
 
-if (ARGV.size != 1)
-  STDERR.printf("Usage: %s hmm.tbl\n", File.basename($0))
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " hmm-tbl [...hmm-tbl...]"
+o.on("-c ", "--cutoff ", "cutoff file") {|t| opt.cutoff = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
   exit(1)
 end
 
-tbl = ARGV.first
+cut = Hash.new
+
+if (opt.cutoff)
+	File.new(opt.cutoff).each do |line|
+		name, hmm, score = line.chomp.split(" ")
+		cut[name] = score
+	end
+end
 
 best = Hash.new
 bestScore = Hash.new
-File.new(tbl).each do |line|
-  next if line=~/^#/
-  target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
-  if (bestScore[query].nil? || score.to_f > bestScore[query])
-    best[query] = target
-    bestScore[query] = score.to_f
-  end
+ann = Hash.new
+hits = Hash.new
+ARGV.each do |tbl|
+	
+	File.new(tbl).each do |line|
+  	next if line=~/^#/
+  	target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
+  	ann[query] = File.basename(tbl, ".tbl")
+  	hits[query] = 0 if !hits[query]
+  	hits[query] += 1
+  	if (bestScore[query].nil? || score.to_f > bestScore[query])
+    	best[query] = target
+    	bestScore[query] = score.to_f
+  	end
+	end
 end
 
+printf("Gene\tHMM\tBest Peptide Hit\tBest Score")
+printf("\tCutoff") if (opt.cutoff)
+printf("\tHits")
+printf("\n")
 best.keys.sort.each do |query|
-  printf("%s\t%s\n", query, best[query])
+  printf("%s\t%s\t%s\t%8.3f", ann[query], query, best[query], bestScore[query])
+  printf("\t%8.3f", cut[ann[query]]) if (opt.cutoff)
+  printf("\t%d", hits[query])
+  printf("\n")
 end
