@@ -7,11 +7,11 @@ require 'ZFile'
 
 
 opt = OpenStruct.new
-opt.cluster = nil
+opt.hmm = nil
 
 o = OptionParser.new
 o.banner << " csv [...csv]"
-o.on("-c ", "--cluster-file ", String, "") {|c| opt.cluster = c}
+o.on("-h ", "--hmm ", String, "HMM hits file") {|t| opt.hmm = t}
 begin
   o.parse!
 rescue
@@ -24,16 +24,11 @@ if (ARGV.size < 1)
   exit(1)
 end
 
-if (opt.cluster)
-  cluster = Hash.new
-  STDERR << "Loading clusters...\n"
-  ZFile.new(opt.cluster).each do |line|
-    pep, c1, c2 = line.chomp.split("\t")
-    cluster[pep] = c1 + "|| " + c2
+if (opt.hmm)
+  ZFile.new(opt.hmm).each do |line|
   end
-else
-  cluster = nil
 end
+
 
 ARGV.each do |file|
   tab = File.basename(file).split(".csv").first + ".tab"

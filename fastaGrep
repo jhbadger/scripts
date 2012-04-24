@@ -47,10 +47,10 @@ ARGV.each do |fasta|
     next if (opt.unique && printed[sname])
     if (express)
       if (!opt.inverse)
-        print seq if (seq.definition == express)
+        print seq if seq.definition =~/#{express}/
         printed[sname]=true
       else
-        print seq if (seq.definition != express)
+        print seq if seq.definition !~ /#{express}/
         printed[sname]=true
       end
     else
