@@ -1,0 +1,74 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.min = 150
+opt.max = 400
+opt.lane = 1
+opt.ctype = "BCPE"
+
+o = OptionParser.new
+o.banner << " solid-library [...solid-library...]"
+o.on("-c ", "--conversionType ", String, "conversion type (#{opt.ctype})") {|t| opt.ctype = t}
+o.on("-l ", "--laneNumber ", Integer, "lane number (#{opt.lane})") {|t| opt.lane = t}
+o.on("-m ", "--min ", Integer, "minimum insert size (#{opt.min})") {|t| opt.min = t}
+o.on("-x ", "--max ", Integer, "maximum insert size (#{opt.max})") {|t| opt.max = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+
+
+cdir = Dir.pwd
+
+exp = nil
+ARGV.each do |dir|
+  paths = dir.split("/")
+  experiment = paths[paths.index("libraries") - 2]
+  library = paths.last
+  fullPath = cdir + "/" + experiment + "/" + library
+  reads = Dir.glob(dir + "/primary*/reads/*")
+  f3fa = reads.grep(/F3/).grep(/csfasta/).first
+  f3qual = reads.grep(/F3/).grep(/qual/).first
+  f5fa = reads.grep(/F5/).grep(/csfasta/).first
+  f5qual = reads.grep(/F5/).grep(/qual/).first
+  bcfa = reads.grep(/_BC/).grep(/csfasta/).first
+  bcqual = reads.grep(/_BC/).grep(/qual/).first
+  if f3fa.nil?
+    printf("I can't find F3 in #{dir}. Help!\n")
+    exit(1)
+  end
+  if bcfa.nil?
+    printf("I can't find BC in #{dir}. Help!\n")
+    exit(1)
+  end
+  time = File.ctime(f3fa).strftime("%Y-%m-%d %H:%M:%S")
+  command = "convertToXSQ.sh --mode=#{opt.ctype} "
+  command += "--c1=#{f3fa} --q1=#{f3qual} " if f3fa
+  command += "--c2=#{f5fa} --q2=#{f5qual} " if f5fa
+  command += "--bc1=#{bcfa} --bq1=#{bcqual} "
+  command += "--libraryInsertSizeMinimum=#{opt.min} "
+  command += "--libraryInsertSizeMaximum=#{opt.max} "
+  command += "--xsqfile=#{cdir}/#{experiment}-#{library}.xsq "
+  command += "--libraryName=#{library} "
+  command += "--laneNumber=#{opt.lane} "
+  command += "--runStartTime=\"#{time}\""
+  out = File.new("#{library}.sh", "w")
+  out.printf("export PATH=%s\n",ENV["PATH"])
+  out.print command
+  out.close
+  opt.lane += 1
+  system("qsub #{library}.sh")
+  sleep 0.1
+  File.unlink("#{library}.sh")
+end
