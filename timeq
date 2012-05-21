@@ -27,7 +27,7 @@ def parseShow(output, server, user, pass)
   return lines
 end
 
-lines = {"tmlsrv1" => [], "tmlsrv2" => []}
+lines = {"tmlsrv1" => []}
 
 File.new("/home/jbadger/lib/tmpass.txt").each do |line|
   user, pass = line.chomp.split("\t")
