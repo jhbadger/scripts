@@ -6,12 +6,12 @@ require 'optparse'
 require 'bio'
 require 'ostruct'
 require 'ZFile'
-require 'ApisDB'
+#require 'ApisDB'
 
 opt = OpenStruct.new
 opt.sep = false
 opt.tax = false
-ApisDB.loadOptions(opt)
+#ApisDB.loadOptions(opt)
 
 ARGV.options do |opts|
   opts.banner << " gbk-file [..gbk-file...]"

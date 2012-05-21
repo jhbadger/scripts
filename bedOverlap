@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+olds = nil
+olde = nil
+oldc = nil
+oldsc = nil
+oldstrand = nil
+oldn = nil
+
+File.new(ARGV.first).each do |line|
+	chr, s, e, name, score, strand = line.chomp.split("\t")
+	s = s.to_i
+	e = e.to_i
+	printIt = true
+	if (chr == oldc)
+		mid = (s + e)/2
+		if (olds < mid && mid < olde)
+			printIt = false
+		end
+	end
+	print line if printIt
+	olds = s
+	olde = e
+	oldc = chr
+	oldsc = score
+	oldstrand = strand
+	oldn = name
+end

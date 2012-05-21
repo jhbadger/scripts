@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " mapping.csv sig.csv"
+#o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+pvalue = Hash.new
+cond1 = Hash.new
+cond2 = Hash.new
+fold = Hash.new
+
+mapping, sig = ARGV
+CSV.foreach(sig, :headers=>true) do |row|
+	id = row["gene_id"]
+	pvalue[id] = row["p_value"].to_f
+	cond1[id] = row["sample_1"]
+	cond2[id] = row["sample_2"]
+	fold[id] = row["log2_fold_change"].to_f
+end
+
+
+maprows = Hash.new
+headers = nil
+CSV.foreach(mapping, :headers=>true) do |row|
+	maprows[row["cuff_id"]] = row
+end
+
+cols = ["cuff_id", "transcript id", "common name", "NCBI", "SwissProt", "SwissProt Annotation", "KEGG", "KEGG Def", 
+	"GOS Cluster", "KO", "KO Def", "PFAM", "PFAM Def", "PFAM2GO", 
+	"TFAM", "TFAM Def", "TFAM2GO"]
+
+print (cols + ["pvalue", "Condition1", "Condition2", "Log 2 Fold", "Abs Log 2 Fold"]).to_csv
+pvalue.keys.sort {|x, y| pvalue[x] <=> pvalue[y]}.each do |key|
+	row = []
+	cols.each do |col|
+		row.push(maprows[key][col])
+	end
+	row.push(pvalue[key], cond1[key], cond2[key], fold[key], fold[key].abs)
+	print row.to_csv
+end

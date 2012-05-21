@@ -1,0 +1,88 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'csv'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " genes.fpkm_tracking gtf ann"
+#o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 3)
+  STDERR << o
+  exit(1)
+end
+
+genes, gtf, annf = ARGV
+
+idTable = Hash.new
+
+File.new(gtf).each do |line|
+	gid = nil
+	tid = $1
+	if line =~/gene_id \"([^\"]*)\"/
+		gid = $1
+	end
+	if (line =~/transcript_id \"([^\"]*)\"/)
+		tid = $1
+	end
+	if (gid && tid)
+		idTable[gid] = tid
+	end
+end
+
+
+ann = Hash.new
+name = Hash.new
+File.new(annf).each do |line|
+	 tid = line.chomp.split("\t").first
+   fields = line.chomp.split("\t")
+   name[tid] = fields[3]
+   fields.delete(fields[3])
+   fields.delete(fields[0])
+   fields.delete(fields[0])
+   fields.pop
+   fields.pop
+   fields.pop
+   fields.pop
+   fields[0].gsub!("\"","") if !fields[0].nil?
+   ann[tid] = fields
+end
+
+headers = nil
+conditions = nil
+
+File.new(genes).each do |line|
+	fields = line.chomp.split("\t")
+	if (!headers)
+		headers = fields
+		h = ["cuff_id", "transcript id", "common name"]
+		conditions = headers.grep(/FPKM/)
+		h += conditions
+		h += ["NCBI", "SwissProt", "SwissProt Annotation", 
+					"KEGG", "KEGG Def", "GOS Cluster", "Phytax Cluster", "Phytax", 
+					"KO", "KO Def", "PFAM", "PFAM Def", "PFAM2GO", 
+					"TFAM", "TFAM Def", "TFAM2GO"]
+		print h.to_csv
+	else
+		line = Hash.new
+		0.upto(headers.length) do |i|
+			line[headers[i]] = fields[i]
+		end
+		id = line["tracking_id"]
+		tid = idTable[line["gene_short_name"]]
+		row = [id, tid, name[tid]]
+		conditions.each do |condition|
+			row.push(line[condition])
+		end
+		row += ann[tid].to_a
+		print row.to_csv
+	end
+end

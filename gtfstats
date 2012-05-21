@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " gtf-file"
+#o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+gtf = ARGV.shift
+
+oldtran = nil
+oldStart = nil
+oldStop = nil
+File.new(gtf).each do |line|
+	contig, source, type, start, stop, d, frame, d, ann = line.chomp.split("\t")
+	start = start.to_i
+	stop = stop.to_i
+	if (ann =~/transcript_id \"([0-9]*)\"/)
+		if (oldtran == $1)
+			dist = 1 + (start - oldStop)
+			p dist
+		end
+		oldtran = $1
+		oldStart = start
+		oldStop = stop
+	end
+end
