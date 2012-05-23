@@ -1,0 +1,92 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.genome = nil
+opt.matedist = 250
+opt.matesd = 200
+opt.minintron = 20
+opt.maxintron = 20000
+
+o = OptionParser.new
+o.banner << " solid-library [...solid-library...]"
+o.on("-g ", "--genome ", String, "prefix with bowtie genome index (required)") {|t| opt.genome = t}
+o.on("-m ", "--matedist ", Integer, "average distance between mate pairs (#{opt.matedist})") {|t| opt.matedist = t}
+o.on("-s ", "--mate-stdev ", Integer, "standard deviation between mate pairs (#{opt.matesd})") {|t| opt.matesd = t}
+o.on("-u ", "--minintron ", Integer, "minimum intron size (#{opt.minintron})") {|t| opt.minintron = t}
+o.on("-v ", "--maxintron ", Integer, "maximum intron size (#{opt.maxintron})") {|t| opt.maxintron = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+if (!opt.genome)
+  STDERR.printf("Mapping genome is required\n")
+  exit(1)
+end
+
+gtf = opt.genome.split(".fa").first + ".gtf"
+
+if (!File.exists?(gtf))
+  STDERR.printf("Cannot open #{gtf}\n")
+  exit(1)
+end
+
+
+cdir = Dir.pwd
+
+exp = nil
+ARGV.each do |dir|
+  paths = dir.split("/")
+  experiment = paths[paths.index("libraries") - 2]
+  if experiment != exp
+    STDERR << "Processessing experiment " + experiment + "...\n"
+    if !(File.exists?(cdir + "/" + experiment))
+      Dir.mkdir(cdir + "/" + experiment)
+    end
+    exp = experiment
+  end
+  library = paths.last
+  fullPath = cdir + "/" + experiment + "/" + library
+  reads = Dir.glob(dir + "/primary*/reads/*")
+  f3fa = reads.grep(/F3/).grep(/csfasta/).first
+  f3qual = reads.grep(/F3/).grep(/qual/).first
+  f5fa = reads.grep(/F5/).grep(/csfasta/).first
+  f5qual = reads.grep(/F5/).grep(/qual/).first
+  if f3fa.nil?
+    printf("I can't find F3 in #{dir}. Help!\n")
+    exit(1)
+  end
+  if f5fa.nil?
+    printf("I can't find F5 in #{dir}. Help!\n")
+    exit(1)
+  end
+  cmd = "tophat -p 8 -G #{gtf} -C -Q "
+  cmd += "--mate-inner-dist #{opt.matedist} "
+  cmd += "--mate-std-dev #{opt.matesd} "
+  cmd += "--library-type fr-secondstrand "
+  cmd += "--no-coverage-search "
+  cmd += "--min-intron-length #{opt.minintron} "
+  cmd += "--max-intron-length #{opt.maxintron} "
+  cmd += "-o #{fullPath} "
+  cmd += "#{opt.genome} #{f3fa} #{f5fa} #{f3qual} #{f5qual}"
+  if (!File.exist?(fullPath))
+    out = File.new(library + ".sh", "w")
+    out.print cmd + "\n"
+    cmd = "cufflinks -p 8 --no-update-check -o #{fullPath}/cufflinks "
+    cmd += "#{fullPath}/accepted_hits.bam"
+    out.print cmd + "\n"
+    out.close
+    system("qsub #{library}.sh")
+    File.unlink("#{library}.sh")
+  end
+end

@@ -1,0 +1,102 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.genome = nil
+opt.conditions = nil
+opt.bams = nil
+
+
+o = OptionParser.new
+o.banner << " main-tophat-run-dir"
+o.on("-b ", "--libraries ", String, "list of libraries, comma separated, $ separated for each condition (required)" ) {|t| opt.bams = t}
+o.on("-c ", "--conditions ", String, "list of conditions, comma separated (required)" ) {|t| opt.conditions = t}
+o.on("-g ", "--genome ", String, "prefix with bowtie genome index (required)") {|t| opt.genome = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 1)
+  STDERR << o
+  exit(1)
+end
+
+if (!opt.bams)
+  STDERR.printf("List of bams is required\n")
+  exit(1)
+end
+
+if (!opt.conditions)
+  STDERR.printf("List of conditions is required\n")
+  exit(1)
+end
+
+if (!opt.genome)
+  STDERR.printf("Mapping genome is required\n")
+  exit(1)
+end
+
+
+
+gtf = opt.genome.split(".fa").first + ".gtf"
+
+if (!File.exists?(gtf))
+  STDERR.printf("Cannot open #{gtf}\n")
+  exit(1)
+end
+
+fa = opt.genome.split(".fa").first + ".fa"
+
+if (!File.exists?(fa))
+  STDERR.printf("Cannot open #{fa}\n")
+  exit(1)
+end
+
+ann = opt.genome.split(".fa").first + ".ann"
+
+if (!File.exists?(ann))
+  STDERR.printf("Cannot open #{ann}\n")
+  exit(1)
+end
+
+fullPath = File.expand_path(ARGV.first)
+
+bams = ""
+opt.bams.split("%").each do |cond|
+  cond.split(",").each do |lib|
+    bams += fullPath+"/#{lib}/accepted_hits.bam,"
+  end
+  bams.chop!
+  bams += " "
+end
+
+out = ""
+asm = "#{fullPath}/assemblies.txt"
+if (!File.exists?(asm))
+  out += "find #{fullPath} -name transcripts.gtf > #{asm}\n"
+end
+
+merged = "#{fullPath}/merged_asm"
+if (!File.exists?(merged))
+  out += "cuffmerge --no-update-check -g #{gtf} -s #{fa} -o #{merged} -p 8 #{asm}\n"
+end
+
+diff = "#{fullPath}/diff_out"
+if (!File.exists?(diff))
+  out += "cuffdiff --no-update-check -b #{fa} -u #{merged}/merged.gtf -o #{diff} -p 8 -L #{opt.conditions} #{bams}\n"
+end
+
+gtfout = "#{fullPath}/gtf_out_list.txt"
+if (!File.exists?(gtfout))
+  out += "find #{fullPath} -name transcripts.gtf > #{gtfout}\n"
+  out += "cd #{fullPath};cuffcompare --no-update-check -i #{gtfout} -r #{gtf}\n"
+end
+
+outF=File.new(File.basename(ARGV.first) + ".sh", "w")
+outF.print out
+outF.close
