@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+
+if (ARGV.size != 1)
+  STDERR.printf("Usage: %s fasta-file\n", File.basename($0))
+  exit(1)
+end
+
+lens = Hash.new
+tot = 0
+Bio::FlatFile.new(Bio::FastaFormat, File.new(ARGV.first)).each do |seq|
+  lens[seq.entry_id] = seq.length
+  tot += seq.length
+end
+
+subtot = 0
+lens.keys.sort {|x,y| lens[y] <=> lens[x]}.each do |key|
+  subtot += lens[key]
+  if (subtot > tot/2)
+    printf("N50 is %d (%3.1f Mbp)\n", lens[key], lens[key]/1e6)
+    break
+  end
+end
