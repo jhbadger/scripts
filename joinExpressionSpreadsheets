@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+require 'optparse'
+require 'ostruct'
+
+opt = OpenStruct.new
+opt.order  = nil
+o = OptionParser.new
+o.banner << " csv [...csv...]"
+o.on("-o ", "--order ", "use file to order names") {|t| opt.order = t}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size < 2)
+  STDERR << o
+  exit(1)
+end
+
+if (opt.order)
+	files = []
+	File.new(opt.order).each do |line|
+		next if line =~/sample name/
+		file = line.split(",").first + ".csv"
+		if ARGV.index(file)
+			files.push(file)
+		else
+			STDERR << "I can't find " << file << "\n"
+			next
+		end
+	end
+else
+	files = ARGV
+end
+
+headers = nil
+rpkm = nil
+rpkms = Hash.new
+ann = Hash.new
+names = []
+rid = nil
+
+files.each do |csv|
+	name = File.basename(csv, ".csv")
+	names.push(name)
+	STDERR << "Processing #{name}..\n"
+	CSV.foreach(csv, :headers=>true) do |row|
+		if (!headers)
+			id = row.headers.first
+			rpkm = row.headers.grep(/RPKM|rpkm/).first
+		end
+		rid = row[id]
+		rpkms[rid] = Hash.new if !rpkms[rid]
+		rpkms[rid][name] = row[rpkm]
+		if (!ann[rid])
+			row.delete(rpkm)
+			row.delete(id)
+			ann[rid] = row
+		end
+	end
+end
+
+print (["Transcript"] + names + ann[ann.keys.first].headers).to_csv
+rpkms.keys.sort.each do |key|
+	row = [key]
+	names.each do |name|
+		row.push(rpkms[key][name])
+	end
+	ann[key].headers.each do |col|
+		row.push(ann[key][col])
+	end
+	print row.to_csv
+end

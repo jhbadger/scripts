@@ -2,8 +2,7 @@
 
 require 'ostruct'
 require 'optparse'
-require 'rubygems'
-require 'DBwrapper'
+require 'bio'
 require 'CodonBias'
 opt = OpenStruct.new
 
@@ -11,12 +10,8 @@ opt.everything = false
 opt.database = "combodb"
 opt.taxonomy = false
 
-ARGV.options {|opts|
-  opts.banner << " contig-id...contig-id..."
-  opts.on("-e", "--everything", 
-	  "compute for everything") {|t| opt.everything = t}
-  opts.on("-t ", "--taxonomy ", String, 
-	  "limit to taxonomy") {|t| opt.taxonomy = t}
+ARGV.options do |opts|
+  opts.banner << " cds"
   begin
     opts.parse!
   rescue
@@ -24,49 +19,19 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-  if (ARGV.size < 1 && (!opt.everything && !opt.taxonomy))
+  if (ARGV.size < 1)
     STDERR.puts opts
     exit(1)
   end
-}
-
-db = MySQL.new("mysql-lan-pro.jcvi.org", opt.database,
-                 "apis", "apis_user")
-
-species = Hash.new
-taxonomy = Hash.new
-if (opt.everything || opt.taxonomy)
-  query = "SELECT species, name, taxonomy FROM contigs"
-  query += " WHERE taxonomy LIKE '%#{opt.taxonomy}%'" if opt.taxonomy
-  db.query(query).each {|row|
-    sp, name, tax = row
-    species[sp] = [] if species[sp].nil?
-    species[sp].push(name) 
-    taxonomy[sp] = tax
-  }
-else
-  ARGV.each {|name|
-    db.query("SELECT species, taxonomy FROM contigs WHERE name='#{name}'").each {|row|
-      sp, tax = row
-      species[sp] = [] if species[sp].nil?
-      species[sp].push(name)
-      taxonomy[sp] = tax
-    }
-  }
 end
 
-species.keys.sort.each {|key|
+Bio::FlatFile.new(Bio::FastaFormat, File.new(ARGV.first)).each do |seq|
   bias = CodonBias.new
-  species[key].each {|con|
-    db.query("SELECT seq FROM transcripts WHERE contig_name = '#{con}'").each {|row|
-      seq = row[0]
-      bias.add(seq)
-    }
-  }
+  bias.add(seq.seq.upcase)
   bias.normalize
-  printf("%s",key)
-  bias.counts.each {|num|
+  printf("%s",seq.entry_id)
+  bias.counts.each do |num|
     printf(",%0.6f",num)
-  }
+  end
   printf("\n")
-}
+end

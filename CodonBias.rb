@@ -39,8 +39,8 @@ class CodonBias
     "FFLLSSSSYY*QCC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG"]
 
   def codonNum(codon)
-    return (@@nucnums[codon[0]] << 4) + (@@nucnums[codon[1]] << 2) +
-            @@nucnums[codon[2]]
+    return (@@nucnums[codon[0].ord] << 4) + (@@nucnums[codon[1].ord] << 2) +
+            @@nucnums[codon[2].ord]
   end
 
   def translate(codon, code = 0)
