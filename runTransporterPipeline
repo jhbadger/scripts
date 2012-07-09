@@ -9,10 +9,10 @@ opt.grid = nil
 opt.tgg="/usr/local/projects/TGG/PEP/transporter_faa/transporter_TC.faa"
 opt.hmm="/usr/local/projects/TGG/PEP/transporter_faa/transporter_hmm_frag_models.FRAG"
 opt.cog="/usr/local/projects/EVOL/jbadger/cog.pep"
-opt.server = "tmlsrv2.jcvi.org"
+opt.server = "tmlsrv1.jcvi.org"
 opt.user = ENV["USER"]
 opt.password = nil
-opt.tmpdir = "/usr/local/scratch/#{ENV["USER"]}/"
+opt.tmpdir = "/usr/local/scratch/METAGENOMICS/#{ENV["USER"]}/"
 opt.verbose = 0
 opt.keyword = 0
 

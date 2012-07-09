@@ -36,12 +36,12 @@ File.new(cut).each do |line|
 end
 
 cutoff.keys.each do |hmm|
-  cmd = "hmmsearch -T #{cutoff[hmm]} --tblout #{names[hmm]}.tbl #{db}/#{hmm}.HMM #{pep}"
+  cmd = "hmm3search -T #{cutoff[hmm]} --tblout #{names[hmm]}.tbl #{db}/#{hmm}.HMM #{pep}"
   if (opt.project.nil?)
     STDERR.printf("Processing #{names[hmm]}...\n")
     system("#{cmd} > /dev/null")
   else
-    system("runCmd -c \"#{cmd}\" --nowait --project #{opt.project}")
+    system("runGrid -p #{opt.project} \"#{cmd}\"")
   end
 end
 

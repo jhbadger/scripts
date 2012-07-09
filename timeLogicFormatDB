@@ -59,7 +59,7 @@ else
   param = "format_nt_into_nt"
 end
 
-["tmlsrv1","tmlsrv2"].each do |server|
+["tmlsrv1"].each do |server|
   cmd = "dc_run -parameters #{param} -query #{fasta} "
   cmd += "-database #{File.basename(fasta)} "
   cmd += "-server #{server} -description #{desc} "
