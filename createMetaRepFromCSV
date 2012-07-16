@@ -4,6 +4,7 @@ require 'optparse'
 require 'ostruct'
 require 'csv'
 require 'ZFile'
+require 'sqlite3'
 
 
 opt = OpenStruct.new
@@ -11,7 +12,7 @@ opt.hmm = nil
 
 o = OptionParser.new
 o.banner << " csv [...csv]"
-o.on("-h ", "--hmm ", String, "HMM hits file") {|t| opt.hmm = t}
+o.on("-h ", "--hmm ", String, "HMM hits sqlite db") {|t| opt.hmm = t}
 begin
   o.parse!
 rescue
@@ -25,10 +26,28 @@ if (ARGV.size < 1)
 end
 
 if (opt.hmm)
-  ZFile.new(opt.hmm).each do |line|
+  db = SQLite3::Database.new(opt.hmm)
+  pfam2go = Hash.new
+  pfam2ec = Hash.new
+  db.execute("SELECT pfam, pfam2go.go, ec FROM pfam2go JOIN ec2go ON pfam2go.go = ec2go.go") do |row|
+    pfam, go, ec = row
+    ec.gsub!("EC:","")
+    if (!pfam2go[pfam])
+      pfam2go[pfam] = go
+    else
+      pfam2go[pfam] += " " + go if !pfam2go[pfam].index(go)
+    end
+    if (!pfam2ec[pfam])
+      pfam2ec[pfam] = ec
+    else
+      pfam2ec[pfam] += " " + ec if !pfam2ec[pfam].index(ec)
+    end
   end
+else
+  db = nil
+  pfam2go = nil
+  pfam2ec = nil
 end
-
 
 ARGV.each do |file|
   tab = File.basename(file).split(".csv").first + ".tab"
@@ -37,7 +56,42 @@ ARGV.each do |file|
     line = line.parse_csv
     sname, dataset, len, ann, tax, taxid, blastid, blastann, blaste, blastident, blastcov = line
     next if sname == "Seq Name"
+    go, gosrc, hmm, ec, ecsrc = nil
+    gosrc = "pfam2go"
+    ecsrc = "ec2go"
+    if (opt.hmm)
+      db.execute("SELECT hit FROM hmm WHERE pep='#{sname}'") do |row|
+        hit = row[0]
+        if (hmm.nil?)
+          hmm = ""
+        else
+          hmm += " "
+        end
+        hmm += hit
+        if (pfam2go[hit])
+          if !go
+            go = pfam2go[hit]
+          else
+            pfam2go[hit].split(" ").each do |gohit|
+              go += " " + gohit if (!go.index(gohit))
+            end
+          end
+        end
+        if (pfam2ec[hit])
+          if !ec
+            ec = pfam2ec[hit]
+          else
+            pfam2ec[hit].split(" ").each do |echit|
+              ec += " " + echit if (!ec.index(echit))
+            end
+          end
+        end
+      end
+    end
     meta = [sname, dataset, ann, "APIS", go, gosrc, ec, ecsrc, hmm, blastid, blaste, blastident, blastcov, ""]
+    out.print meta.to_csv(:col_sep=>"\t")
   end
   out.close
 end
+
+db.close if !db.nil?

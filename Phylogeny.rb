@@ -1,7 +1,16 @@
 require 'Newick'
 require 'bio'
 
+# add support bin to path
+ENV["PATH"] += ":" + File.dirname($0) + "/supportBin/" + `uname`.chomp
+
 $VERBOSE = false
+
+# checks to see if a command exists on the path
+def command?(name)
+  `which #{name}`
+  $?.success?
+end
 
 def align(alignFile, homologFile)
   if (File.exist?(homologFile) && !File.exist?(alignFile))
