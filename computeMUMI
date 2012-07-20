@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'csv'
+
+if (ARGV.size < 1)
+	STDERR << "Usage: " << File.basename($0) << " fasta [...fasta...]\n"
+	exit(1)
+end
+
+lengths = Hash.new
+ARGV.each do |con|
+	Bio::FlatFile.new(Bio::FastaFormat, File.new(con)).each do |seq|
+		lengths[con] = 0 if (!lengths[con])
+		lengths[con] += seq.length
+	end
+end
+
+dist = Hash.new
+lengths.keys.each do |org1|
+	dist[org1] = Hash.new if !dist[org1]
+	lengths.keys.each do |org2|
+		next if org1 == org2
+		mum = "#{org1}_#{org2}.mum"
+		if (!File.exist?(mum))
+			system("mummer -mum -b -c -l 19 #{org1} #{org2} > #{mum}")
+		end
+		dist[org1][org2] = `give_mumi.pl #{mum} -l1 #{lengths[org1]} -l2 #{lengths[org2]}`
+	end
+end
+
+print ([""] + dist.keys).to_csv
+dist.keys.each do |org1|
+	row = [org1]
+	dist.keys.each do |org2|
+		row.push(dist[org1][org2].to_f)
+	end
+	print row.to_csv
+end
