@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'sqlite3'
+require 'GeneExpression'
+require 'csv'
+
+opt = OpenStruct.new
+opt.org = "pt"
+opt.trina = false
+
+o = OptionParser.new
+o.banner << " rnaseq.sqlite experiment-name"
+o.on("-o ", "--organism ", String, "mapped organism (#{opt.org})") {|t|opt.org = t}
+o.on("-t", "--trina", "include Trina's RPKMs if available") {opt.trina = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 2)
+  STDERR << o
+  exit(1)
+end
+
+dbname, exp = ARGV
+
+db = SQLite3::Database.new(dbname)
+samples, desc = samplesFromExperiment(db, exp)
+rpkms = samplePivot("counts", samples, "counts.rpkm")
+
+trina = Hash.new
+if (opt.trina)
+	sql = "SELECT transcripts, sample, rpkm FROM trina WHERE experiment='#{exp}'"
+	db.execute(sql) do |row|
+		tran, sample, rpkm = row
+		trina[tran] = Hash.new if !trina[tran]
+	 	trina[tran][sample] = rpkm
+	end
+end
+
+sql = "SELECT counts.transcripts, #{rpkms}, "
+sql += "#{ann_headers.to_csv.chomp} FROM counts "
+sql += "LEFT JOIN #{opt.org}_ann ON counts.transcripts=#{opt.org}_ann.transcripts "
+sql += "WHERE counts.experiment='#{exp}' GROUP BY counts.transcripts"
+
+headers = ["Transcript"] + samples.map{|k| k + " " + desc[k] + " RPKM"}
+headers += samples.map{|k| k + " " + desc[k] + " rank"}
+tpos = headers.length 
+headers += samples.map{|k| k + " " + desc[k] + " Trina RPKM"} if (opt.trina) 
+headers += samples.map{|k| k + " " + desc[k] + " Trina rank"} if (opt.trina)
+headers += ann_headers
+print headers.to_csv
+db.execute(sql) do |row|
+	rvalues = row[1..samples.size]
+	rank = rankValues(rvalues)
+	row.insert(1 + samples.size, rank)
+	row.flatten!
+	if (opt.trina)
+		if (trina[row[0]])
+			tvalues = samples.map{|k| trina[row[0]][k].to_f}
+			trank = rankValues(tvalues)
+		else
+			tvalues = [nil]*samples.size
+			trank = [nil]*samples.size
+		end
+		row.insert(tpos, tvalues + trank)
+		row.flatten!
+	end
+	print row.to_csv
+end
+db.close

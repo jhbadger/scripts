@@ -28,3 +28,44 @@ class GeneExpression
     return (100*r).to_i/100.0 # round nicely
   end
 end
+
+# return list of samples, descs from a given experiment in the counts table
+def samplesFromExperiment(db, experiment)
+  sql = "SELECT DISTINCT counts.sample, desc FROM counts, sample_desc " 
+  sql += "WHERE counts.experiment='#{experiment}' " 
+  sql += "AND counts.experiment=sample_desc.experiment " 
+  sql += "AND counts.sample=sample_desc.sample"
+  sdesc = Hash.new
+  db.execute(sql) do |row|
+    sdesc[row.first] = row.last.to_s
+  end
+  return sdesc.keys.sort, sdesc
+end
+
+# return set of select sum statements for given field and set of samples
+def samplePivot(table, samples, field, prefix = "")
+  sql = ""
+  samples.each do |sample|
+    if (prefix == "")
+      ali = sample
+    else
+      ali = prefix + "_" + sample
+    end
+    sql += "sum(case when #{table}.sample='#{sample}' then #{field} end) as '#{ali}', "
+  end
+  sql.chop.chop
+end
+
+#return set of fields in annotation table
+def ann_headers
+  ["jgi","ncbi","annotation","swissprot","swissprot_annotation","kegg","kegg_def",
+    "gos_cluster","phytax_cluster","phytax","ko","ko_def","pfam","pfam_def",
+    "pfam2go","tfam","tfam_def","tfam2go","cog","cog_def","plant","animal"]
+end
+
+
+#rank by size list pf values
+def rankValues(values)
+  ranks = Hash[values.sort.uniq.reverse.each_with_index.to_a]
+  values.collect{ |v| ranks[v] + 1 }
+end
