@@ -1,0 +1,83 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+require 'bio'
+
+opt = OpenStruct.new
+o = OptionParser.new
+o.banner << " core.txt hits.tab tax.txt tm6.pep"
+#o.on("-v", "--verbose", "Run verbosely") {opt.verbose = true}
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 4)
+  STDERR << o
+  exit(1)
+end
+
+core, hits, tax, tm6 = ARGV
+
+genes = Hash.new
+tm6pep = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(tm6)).each do |seq|
+	g, hmm = seq.definition.split(" ")
+	genes[hmm] = g
+	tm6pep[hmm] = seq.seq
+	out = File.new(g + ".fa", "w")
+	out.print Bio::Sequence::AA.new(seq.seq).to_fasta("TM6", 60)
+	out.close
+end
+
+
+def splitId(id)
+	return id[0..id.rindex("-").to_i-1],id[1 + id.rindex("-").to_i..id.length]
+end
+
+cname = Hash.new
+cscore = Hash.new
+File.new(core).each do |line|
+	id, name, score = line.chomp.split(" ")
+	cname[name] = id
+	cscore[name] = score.to_f
+end
+
+taxy=Hash.new
+species = Hash.new
+File.new(tax).each do |line|
+	contig, sp, taxonomy, taxline = line.chomp.split("\t")
+	ranks = taxline.split("; ")
+	ranks[1] = ranks[2] if (ranks[1] == "Proteobacteria") 
+	taxy[sp] = ranks[0] + "\t" + ranks[1] 
+	species[contig] = sp
+end
+
+hitbl = Hash.new
+File.new(hits).each do |line|
+	next if line=~/^#/
+	name, acc, query, evalue, acc2, score, bias, edom, scdom, bdom, exp, reg, clu, ov, env, dom, rep, inc, desc = line.chomp.split(" ")
+	id, contig = splitId(query)
+	score = score.to_f
+	if (score >= cscore[name])
+		hitbl[species[contig]] = Hash.new if !hitbl[species[contig]]
+		hitbl[species[contig]][name] = query if !hitbl[species[contig]][name]
+	end
+end
+
+hitbl.keys.each do |sp|
+	if (hitbl[sp].size == genes.length)
+		hitbl[sp].keys.each do |hmm|
+			out = File.new(genes[hmm] + ".fa", "a+")
+			cmd = ENV["HOME"]+"/Projects/APIS/fetchPhyloSeqs -n " + hitbl[sp][hmm]
+			seq = `#{cmd}`.split("\n", 2).last
+			out.print Bio::Sequence::AA.new(seq).to_fasta(sp.gsub(" ","_"), 60)
+			out.close
+		end
+	end
+end
+
+

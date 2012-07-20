@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby 
+
+require 'csv'
+
+if (ARGV.size != 1)
+	STDERR << "Usage: " << File.basename($0) << " csv-file\n"
+	exit(1)
+end
+
+orgs = nil
+matrix = Hash.new
+CSV.foreach(ARGV.first, :headers=>true) do |row|
+	orgs = row.headers - [row.headers.first]
+	orgs.each do |org|
+		matrix[org] = "" if !matrix[org]
+		if (row[org].to_s == "")
+			matrix[org] += "0"
+		else
+			matrix[org] += "1"
+		end
+	end
+end
+
+orgs.each do |org|
+	printf(">%s\n%s\n", org, matrix[org])
+end

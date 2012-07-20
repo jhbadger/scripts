@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+require 'csv'
+require 'bio'
+
+if (ARGV.size != 2)
+	STDERR.printf("Usage: %s csv-file fasta\n", File.basename($0))
+	exit(1)
+end
+
+csv, fasta = ARGV
+
+seqs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+	seqs[seq.entry_id] = seq.naseq
+end
+
+CSV.foreach(csv, :headers=>true) do |row|
+	if (row["Hits"] == "1")
+		loc = row["Best Peptide Hit"]
+		c, tm, s, e = loc.split("_")
+		s, e = s.to_i, e.to_i
+		if (s < e)
+			subseq = seqs[c+"_"+tm].subseq(s, e)
+		else
+			subseq = seqs[c+"_"+tm].subseq(e, s).complement
+		end
+		pep = subseq.translate(1)
+		print pep.to_fasta(row["Gene"] + " " + row["HMM"], 60)
+	end
+end
