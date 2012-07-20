@@ -33,9 +33,20 @@ Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(dna)).each do |seq|
   next if seq.length < opt.minSize*3
   [1, 2, 3, -1, -2, -3].each do |frame|
     num = "_0001"
-    orfName = seq.entry_id + "_" + frame.to_s + num
+    
     prot = seq.naseq.translate(frame, 11)
     prot.seq.split("*").each do |orf|
+      start = orf.index("M")
+      next if start.nil?
+      orf = orf[orf.index("M")..orf.length]
+      orfStart = frame.abs + 3*prot.seq.index(orf)
+      orfEnd = orfStart + (orf.length*3) - 1
+      if (frame < 1)
+        orfStart = 1 + seq.length - orfStart
+        orfEnd = 1 + seq.length - orfEnd
+      end
+      orfName = seq.entry_id + "_" + frame.to_s + num
+      orfName += " " + seq.entry_id + " " + orfStart.to_s + " " + orfEnd.to_s
       if (orf.length >= opt.minSize)
 	      print Bio::Sequence.new(orf).to_fasta(orfName, 60)
 	      orfName.succ!
