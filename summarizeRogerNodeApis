@@ -12,7 +12,7 @@ csv = ARGV.first
 assignment = Hash.new
 CSV.foreach(csv, :headers => true) do |row|
   name, tax = row["Seq Name"], row["Relaxed Classification"]
-  if (name =~/(NODE_[0-9]*)_/)  
+  if (name =~/(NODE_|contig[0-9]*)_/)  
     contig = $1
     assignment[contig] = [] if assignment[contig].nil?
     tax = tax.split("; ")
@@ -36,7 +36,8 @@ assignment.keys.sort.each do |contig|
     tx = ""
     assignment[contig][i].keys.sort {|x, y| assignment[contig][i][y] <=> assignment[contig][i][x]}.each do |taxon|
       next if taxon == "Mixed"
-      tx += taxon + " " + ((assignment[contig][i][taxon]*100)/tot).to_s + "% "
+      percent = ((assignment[contig][i][taxon]*100)/tot)
+      tx += taxon + " " + percent.to_s + "% " if percent > 5
     end
     row.push(tx)
   end
