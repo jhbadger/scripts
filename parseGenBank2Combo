@@ -84,7 +84,7 @@ ARGV.each do |gb|
   Bio::FlatFile.new(Bio::GenBank, ZFile.new(gb)).each do |genome|
     organism = genome.organism
     if (organism == "")
-      organism = genome.definition.split(" ")[0] + " " + genome.definition.split(" ")[1]
+      organism = genome.definition.split(" ")[0].to_s + " " + genome.definition.split(" ")[1].to_s
     end
     acc = genome.accession || ""
     acc = genome.locus.entry_id || "" if acc == ""
