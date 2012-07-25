@@ -30,22 +30,23 @@ dbname, exp = ARGV
 
 db = SQLite3::Database.new(dbname)
 samples, desc = samplesFromExperiment(db, exp)
-rpkms = samplePivot("counts", samples, "counts.rpkm")
+rpkms = samplePivot("transcripts_rpkm", samples, "transcripts_rpkm.rpkm")
 
 trina = Hash.new
 if (opt.trina)
 	sql = "SELECT transcripts, sample, rpkm FROM trina WHERE experiment='#{exp}'"
 	db.execute(sql) do |row|
 		tran, sample, rpkm = row
+		rpkm = rpkm.to_f
 		trina[tran] = Hash.new if !trina[tran]
 	 	trina[tran][sample] = rpkm
 	end
 end
 
-sql = "SELECT counts.transcripts, #{rpkms}, "
-sql += "#{ann_headers.to_csv.chomp} FROM counts "
-sql += "LEFT JOIN #{opt.org}_ann ON counts.transcripts=#{opt.org}_ann.transcripts "
-sql += "WHERE counts.experiment='#{exp}' GROUP BY counts.transcripts"
+sql = "SELECT transcripts_rpkm.transcripts, #{rpkms}, "
+sql += "#{ann_headers.to_csv.chomp} FROM transcripts_rpkm "
+sql += "LEFT JOIN #{opt.org}_ann ON transcripts_rpkm.transcripts=#{opt.org}_ann.transcripts "
+sql += "WHERE transcripts_rpkm.experiment='#{exp}' GROUP BY transcripts_rpkm.transcripts"
 
 headers = ["Transcript"] + samples.map{|k| k + " " + desc[k] + " RPKM"}
 headers += samples.map{|k| k + " " + desc[k] + " rank"}
@@ -55,6 +56,9 @@ headers += samples.map{|k| k + " " + desc[k] + " Trina rank"} if (opt.trina)
 headers += ann_headers
 print headers.to_csv
 db.execute(sql) do |row|
+	samples.size.times do |i|
+		row[i + 1] = row[i + 1].to_f # make nil rpkms 0
+	end
 	rvalues = row[1..samples.size]
 	rank = rankValues(rvalues)
 	row.insert(1 + samples.size, rank)

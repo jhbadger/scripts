@@ -31,10 +31,8 @@ end
 
 # return list of samples, descs from a given experiment in the counts table
 def samplesFromExperiment(db, experiment)
-  sql = "SELECT DISTINCT counts.sample, desc FROM counts, sample_desc " 
-  sql += "WHERE counts.experiment='#{experiment}' " 
-  sql += "AND counts.experiment=sample_desc.experiment " 
-  sql += "AND counts.sample=sample_desc.sample"
+  sql = "SELECT DISTINCT sample, desc FROM sample_desc " 
+  sql += "WHERE experiment='#{experiment}' " 
   sdesc = Hash.new
   db.execute(sql) do |row|
     sdesc[row.first] = row.last.to_s
