@@ -1,0 +1,31 @@
+#!/usr/bin/env python
+
+import os.path
+import sys
+from optparse import OptionParser
+
+# Process command line options
+parser = OptionParser(usage="usage: %prog [options] gtf-file bam-file [...bam-file...]")
+parser.add_option("-q", "--qsub", help="qsub subcalls", action="store_true")
+(opts, args) = parser.parse_args()
+
+if len(args) < 2:
+		parser.print_help()
+		sys.exit(1)
+gtf = args.pop(0)
+
+jar = os.path.expanduser("~/lib/bam2rpkm/bam2rpkm.jar")
+
+for bam in args:
+	(output_dir, output_filename) = os.path.split(bam)
+	(gtf_dir, gtf_filename) = os.path.split(gtf)
+	output_filename = output_filename + "_" + gtf_filename + ".rpkm"
+	cmd = "java -Xmx2048m -jar " + os.path.abspath(jar) + " -r all -f " + os.path.abspath(gtf) \
+		+  " -i " + os.path.abspath(bam) + " -o " + os.path.abspath(output_filename)
+	if opts.qsub:
+		output = open(output_filename + ".sh", "w")
+		print >> output, cmd
+		output.close()
+		os.system("qsub " + output_filename + ".sh")
+	else:
+		os.system(cmd)
