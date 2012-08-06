@@ -24,7 +24,7 @@ for rpkm in args:
 		(chr, source, label, start, end, score, strand, frame, attributes) = line.rstrip().split("\t")
 		m = re.search("gene_id \"(.*)\"; transcript_id \"(.*)\"; RPKM \"(.*)\"", attributes)
 		(gene, transcript, rpkm) = (m.group(1), m.group(2), float(m.group(3)))
-		if rpkm > 0:
+		if rpkm > 0 and label == "exon":
 			score = int(score)
 			exonLen = float(1 + int(end) - int(start))/1000
 			totReads.append(score/(exonLen*rpkm))

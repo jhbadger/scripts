@@ -20,7 +20,7 @@ for bam in args:
 	(output_dir, output_filename) = os.path.split(bam)
 	(gtf_dir, gtf_filename) = os.path.split(gtf)
 	output_filename = output_filename + "_" + gtf_filename + ".rpkm"
-	cmd = "java -Xmx2048m -jar " + os.path.abspath(jar) + " -r all -f " + os.path.abspath(gtf) \
+	cmd = "java -d64 -Xmx10240m -jar " + os.path.abspath(jar) + " -r all -f " + os.path.abspath(gtf) \
 		+  " -i " + os.path.abspath(bam) + " -o " + os.path.abspath(output_filename)
 	if opts.qsub:
 		output = open(output_filename + ".sh", "w")
