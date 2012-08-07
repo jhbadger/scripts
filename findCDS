@@ -27,7 +27,6 @@ Bio::FlatFile.new(Bio::FastaFormat, File.new(dna)).each do |seq|
 					nastart = num*3 + (frame - 1)
 					naend = nastart + (pep[key].length - 1)*3
 					outseq = seq.seq[nastart..naend]
-					next
 				else
 					nastart = num*3 + (frame.abs - 1)
 					naend = nastart + (pep[key].length - 1)*3
