@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+
+if (ARGV.size != 2)
+	STDERR.printf("Usage: %s dna-file protein-file\n", File.basename($0))
+	exit(1)
+end
+
+dna, prot = ARGV
+
+pep = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(prot)).each do |seq|
+	pep[seq.entry_id] = seq.seq
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(dna)).each do |seq|
+	foundIt = false
+	[1, 2, 3, -1, -2, -3].each do |frame|
+		p1 = seq.naseq.translate(frame, 11).seq
+		pep.keys.each do |key|
+			if num=p1.index(pep[key])
+				foundIt = true
+				if (frame > 0)
+					nastart = num*3 + (frame - 1)
+					naend = nastart + (pep[key].length - 1)*3
+					outseq = seq.seq[nastart..naend]
+					next
+				else
+					nastart = num*3 + (frame.abs - 1)
+					naend = nastart + (pep[key].length - 1)*3
+					outseq = seq.naseq.complement.seq[nastart..naend]
+				end
+				print Bio::Sequence::NA.new(outseq).to_fasta(seq.entry_id, 60)
+				break
+			end
+		end
+	end
+	if (!foundIt)
+		STDERR.printf("No peptide sequence found in %s\n", seq.entry_id)
+	end
+end
