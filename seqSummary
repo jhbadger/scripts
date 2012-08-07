@@ -11,11 +11,13 @@ opt = OpenStruct.new
 
 opt.csv = false
 opt.total = false
+opt.format = Bio::FastaFormat
 
-ARGV.options {|opts|
+ARGV.options do |opts|
   opts.banner << " fasta [...fasta...]"
   opts.on("-c", "--csv", "output as csv") {|t| opt.csv = t}    
-  opts.on("-t", "--total", "run all sequences in each file as one") {|t| opt.total = t}    
+  opts.on("-t", "--total", "run all sequences in each file as one") {|t| opt.total = t}
+  opts.on("-q", "--fastq", "use fastq format") {opt.format = Bio::Fastq}
   begin
     opts.parse!
   rescue
@@ -27,7 +29,7 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-}
+end
 
 if (opt.csv)
   print ["Name", "Sequences", "Avg. Length", "% Ambiguous bases", "%GC"].to_csv
@@ -42,25 +44,25 @@ ARGV.each do |file|
   min = 1e99
   max = 0
   stream = ZFile.new(file)
-  Bio::FlatFile.new(Bio::FastaFormat, stream).each do |seq|
+  Bio::FlatFile.new(opt.format, stream).each do |seq|
     gc =  seq.seq.count("GCgc")
     at =  seq.seq.count("ATUatu")
     ambig = seq.seq.count("NRYWSnryws")
-    max = seq.length if seq.length > max
-    min = seq.length if seq.length < min
+    max = seq.seq.length if seq.seq.length > max
+    min = seq.seq.length if seq.seq.length < min
     if (!opt.total)
       gcper = ((gc*100.0) / (gc + at)).round(1)
-      amper = ((ambig*100.0)/seq.length).round(1)
+      amper = ((ambig*100.0)/seq.seq.length).round(1)
       if (opt.csv)
         print [seq.definition, 1, seq.length, amper, gcper].to_csv
       else
         printf("---%s---\n", seq.definition)
-        printf("Length: %d (%.1f megabases)\n", seq.length, seq.length / 1.0e6)
+        printf("Length: %d (%.1f megabases)\n", seq.seq.length, seq.seq.length / 1.0e6)
         printf("%% Ambiguous %d%%\n", amper)
         printf("GC:     %d%%\n", gcper)
       end
     else
-      tLen += seq.length
+      tLen += seq.seq.length
       tgc +=  gc
       tat += at
       tam += ambig
