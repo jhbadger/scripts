@@ -2,7 +2,7 @@
 
 
 if (ARGV.size != 2)
-  STDERR.printf("Usage: %s taxonomy.txt num\n", File.basename($0))
+  STDERR.printf("Usage: %s usedTaxa.tab num\n", File.basename($0))
   exit(1)
 end
 
@@ -26,14 +26,10 @@ end
 
 id = num.to_i
 
-arank=["kingdom","phylum","class","order","family","genus","species"]
 
 if (taxa[id])
-  num = 0
-  while (id != 1)
-    printf("%d\t%s\tncbi=%s\tapis=%s (rank %d)\n", id, 
-    taxa[id],ranks[id], arank[6-num], 7 - num)
+  while (id != 1 && id != 131567)
+    printf("%d\t%s\t%s\n", id, taxa[id],ranks[id])
     id = parents[id]
-    num += 1
   end
 end
