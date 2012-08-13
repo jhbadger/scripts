@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size != 1)
+	STDERR.printf("Usage: %s bam-file\n", File.basename($0))
+	exit(1)
+end
+
+bam, rest  = ARGV
+
+goodPaired = 0
+pairMap1 = Hash.new
+pairMap2 = Hash.new
+`samtools view #{bam}`.split("\n").each do |line|
+	name, flag, contig = line.chomp.split("\t")
+	if (name[1] == "1")
+		pairMap1[name] = contig
+		pairMap2[name] = "NONE" if (!pairMap2[name])
+	else
+		name[1] = "1"
+		pairMap2[name] = contig
+		pairMap1[name] = "NONE" if (!pairMap1[name])
+	end
+end
+
+pairMap1.keys.sort.each do |key|
+	if (pairMap1[key] != pairMap2[key])
+		key2 = key.dup
+		key2[1] = "2"
+		printf("%s\t%s\t%s\t%s\n", key, key2, pairMap1[key],pairMap2[key])
+	end
+end
+STDERR.printf("There are %d pairs", pairMap1.keys.size)
