@@ -53,11 +53,16 @@ sql += "#{ann_headers.to_csv.chomp} FROM genome_rpkm "
 sql += "LEFT JOIN #{opt.org}_ann ON genome_rpkm.transcripts=#{opt.org}_ann.transcripts "
 sql += "WHERE genome_rpkm.experiment='#{exp}' GROUP BY genome_rpkm.transcripts"
 
-headers = ["Transcript"] + samples.map{|k| k + " " + desc[k] + " RPKM"}
-headers += samples.map{|k| k + " " + desc[k] + " rank"}
+samNames = Hash.new
+samples.each do |sample|
+	samNames[sample] = sample
+	samNames[sample] += " " + desc[sample] if desc[sample] != sample
+end
+headers = ["Transcript"] + samples.map{|k| samNames[k] + " RPKM"}
+headers += samples.map{|k| samNames[k] + " rank"}
 tpos = headers.length 
-headers += samples.map{|k| k + " " + desc[k] + " Trina RPKM"} if (opt.trina) 
-headers += samples.map{|k| k + " " + desc[k] + " Trina rank"} if (opt.trina)
+headers += samples.map{|k| samNames[k] + " Trina RPKM"} if (opt.trina) 
+headers += samples.map{|k| samNames[k] + " Trina rank"} if (opt.trina)
 headers += ann_headers
 print headers.to_csv
 
