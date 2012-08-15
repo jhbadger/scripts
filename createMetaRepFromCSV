@@ -12,7 +12,7 @@ opt.hmm = nil
 
 o = OptionParser.new
 o.banner << " csv [...csv]"
-o.on("-h ", "--hmm ", String, "HMM hits sqlite db") {|t| opt.hmm = t}
+o.on("-h ", "--hmm ", String, "HMM/KEGG hits sqlite db") {|t| opt.hmm = t}
 begin
   o.parse!
 rescue
@@ -56,7 +56,7 @@ ARGV.each do |file|
     line = line.parse_csv
     sname, dataset, len, ann, tax, taxid, blastid, blastann, blaste, blastident, blastcov = line
     next if sname == "Seq Name"
-    go, gosrc, hmm, ec, ecsrc = nil
+    go, gosrc, hmm, ec, ecsrc, keggid, keggsrc = nil
     gosrc = "pfam2go"
     ecsrc = "ec2go"
     if (opt.hmm)
@@ -88,7 +88,13 @@ ARGV.each do |file|
         end
       end
     end
-    meta = [sname, dataset, ann, "APIS", go, gosrc, ec, ecsrc, hmm, blastid, blaste, blastident, blastcov, ""]
+    if (opt.hmm)
+      db.execute("SELECT hit FROM kegg WHERE pep='#{sname}'") do |row|
+        keggid = row[0]
+        keggsrc = "KEGG"
+      end
+    end
+    meta = [sname, dataset, ann, "APIS", go, gosrc, ec, ecsrc, hmm, taxid, blaste, blastident, blastcov, "", keggid, keggsrc]
     out.print meta.to_csv(:col_sep=>"\t")
   end
   out.close
