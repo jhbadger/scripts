@@ -17,7 +17,7 @@ opt.verbose = 0
 opt.keyword = 0
 
 ARGV.options do |o|
-  o.banner << " fasta library-name [cluster-file]"
+  o.banner << " fasta [...fasta...]"
   o.on("-d ", "--dir ", String,
           "choose temp directory (default #{opt.tmpdir})") {|t| opt.tmpdir = t}
   o.on("-g ", "--grid ", String, "grid project code (required)") {|t| opt.grid = t}
@@ -33,16 +33,11 @@ ARGV.options do |o|
     STDERR << o
     exit(1)
   end
-  if (ARGV.size != 2 && ARGV.size != 3)
+  if (ARGV.size < 1)
     STDERR << o
     exit(1)
   end
 end
-
-fasta, library, cluster = ARGV
-
-name = File.basename(fasta)
-name = name[0..name.rindex(".").to_i - 1] # remove suffix but not other period
 
 # return full name of timelogic database matching dbname, or nil
 def findTimeLogicDB(user, password, server, dbname)
@@ -56,8 +51,7 @@ end
 
 # run HMM splitting it on grid, running postprocess to filter it afterwards
 def runpHMM(file, command, output, dir, project, postprocess = "cat")
-  gridSize = `grep -c ">" #{file}`.to_i / 1000
-  gridSize = 10000 if gridSize == 0
+  gridSize = 100
   Dir.mkdir(dir) if !File.exists?(dir)
   bdir = dir + "hmmdir/"
   Dir.mkdir(bdir) if !File.exists?(bdir)
@@ -110,41 +104,32 @@ def buildTimeLogicDB(user, password, server, fasta, dbname)
   system("dc_run -parameters format_aa_into_aa -query #{fasta} -database #{dbname} -user #{user} -password #{password} -server #{server}")
 end
 
+ARGV.each do |fasta|
+  name = File.basename(fasta)
+  name = name[0..name.rindex(".").to_i - 1] # remove suffix but not other period
 
-if (!File.exist?(name + ".trans.btab.bz2"))
-  if (!findTimeLogicDB(opt.user, opt.password, opt.server, "transportDB"))
-    if (opt.password.nil?)
-      STDERR.printf("You must supply a password!\n")
-      exit(1)
+  if (!File.exist?(name + ".trans.btab.bz2"))
+    if (!findTimeLogicDB(opt.user, opt.password, opt.server, "transportDB"))
+      if (opt.password.nil?)
+        STDERR.printf("You must supply a password!\n")
+        exit(1)
+      end
+      buildTimeLogicDB(opt.user, opt.password, opt.server, opt.tgg, "transportDB")
     end
-    buildTimeLogicDB(opt.user, opt.password, opt.server, opt.tgg, "transportDB")
-  end
-  STDERR.printf("Creating %s...\n", name + ".trans.btab")
-  system("dc_run -parameters tera-blastp -database private:transportDB -threshold significance=1e-5 -max_alignments 30 " +
+    STDERR.printf("Creating %s...\n", name + ".trans.btab")
+    system("dc_run -parameters tera-blastp -database private:transportDB -threshold significance=1e-5 -max_alignments 30 " +
     "-max_scores 30 -user #{opt.user} -password #{opt.password} -server #{opt.server} -query #{fasta} " +
       "-output_format tab -field querylocus targetlocus significance score > #{name}.trans.btab")
-  system("bzip2 #{name}.trans.btab")
-end
-
-if (!File.exist?(name + ".nr.btab.bz2"))
-  db = findTimeLogicDB(opt.user, opt.password, opt.server, "nr")
-  STDERR.printf("Creating %s...\n", name + ".nr.btab.bz2")
-  system("dc_run -parameters tera-blastp -database #{db} -threshold significance=1e-05 -max_alignments 1 -max_scores 1 " +
-    "-query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} -output_format tab " +
-      "-field querylocus queryaccession querylength algorithm userid targetlocus querystart queryend targetstart " +
-      "targetend alignmentlength matches score score targetdescription queryframe  queryframe queryframe " +
-      "significance significance > #{name}.nr.btab")
-  system("bzip2 #{name}.nr.btab")
-end
-
-
-if (!File.exist?(name + ".cog.tab.bz2"))
-  if (!findTimeLogicDB(opt.user, opt.password, opt.server, "cog"))
-    buildTimeLogicDB(opt.user, opt.password, opt.server, opt.cog, "cog")
+    system("bzip2 #{name}.trans.btab")
   end
-  STDERR.printf("Creating %s...\n", name + ".cog.tab,bz2")
-  system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 " +
-    "-max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} " + 
+
+  if (!File.exist?(name + ".cog.tab.bz2"))
+    if (!findTimeLogicDB(opt.user, opt.password, opt.server, "cog"))
+      buildTimeLogicDB(opt.user, opt.password, opt.server, opt.cog, "cog")
+    end
+    STDERR.printf("Creating %s...\n", name + ".cog.tab,bz2")
+    system("dc_run -parameters tera-blastp -database private:cog -threshold significance=1e-05 -max_alignments 1 " +
+      "-max_scores 1 -query #{fasta} -user #{opt.user} -password #{opt.password} -server #{opt.server} " + 
     "-output_format tab -field querylocus querylength targetlength targetlocus targetdescription querystart " + 
     "queryend targetstart targetend score significance > #{name}.cog.tab")
   system("bzip2 #{name}.cog.tab")
@@ -171,6 +156,7 @@ if (!File.exists?(name + ".tmhmm.bz2"))
 end
 
 STDERR.printf("Starting summary pipeline...\n")
-system("transporter_annotation.pl -p #{name} -z #{library} -t #{name}.trans.btab.bz2 -c #{name}.cog.tab.bz2 " +
-  "-k #{opt.keyword} -h #{name}.hmm.bz2 -m #{name}.tmhmm.bz2 -s #{name}.pep -n #{name}.nr.btab.bz2 -v #{opt.verbose} "+
-    " -u #{cluster} > #{name}.transporter_annotation.txt 2> #{name}.warnings")
+system("transporter_annotation.pl -p #{name} -z #{name} -t #{name}.trans.btab.bz2 -c #{name}.cog.tab.bz2 " +
+  "-k #{opt.keyword} -h #{name}.hmm.bz2 -m #{name}.tmhmm.bz2 -s #{name}.pep -v #{opt.verbose} "+
+    " > #{name}.transporter_annotation.txt 2> #{name}.warnings")
+end

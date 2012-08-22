@@ -502,27 +502,18 @@ foreach $transporter ( keys %transporter_hash ) {
     print $transporter 
       . $OID . "\t" 
       . $opt_p . "\t" 
-      . $opt_z . "\t" 
       . $family . "\t"
       . $subfamily . "\t"
-      . $count2 . "\t"
       . $substrate . "\t"
       . $transporter_hash{$transporter}{"tc"} . "\t"
-      . $trans_count{$transporter} . "\t"
       . $transporter_hash{$transporter}{"pfam"} . "\t"
       . $transporter_hash{$transporter}{"pfam_evalue"} . "\t"
       . $transporter_hash{$transporter}{"cog"} . "\t"
       . $transporter_hash{$transporter}{"cog_evalue"} . "\t"
-      . $transporter_hash{$transporter}{"cluster"} . "\t"
-      . $transporter_hash{$transporter}{"quality"} . "\t"
       . $count_evidence . "\t"
       . $transporter_hash{$transporter}{"length"} . "\t"
       . $transporter_hash{$transporter}{"tms"} . "\t"
-      . $transporter_hash{$transporter}{"topology"} . "\t"
-      . $transporter_hash{$transporter}{"nraa"} . "\t"
-      . $transporter_hash{$transporter}{"species"} . "\t"
-      . $transporter_hash{$transporter}{"nraa_evalue"} . "\t"
-      . $transporter_hash{$transporter}{"seq"} . "\n";
+      . $transporter_hash{$transporter}{"topology"} . "\n" if $count_evidence > 1;
 
     $family = "";
 }
