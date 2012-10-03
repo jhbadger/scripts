@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+# add /1 and /2 to fastq header so assemblers that need this to identify pairs have it
+
+require 'ostruct'
+require 'optparse'
+require 'bio'
+require 'bio-faster'
+
+opt = OpenStruct.new
+
+
+ARGV.options do |opts|
+  opts.banner << " fastq"
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 1)
+    STDERR.puts opts
+    exit(1)
+  end
+end
+
+fastq, rest = ARGV
+
+fq = Bio::Faster.new(fastq)
+
+fq.each_record(:quality=> :raw) do |header, seq, qual|
+  seqid = header.split(" ").first
+  num = seqid[1]
+  seqid[1] = "1"
+  header = ["FOOBAR-EAS100R", "1", seqid, seqid, seqid].join(":")+"#0/"+num
+  puts "@"+header, seq, "+", qual
+end
