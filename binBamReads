@@ -14,19 +14,33 @@ pairMap2 = Hash.new
 	name, flag, contig = line.chomp.split("\t")
 	if (name[1] == "1")
 		pairMap1[name] = contig
-		pairMap2[name] = "NONE" if (!pairMap2[name])
+		pairMap2[name] = "*" if (!pairMap2[name])
 	else
 		name[1] = "1"
 		pairMap2[name] = contig
-		pairMap1[name] = "NONE" if (!pairMap1[name])
+		pairMap1[name] = "*" if (!pairMap1[name])
 	end
 end
 
+fname = File.basename(bam, ".bam")
+mismatch = File.new(fname + ".mismatch", "w")
+unpaired = File.new(fname + ".unpaired", "w")
+unmapped = File.new(fname + ".unmapped", "w")
+
 pairMap1.keys.sort.each do |key|
-	if (pairMap1[key] != pairMap2[key])
+	if (pairMap1[key] != pairMap2[key] && pairMap1[key] != "*" && pairMap2[key] != "*")
 		key2 = key.dup
 		key2[1] = "2"
-		printf("%s\t%s\t%s\t%s\n", key, key2, pairMap1[key],pairMap2[key])
+		mismatch.printf("%s\t%s\t%s\t%s\n", key, key2, pairMap1[key],pairMap2[key])
+        elsif(pairMap1[key] == "*" && pairMap2[key] == "*")
+          	unmapped.printf("%s\t%s\t%s\t%s\n", key, key2, pairMap1[key],pairMap2[key])
+	elsif(pairMap1[key] == "*" || pairMap2[key] == "*")
+		unpaired.printf("%s\t%s\t%s\t%s\n", key, key2, pairMap1[key],pairMap2[key])
 	end
 end
+mismatch.close
+unpaired.close
+unmapped.close
+
+
 STDERR.printf("There are %d pairs", pairMap1.keys.size)

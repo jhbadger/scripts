@@ -15,6 +15,7 @@ opt.btab = false
 opt.project = nil
 opt.queue = "default"
 opt.gridSize = nil
+opt.m8 = false
 $VERBOSE = nil
 
 
@@ -29,6 +30,7 @@ ARGV.options do |opts|
   opts.on("-p", "--project ", String,  "JCVI project number") {|t| opt.project = t}
   opts.on("-q ", "--queue ", String, 
 	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
+  opts.on("-8 ", "--m8", "Use NCBI m8 tab format") {opt.m8=true}
   opts.on("-t", "--tab", "use btab format (#{opt.btab})") {|t| opt.btab = t}
   opts.on("-z ", "--size ", Integer,  
 	  "number of sequences per each grid job (default automatic)") {|t| opt.gridSize = t} 
@@ -62,8 +64,9 @@ end
 
 
 blast = "blastall -p #{opt.blast} -d #{db} -b#{opt.maxHits}"
+blast += " -m8 " if opt.m8
 blast += " -v#{opt.maxHits} -e#{opt.evalue} -i "
-blast = [blast, "badgerBtab"] if (opt.btab)
+blast = [blast, "badgerBtab"] if (opt.btab && !opt.m8)
 ARGV.each do |file|
   opt.gridSize = `grep -c ">" #{file}`.to_i / 1000 if (opt.gridSize.nil?)
   opt.gridSize = 150 if opt.gridSize == 0

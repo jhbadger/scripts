@@ -3,11 +3,92 @@
 require 'ostruct'
 require 'rubygems'
 require 'optparse'
-require 'apis'
+require 'ZFile'
+require 'bio'
+
 opt = OpenStruct.new
 
 $VERBOSE = false
 opt.min = 50
+
+# creates a protein file (if needed) and returns the new file
+def asProt(fasta, minOrf, verbose = nil, dna = false)
+  count = 0
+  string = ""
+  begin
+    ZFile.new(fasta).each do |line|
+      next if (line =~ /^>/)
+      string += line.chomp.upcase
+      count += 1
+      break if count == 1000
+    end
+  rescue
+  end
+  agtc = 1.0 * string.count("AGTCN")
+  if (agtc / string.size > 0.90)
+    prot = File.basename(fasta) + ".pep"
+    if (!File.exists?(prot))
+      STDERR.printf("%s seems to be DNA. Creating translation: %s...\n",
+                    fasta, prot)
+      STDERR.flush
+      dnaOut= File.basename(fasta) + ".cds" if dna
+      out = File.new(prot, "w")
+      dnaF = File.new(dnaOut, "w") if dna
+      $VERBOSE = nil
+      if (fasta.index(".gz") || fasta.index(".bz2"))
+        tmp = File.new(fasta + ".tmp", "w")
+        ZFile.new(fasta).each do |line|
+          tmp.print line
+        end
+        tmp.close
+        fasta = fasta + ".tmp"
+      end
+      header = nil
+      orfs = Hash.new
+      `mga #{fasta}`.split("\n").each do |line|
+        if (line =~/^#/ && (line !~ /gc =/ && line !~ /self:/))
+          header = line.chomp.split("# ")[1].split(" ").first
+        elsif (line =~/^gene/)
+          n, s, e, strand, frame = line.chomp.split(" ")
+          orfs[header] = [] if (orfs[header].nil?)
+          orfs[header].push("#{s} #{e} #{strand} #{frame}")
+        end
+      end
+      Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+        if (orfs[seq.entry_id])
+          id = seq.entry_id
+          seq = Bio::Sequence::NA.new(seq.seq)
+          orfs[id].each do |orf|
+            s, e, strand, frame = orf.split(" ")
+            s = s.to_i
+            e = e.to_i
+            frame = frame.to_i + 1
+            subseq = seq.subseq(s, e)
+            next if (subseq.length < 3*minOrf)
+            id.gsub!("/","!")
+            if (strand == "+")
+              trans = subseq.translate(frame, 11)
+              out.print trans.to_fasta("#{id}_#{s}_#{e}_#{frame}", 60)
+              dnaF.print subseq.to_fasta("#{id}_#{s}_#{e}_#{frame}", 60) if (dna)
+            else
+              subseq = subseq.complement
+              trans = subseq.translate(frame, 11)
+              out.print trans.to_fasta("#{id}_#{e}_#{s}_#{frame}", 60)
+              dnaF.print subseq.to_fasta("#{id}_#{e}_#{s}_#{frame}", 60) if (dna)
+            end
+          end
+        end
+      end
+      out.close
+    end
+    File.unlink(fasta) if (fasta.include?(".tmp"))
+    fasta = prot
+  elsif (verbose)
+    STDERR.printf("Not DNA!\n")
+    STDERR.flush
+  end
+  return fasta
+end
 
 ARGV.options {|opts|
   opts.banner << " fasta"

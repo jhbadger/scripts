@@ -2,17 +2,20 @@
 
 require 'ostruct'
 require 'rubygems'
-require 'optparse'    
+require 'optparse'
+require 'ZFile'    
 opt = OpenStruct.new
 
 
 opt.f = false
 opt.v = false
+opt.num = 0
 
-ARGV.options {|opts|
+ARGV.options do |opts|
   opts.banner << " expression file"
   opts.on("-f ", "--file ", String, 
-          "read list of ids to search from file") {|t| opt.f = t}    
+          "read list of ids to search from file") {|t| opt.f = t} 
+  opts.on("-n ", "--number ", Integer, "field name to match (default #{opt.num})") {|t| opt.num = t}   
   opts.on("-v", "--inverse", "return lines not matching expression") {|t| opt.v = t}
   begin
     opts.parse!
@@ -25,20 +28,20 @@ ARGV.options {|opts|
     STDERR.puts opts
     exit(1)
   end
-}
+end
 express, file = ARGV
 
 seen = Hash.new  
 if (opt.f)
   file = express
   express = false
-  File.new(opt.f).each {|line|
+  ZFile.new(opt.f).each do |line|
     fields = line.split(" ")
     seen[fields[0]] = true
-  }
+  end
 end
 
-File.new(file).each {|line|
+ZFile.new(file).each do |line|
   if (express)
     if (!opt.v)
       print line if (line =~/#{express}/)
@@ -48,9 +51,9 @@ File.new(file).each {|line|
   else
     fields = line.split(" ")
     if (!opt.v)
-      print line if (seen[fields[0]])
+      print line if (seen[fields[opt.num]])
     else
-      print line if (!seen[fields[0]])
+      print line if (!seen[fields[opt.num]])
+    end
   end
 end
-}

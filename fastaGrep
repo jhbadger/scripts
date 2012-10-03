@@ -10,12 +10,13 @@ opt = OpenStruct.new
 opt.file = nil
 opt.inverse = nil
 opt.unique = false
-
+opt.format == Bio::FastaFormat
 o = OptionParser.new
 o.banner << " expression fasta [...fasta...]"
 o.on("-f ", "--file ", String, 
         "read list of ids to search from file") {|f| opt.file = f} 
-o.on("-u", "--unique", "only returm sequence once") {opt.unique = true}   
+o.on("-u", "--unique", "only returm sequence once") {opt.unique = true} 
+o.on("-q", "--fastq", "use fastq format") {opt.format = Bio::Fastq}  
 o.on("-v", "--inverse", "return lines not matching expression") {opt.inverse = true}
 begin
   o.parse!
@@ -40,9 +41,15 @@ else
 end
 
 
+class Bio::Fastq
+  def to_s
+    Bio::Sequence::AA.new(seq).to_fasta(definition, 60)
+  end
+end
+
 printed = Hash.new
 ARGV.each do |fasta|
-  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  Bio::FlatFile.new(opt.format, ZFile.new(fasta)).each do |seq|
     sname = seq.definition.split(" ").first
     next if (opt.unique && printed[sname])
     if (express)
