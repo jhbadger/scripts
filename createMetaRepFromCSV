@@ -12,14 +12,15 @@ opt.hmm = nil
 opt.go = nil
 opt.kegg = nil
 opt.ec = nil
+opt.taxon = nil
 
 o = OptionParser.new
 o.banner << " csv [...csv]"
-o.on("-e ", "--ec ", String, "KEGG enzyme ec mapping") {|t| opt.ec = t}
-o.on("-g ", "--pfam2go ", String, "PFAM to GO mapping") {|t| opt.go = t}
+o.on("-e ", "--ec ", String, "KEGG enzyme ec mapping gene2ec") {|t| opt.ec = t}
+o.on("-g ", "--hmm_mapping ", String, "HMM to GO mapping") {|t| opt.go = t}
 o.on("-k ", "--kegg ", String, "KEGG blast btab file") {|t| opt.kegg = t}
 o.on("-h ", "--hmm ", String, "HMM tbl file") {|t| opt.hmm = t}
-
+o.on("-t ", "--kegg-taxon  ", String, "KEGG taxon file") {|t| opt.taxon = t}
 begin
   o.parse!
 rescue
@@ -35,79 +36,150 @@ end
 go = Hash.new
 hmm = Hash.new
 ec = Hash.new
+kegg = Hash.new
 ko = Hash.new
+taxon = Hash.new
+
+if (opt.taxon)
+   STDERR << "Loading kegg_taxon.tab...\n"
+  ZFile.new(opt.taxon).each do |line|
+    t, n = line.chomp.split("\t")
+    taxon[t] = n
+  end
+end
 
 if (opt.ec)
   STDERR << "Loading EC numbers...\n"
   ZFile.new(opt.ec).each do |line|
-    kname, num = line.chomp.split("\t")
-    kname.gsub!("ko:","")
-    num.gsub!("ec:","")
-    ec[kname] = "" if !ec[kname]
-    ec[kname] += num + " "
+    name, num = line.chomp.split("\t")
+    if (!ec[name])
+      ec[name] = num
+    else
+      ec[name] += "||" + num
+    end
   end
 end
 
 if (opt.hmm)
   STDERR << "Loading HMMs...\n"
-  count = 0
-  ZFile.new(opt.hmm).each do |line|
-    fields = line.chomp.split(" ")
-    model, d, pep, s, e = fields
-    if (e.to_f < 1e-5)
-      hmm[pep] = "" if ! hmm[pep]
-      hmm[pep] += model + " "
+  if (File.exists?(opt.hmm + ".serialized"))
+    data = File.read(opt.hmm+".serialized")
+    hmm=Marshal::load(data)
+    data = nil
+  else
+    count = 0
+    ZFile.new(opt.hmm).each do |line|
+      fields = line.chomp.split(" ")
+      model, d, pep, s, e = fields
+      if (e.to_f < 1e-5)
+        if (!hmm[pep])
+          hmm[pep] = model
+        else 
+          hmm[pep] += "||" + model
+        end
+      end
+      count += 1
+      STDERR << "Loaded #{count} lines of hmm...\n" if count%500000 == 0
     end
-    count += 1
-    STDERR << "Loaded #{count} lines of hmm...\n" if count%500000 == 0
+    STDERR << "Writing Serialized hmm...\n"
+    hmm_serialized = Marshal::dump(hmm)
+    out=File.new(opt.hmm + ".serialized", "w")
+    out.print hmm_serialized
+    out.close
+    hmm_serialized = nil
   end
 end
 
 if (opt.kegg)
   STDERR << "Loading KEGG blast...\n"
-  count = 0
-  ZFile.new(opt.kegg).each do |line|
-    fields = line.chomp.split("\t")
-    pep = fields[0]
-    if (fields[14]=~/(K0[0-9]+)/)
-      ko[pep] = $1
+  if (File.exists?(opt.kegg + ".serialized"))
+    data1 = File.read(opt.kegg+".serialized")
+    data2 = File.read(opt.kegg+".ko.serialized")
+    kegg=Marshal::load(data1)
+    ko=Marshal::load(data2)
+    data1=nil
+    data2=nil
+  else
+    count = 0
+    ZFile.new(opt.kegg).each do |line|
+      fields = line.chomp.split("\t")
+      pep = fields[0]
+      ko[pep] = line.scan(/K[0-9]{5}/).uniq.join("||")
+      kegg[pep] = fields[5] if ko[pep] != ""
+      count += 1
+      STDERR << "Loaded #{count} lines of kegg...\n" if count%500000 == 0
     end
-    count += 1
-    STDERR << "Loaded #{count} lines of kegg...\n" if count%500000 == 0
+    STDERR << "Writing Serialized kegg...\n"
+    kegg_serialized = Marshal::dump(kegg)
+    out=File.new(opt.kegg + ".serialized", "w")
+    out.print kegg_serialized
+    out.close
+    kegg_serialized = nil
+    STDERR << "Writing Serialized ko...\n"
+    ko_serialized = Marshal::dump(ko)
+    out=File.new(opt.kegg + ".ko.serialized", "w")
+    out.print ko_serialized
+    out.close
+    ko_serialized = nil
   end
 end
 
 if (opt.go)
-  STDERR << "Loading pfam2go...\n"
+  STDERR << "Loading hmm_mapping.tab...\n"
   ZFile.new(opt.go).each do |line|
     fields = line.chomp.split(" ")
-    pfam = fields[0].gsub!("Pfam:","")
-    go[pfam] = "" if ! go[pfam]
-    go[pfam] += fields.last + " "
+    h, gonum, type = fields
+    if (type == "GO")
+      go[h] = "" if ! go[h]
+      go[h] += gonum + " "
+    end
   end
 end
 
 def getGo(hmmList, go)
   gline = []
   return "" if !hmmList
-  hmmList.split(" ").each do |h|
-    gline.push(go[h]) if (go[h])
+  hmmList.split("||").each do |h|
+    if (go[h])
+      gline.push(go[h])
+    end
   end
-  gline.join(" ").split(" ").uniq.sort.join(" ")
+  gline.join(" ").split(" ").uniq.sort.join("||")
 end
+
 
 ARGV.each do |file|
   tab = File.basename(file).split(".csv").first + ".tab"
   out = File.new(tab, "w")
   out.print ["peptide_id","library_id","com_name","com_name_src","go_id","go_src",
-  "ec_id","ec_src","hmm_id","apis_ncbi_id", "blast_evalue", "blast_pid", "blast_cov", 
+  "ec_id","ec_src","hmm_id","kegg_ncbi_id", "blast_evalue", "blast_pid", "blast_cov", 
   "filter", "ko_id","ko_src"].to_csv(:col_sep=>"\t")
   ZFile.new(file).each do |line|
     line = line.parse_csv
     sname, dataset, len, ann, tax, taxid, blastid, blastann, blaste, blastident, blastcov = line
     next if sname == "Seq Name"
-    meta = [sname, dataset, ann, "APIS", getGo(hmm[sname],go), "pfam2go", ec[ko[sname]], "ko_enzyme", 
-    hmm[sname], taxid, blaste, blastident, blastcov, "", ko[sname], "kegg-genes_20110830"]
+    dataset = File.basename(file).split(".").first
+    ann = ann.to_s
+    ann.gsub!(" || ","||")
+    downcased = [] # uniqeify anns case insensitive 
+    ann = ann.split("||").inject([]) do |result,h| 
+      unless downcased.include?(h.downcase);
+        result << h
+        downcased << h.downcase
+      end;
+      result
+    end
+    ann = ann.join("||")
+    taxid = taxon[kegg[sname].to_s.split(":").first]
+    gos = getGo(hmm[sname],go)
+    if (gos != "")
+      gosrc = hmm[sname]
+    else
+      gosrc = ""
+    end
+    meta = [sname, dataset, ann, "APIS", gos, gosrc, ec[kegg[sname]], kegg[sname], 
+    hmm[sname], taxid, blaste, blastident, blastcov, "", ko[sname], kegg[sname]]
+    meta = meta.collect{|x| if (x=="");nil;else x;end}
     out.print meta.to_csv(:col_sep=>"\t")
   end
   out.close
