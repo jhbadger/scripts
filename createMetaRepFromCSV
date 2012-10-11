@@ -3,8 +3,42 @@
 require 'optparse'
 require 'ostruct'
 require 'csv'
-require 'ZFile'
-require 'sqlite3'
+
+# wrapper to handle compressed files transparently
+class ZFile < File
+  def self.new(fn,options="r")
+    if (options == "r")
+      if fn == "-"
+        result = f = $stdin
+        if block_given?
+          result = yield f
+        end
+      elsif fn =~ /\.gz$/
+        result = f = IO.popen("gunzip -c #{fn}")
+        if block_given?
+          result = yield f
+        end
+      elsif fn =~ /\.bz2$/
+        result = f = IO.popen("bunzip2 -c #{fn}")
+        if block_given?
+          result = yield f
+        end
+      else
+        result = f = File.new(fn,options)
+        if block_given?
+          result = yield f
+        end
+      end
+    else
+      result = f = File.new(fn,options)
+      if block_given?
+        result = yield f
+      end
+      f.close
+    end
+    return result
+  end  
+end
 
 
 opt = OpenStruct.new
@@ -36,9 +70,8 @@ end
 go = Hash.new
 hmm = Hash.new
 ec = Hash.new
-kegg = Hash.new
-ko = Hash.new
 taxon = Hash.new
+blast = Hash.new
 
 if (opt.taxon)
    STDERR << "Loading kegg_taxon.tab...\n"
@@ -93,34 +126,29 @@ end
 if (opt.kegg)
   STDERR << "Loading KEGG blast...\n"
   if (File.exists?(opt.kegg + ".serialized"))
-    data1 = File.read(opt.kegg+".serialized")
-    data2 = File.read(opt.kegg+".ko.serialized")
-    kegg=Marshal::load(data1)
-    ko=Marshal::load(data2)
-    data1=nil
-    data2=nil
+    data = File.read(opt.kegg+".serialized")
+    blast=Marshal::load(data)
+    data=nil
   else
     count = 0
     ZFile.new(opt.kegg).each do |line|
-      fields = line.chomp.split("\t")
-      pep = fields[0]
-      ko[pep] = line.scan(/K[0-9]{5}/).uniq.join("||")
-      kegg[pep] = fields[5] if ko[pep] != ""
+      query,acc,qlen,algorithm,userid,subject,
+      qstart,qend,sstart,send,alignmentlength,matches,score,
+      score,targetdescription,queryframe,queryframe,queryframe,
+      significance, evalue = line.chomp.split("\t")
+      ko = line.scan(/K[0-9]{5}/).uniq.join("||")
+      coverage = (100*(send.to_i-sstart.to_i).abs/qlen.to_i)/100.0
+      pid = (100*matches.to_i/alignmentlength.to_i)/100.0
+      blast[query] = [ko.to_s, subject.to_s, evalue.to_s, pid.to_s, coverage.to_s].join("\t")
       count += 1
-      STDERR << "Loaded #{count} lines of kegg...\n" if count%500000 == 0
+      STDERR << "Loaded #{count} lines of blast...\n" if count%500000 == 0
     end
-    STDERR << "Writing Serialized kegg...\n"
-    kegg_serialized = Marshal::dump(kegg)
+    STDERR << "Writing Serialized blast...\n"
+    kegg_serialized = Marshal::dump(blast)
     out=File.new(opt.kegg + ".serialized", "w")
     out.print kegg_serialized
     out.close
     kegg_serialized = nil
-    STDERR << "Writing Serialized ko...\n"
-    ko_serialized = Marshal::dump(ko)
-    out=File.new(opt.kegg + ".ko.serialized", "w")
-    out.print ko_serialized
-    out.close
-    ko_serialized = nil
   end
 end
 
@@ -156,7 +184,7 @@ ARGV.each do |file|
   "filter", "ko_id","ko_src"].to_csv(:col_sep=>"\t")
   ZFile.new(file).each do |line|
     line = line.parse_csv
-    sname, dataset, len, ann, tax, taxid, blastid, blastann, blaste, blastident, blastcov = line
+    sname, dataset, len, ann = line
     next if sname == "Seq Name"
     dataset = File.basename(file).split(".").first
     ann = ann.to_s
@@ -170,15 +198,22 @@ ARGV.each do |file|
       result
     end
     ann = ann.join("||")
-    taxid = taxon[kegg[sname].to_s.split(":").first]
+    if (blast[sname])
+      ko, kegg, evalue, percentId, coverage = blast[sname].split("\t")
+    else
+      ko, kegg, evalue, percentId, coverage = [nil, nil, nil, nil, nil]
+    end
+
+    taxid = taxon[kegg.to_s.split(":").first]
     gos = getGo(hmm[sname],go)
     if (gos != "")
       gosrc = hmm[sname]
     else
       gosrc = ""
     end
-    meta = [sname, dataset, ann, "APIS", gos, gosrc, ec[kegg[sname]], kegg[sname], 
-    hmm[sname], taxid, blaste, blastident, blastcov, "", ko[sname], kegg[sname]]
+    meta = [sname, dataset, ann, "APIS", gos, gosrc, ec[kegg], kegg, 
+      hmm[sname], taxid, evalue, percentId, coverage, 
+      "", ko, kegg]
     meta = meta.collect{|x| if (x=="");nil;else x;end}
     out.print meta.to_csv(:col_sep=>"\t")
   end
