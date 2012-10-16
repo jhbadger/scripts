@@ -1,0 +1,12 @@
+#!/usr/bin/env ruby
+
+File.new(ARGV.first).each do |line|
+  query, subject, ident, aln, mismatch, gap, qstart, qend, sstart, send, evalue, score = line.chomp.split("\t")
+  sstart = sstart.to_i
+  send = send.to_i
+  if (sstart < send)
+    printf("%s\t%d\t%d\t%s\t%s\t%s\n", subject, sstart, send, query, score, "+")
+  else
+    printf("%s\t%d\t%d\t%s\t%s\t%s\n", subject, send, sstart, query, score, "-")
+  end
+end
