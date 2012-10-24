@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+
+if (ARGV.size != 1)
+  STDERR << "Usage: " << File.basename($0) << " csv-file\n"
+  exit(1)
+end
+
+csv = ARGV.first
+
+assignment = Hash.new
+CSV.foreach(csv, :headers => true) do |row|
+  name, tax = row["Seq Name"], row["Relaxed Classification"]
+  if (name =~/(NODE_|contig[0-9]*|ctg[0-9]*)_/)  
+    contig = $1
+    assignment[contig] = [] if assignment[contig].nil?
+    tax = tax.split("; ")
+    0.upto(6) do |i|
+      assignment[contig][i] = Hash.new if !assignment[contig][i]
+      tax[i] = "Mixed" if !tax[i]
+      assignment[contig][i][tax[i]] = [] if !assignment[contig][i][tax[i]]
+      assignment[contig][i][tax[i]].push(name)
+    end
+  end
+end
+print ["Contig", "Orfs", "List", "Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"].to_csv
+
+rows = Hash.new
+orfs = Hash.new
+assignment.keys.sort.each do |contig|
+  row = [contig]
+  0.upto(6) do |i|
+    sizes = assignment[contig][i].values.collect{|x| x.size}
+    tot = sizes.reduce(:+)
+    row[1] = tot
+    row[2] = [] if !row[2]
+    row[2].push(assignment[contig][i].values)
+    tx = ""
+    assignment[contig][i].keys.sort {|x, y| assignment[contig][i][y] <=> assignment[contig][i][x]}.each do |taxon|
+      next if taxon == "Mixed"
+      percent = ((assignment[contig][i][taxon].size*100)/tot)
+      tx += taxon + " " + percent.to_s + "% " if percent > 5
+    end
+    row.push(tx)
+  end
+  row[2] = row[2].flatten.sort.uniq.join(" ")
+  rows[contig] = row
+  orfs[contig] = row[1]
+  print row.to_csv
+end
+
+rows.keys.sort {|x, y| orfs[y] <=> orfs[x]}.each do |key|
+  print rows[key].to_csv
+end
