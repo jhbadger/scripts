@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+
+if (ARGV.size < 2)
+   STDERR << "Usage: " << File.basename($0) << " language script-file [..script-file...]\n"
+   exit(1)
+end
+
+lang = ARGV.shift
+ARGV.each do |script|
+  next if !File.file?(script)
+  data = File.read(script)
+  if ([data].grep(/#!\/usr\//).empty?)
+     out = File.new(script, "w")
+     out.printf("#!/usr/bin/env %s\n%s", lang, data)
+     out.close
+  else
+     STDERR << "skipping " << script << " (already has line)\n"
+  end
+end
