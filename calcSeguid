@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'optparse'
+require 'ostruct'
+require 'ZFile'
+require 'digest/sha1'
+
+class String
+  def seguid
+    final = self.upcase.scan(/[A-Z]/).join
+    [Digest::SHA1.digest(final)].pack("m").chomp("=\n")
+  end
+end
+
+opt = OpenStruct.new
+opt.remove = false
+opt.header = false
+opt.noambig = false
+
+o = OptionParser.new
+o.banner << " seq.fasta"
+begin
+  o.parse!
+rescue
+  STDERR << $!.message << "\n"
+  STDERR << o
+  exit(1)
+end
+if (ARGV.size != 1)
+  STDERR << o
+  exit(1)
+end
+
+file = ARGV.shift
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each do |seq|
+  printf("%s\t%s\n", seq.definition, seq.seq.seguid) 
+end
