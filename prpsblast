@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+require 'SunGrid'
+
+opt = OpenStruct.new
+
+opt.evalue = 1e-5
+opt.project = nil
+opt.queue = "default"
+opt.gridSize = nil
+$VERBOSE = nil
+
+
+ARGV.options do |opts|
+  opts.banner << " db fasta [fasta...]"
+  opts.on("-e", "--evalue ", Float, 
+          "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
+  opts.on("-p", "--project ", String,  "JCVI project number") {|t| opt.project = t}
+  opts.on("-q ", "--queue ", String, 
+	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
+  opts.on("-z ", "--size ", Integer,  
+	  "number of sequences per each grid job (default automatic)") {|t| opt.gridSize = t} 
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+  if (ARGV.size < 2)
+    STDERR.puts opts
+    exit(1)
+  end
+end
+
+if (opt.project.nil?)
+  STDERR.printf("A project is required\n")
+  exit(1)
+end
+
+db = ARGV.shift
+if (File.basename(db) == db)
+  db = Dir.pwd + "/" + db
+end
+
+blast = "rpsblast -m 8 -e 1e-5 -p t -d #{db} -i "
+ARGV.each do |file|
+  opt.gridSize = `grep -c ">" #{file}`.to_i / 1000 if (opt.gridSize.nil?)
+  opt.gridSize = 150 if opt.gridSize == 0
+  if (!File.exists?(file))
+    STDERR.printf("File %s does not exist!\n", file)
+    next
+  end
+  grid = SunGrid.new(blast, opt.project, "4G")
+  out = nil
+  count = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
+    if (count % opt.gridSize == 0)
+      out.close if (!out.nil?)
+      out = File.new(grid.next, "w")
+    end 
+    out.print seq
+    count += 1
+  end
+  out.close
+  grid.submit(sync = true)
+  grid.cleanup
+  bout = File.basename(file) + "_vs_" + File.basename(db) + ".rpsblast"
+  berr = File.basename(file) + "_vs_" + File.basename(db) + ".err"
+  File.rename("rpsblast.out", bout)
+  File.rename("rpsblast.err", berr)
+end
