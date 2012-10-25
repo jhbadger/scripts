@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+require 'mysql'
+
+db = Mysql.new("mysql-lan-pro","access","access","phylodb")
+
+
+printf("name\tspecies\ttaxonomy\tgc\n")
+db.query("SELECT name, species, taxonomy, seq from contigs").each do |row|
+  name, species, taxonomy, seq = row
+  if (seq && seq.length>0)
+     gc = (1000*seq.count("GCgc"))/seq.length
+     gc /= 10.0
+     printf("%s\t%s\t%s\t%5.1f\n", name, species, taxonomy, gc)
+  end
+end
+
+
+
+
