@@ -1,35 +1,48 @@
 #!/usr/bin/env ruby
 
+require 'mysql'
 
-if (ARGV.size != 2)
-  STDERR.printf("Usage: %s usedTaxa.tab num\n", File.basename($0))
+if (ARGV.size < 1)
+  STDERR.printf("Usage: %s [-v] num [usedTaxa.tab]\n", File.basename($0))
   exit(1)
 end
 
-taxonomy, num = ARGV
+if (ARGV.first == "-v")
+  verbose = true
+  ARGV.shift
+else
+  verbose = false
+end
 
-ranks = Hash.new
-taxa = Hash.new
-parents = Hash.new
-seen = Hash.new
+num, db = ARGV
 
-STDERR << "Loading taxonomy....\n"
-File.new(taxonomy).each do |line|
-  id, name, parent, rank = line.chomp.split("\t")
-  id = id.to_i
-  parent = parent.to_i
-  taxa[id] = name
-  parents[id] = parent
-  ranks[id] = rank
+if (db.nil?)
+  db = Mysql.new("mysql-lan-pro", "access", "access", "phylodb")
+else
+  tax = Hash.new
+  File.new(db).each do |line|
+    current, name, parent, rank = line.chomp.split("\t")
+    tax[current.to_i] = [name, parent.to_i, rank]
+  end
+  db = tax
+end
+
+def recurseTaxonomy(db, current, verbose)
+  if (db.class == Hash)
+    name, parent, rank = db[current]
+  else
+    name, parent, rank = db.query("SELECT name, parent_id, rank FROM taxonomy WHERE taxon_id=#{current}").fetch_row
+  end
+  if (name.nil? || parent.to_i == 1)
+    []
+  else
+    name = name + " (" + current.to_s + ")" if verbose
+    recurseTaxonomy(db, parent, verbose).to_a + [name] 
+  end
 end
 
 
 id = num.to_i
 
 
-if (taxa[id])
-  while (id != 1 && id != 131567)
-    printf("%d\t%s\t%s\n", id, taxa[id],ranks[id])
-    id = parents[id]
-  end
-end
+print recurseTaxonomy(db, id, verbose).join(";") + "\n"
