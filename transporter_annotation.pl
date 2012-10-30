@@ -196,9 +196,9 @@ $cog_list  = "$ENV{'TGG'}/PEP/transporter_faa/cog_fid.list";
     "lipoxygenase",                    "FRAS1",
     "Caltractin",                      "centrin",
     "transposase"
-  );
+);
 
-  @false_cluster_array = ('CAM_CL_1084');
+@false_cluster_array = ('CAM_CL_1084');
 
 $OID = $opt_i;
 open_it( IN, "$fid_list" );
@@ -458,15 +458,14 @@ foreach $transporter ( keys %transporter_hash ) {
         #check for false hit from nraa top hits
         $false_flag = 0;
         foreach $false_key_word (@false_nraa_array) {
-                if ( $transporter_hash{$transporter}{"nraa"} =~
-                      /$false_key_word/ )
-                  {
-                      printf STDERR (
+            if ( $transporter_hash{$transporter}{"nraa"} =~ /$false_key_word/ )
+            {
+                printf STDERR (
 "Deleting nraa support for %s because it hits false keyword %s\n",
-                          $transporter, $false_key_word
-                      );
-                      $false_flag = 1;
-                }
+                    $transporter, $false_key_word
+                );
+                $false_flag = 1;
+            }
         }
     }
 
@@ -513,7 +512,8 @@ foreach $transporter ( keys %transporter_hash ) {
       . $count_evidence . "\t"
       . $transporter_hash{$transporter}{"length"} . "\t"
       . $transporter_hash{$transporter}{"tms"} . "\t"
-      . $transporter_hash{$transporter}{"topology"} . "\n" if $count_evidence > 1;
+      . $transporter_hash{$transporter}{"topology"} . "\n"
+      if $count_evidence > 1;
 
     $family = "";
 }
