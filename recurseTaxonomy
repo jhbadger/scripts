@@ -45,4 +45,4 @@ end
 id = num.to_i
 
 
-print recurseTaxonomy(db, id, verbose).join(";") + "\n"
+print recurseTaxonomy(db, id, verbose).join("; ") + "\n"
