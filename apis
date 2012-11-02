@@ -2,6 +2,7 @@
 
 require 'rubygems'
 require 'trollop'
+require 'newick'
 require 'sqlite3'
 require 'bio'
 
@@ -9,7 +10,9 @@ opts = Trollop::options do
 	banner "Usage: " << File.basename($0) << " 2.1 10/31/2012" << " [options]"
 	opt :blast, "NCBI Blast tab file(s) with seguids", :required =>true, :type => :strings
 	opt :database, "Seguid-based fastacmd indexed protein database", :required => true, :type => :string
+  opt :evalue, "maximum evalue for blast hit to be counted", :default=>1e-9, :type => :float
 	opt :fasta, "DNA/Protein fasta file to process", :required => true, :type => :string
+  opt :maxhits, "Maximum blast hits per query sequence", :default=>50, :type => :integer
 	opt :taxonomy, "APIS usedTaxa file", :required => true, :type => :string
 	opt :verbose, "print verbose status messages to STDERR"
 end
@@ -61,8 +64,33 @@ def asProt(fasta, verbose)
    pep
  end
 
-# load peptides (if needed) into sqlite db, returning db handle
+# load taxonomy and return species-based hash
+def loadTaxonomy(taxf, verbose)
+  # recusively walk up tax tree
+  def recurseTaxonomy(tax, current)
+   name, parent, rank = tax[current]
+    if (name.nil? || parent.to_i == 1)
+      []
+    else
+      recurseTaxonomy(tax, parent).to_a + [name] 
+    end
+  end
+  STDERR << "Loading taxonomy...\n" if verbose
+  tax = Hash.new
+  sp = Hash.new
+  File.new(taxf).each do |line|
+    current, name, parent, rank = line.chomp.split("\t")
+    tax[current.to_i] = [name, parent.to_i, rank]
+    sp[name] = current.to_i if rank == "species"
+  end
+  taxonomy = Hash.new
+  sp.keys.each do |s|
+    taxonomy[s] = recurseTaxonomy(tax, sp[s])
+  end
+  taxonomy
+end
 
+# load peptides (if needed) into sqlite db, returning db handle
 def loadPeps(fasta, verbose)
 	db = SQLite3::Database.new(fasta + "_pep.db")
 	begin
@@ -81,11 +109,103 @@ def loadPeps(fasta, verbose)
 	db
 end
 
+# load BLAST output into sqlite db, returning db handle
+def loadBlast(fasta, blasts, ethresh, maxhits, verbose)
+  db = SQLite3::Database.new(fasta + "_blast.db")
+  begin
+    db.execute("CREATE TABLE blast (name, hit, evalue, score)")
+    db.execute("CREATE INDEX name_idx ON blast(name)")
+  rescue
+  end
+  if db.get_first_value("SELECT count(*) FROM blast") == 0
+    STDERR << "Loading blast results...\n" if verbose
+    counts = Hash.new
+    sortCmd = "sort -t $'\t' -k1 -k12 -r -n -u"
+    `cat #{blasts.join(" ")} | #{sortCmd}`.split("\n").each do |row|
+      if row !~ /^QUERY/
+        row = row.split("\t")
+        name, hit, evalue, score = row[0], row[1], row[10].to_f, row[11].to_f
+        counts[name] = 0 if !counts[name]
+        if evalue <= ethresh && counts[name] < maxhits
+          begin
+            db.execute("INSERT INTO blast VALUES(?,?,?,?)", name, hit, evalue, score)
+            counts[name] += 1
+          rescue
+          end
+        end
+      end
+    end
+  end
+  db
+end
+
+# creates alignment db and returns handle to it
+def createAlignmentDB(fasta)
+  db = SQLite3::Database.new(fasta + "_alignment.db")
+  begin
+    db.execute("CREATE TABLE alignment (name, alignment)")
+    db.execute("CREATE UNIQUE INDEX name_idx ON alignment(name)")
+  rescue
+  end
+  db
+end
+
+# creates trees db and returns handle to it
+def createTreesDB(fasta)
+  db = SQLite3::Database.new(fasta + "_trees.db")
+  begin
+    db.execute("CREATE TABLE trees (name, tree)")
+    db.execute("CREATE UNIQUE INDEX name_idx ON trees(name)")
+  rescue
+  end
+  db
+end
+
+# return seqs from fastacmd formatted blast database
+def fetchSeqs(blastids, database)
+  `fastacmd -d #{database} -s "#{blastids.join(',')}"`.split(/^>/)
+end
+
+# runs muscle to align sequences, populates db
+def align(db, pep, peps, blastids, database, verbose)
+  if db.get_first_value("SELECT count(*) FROM alignment") == 0
+    STDERR << "Making alignment for " << pep << "...\n" if verbose
+    seq = peps.get_first_value("SELECT seq FROM peptides WHERE name = ?", pep)
+    homologs = fetchSeqs(blastids, database)
+    hom = pep + ".hom"
+    afa = pep + ".afa"
+    out = File.new(hom, "w")
+    out.print ">" + pep + "\n" + seq  + "\n" + homologs.join(">")
+    out.close
+    begin
+      system("muscle -in '#{hom}' -out '#{afa}' -quiet")
+      db.execute("INSERT INTO alignment VALUES(?,?)", pep, File.read(afa))
+      File.unlink(hom)
+      File.unlink(afa)
+    rescue
+      STDERR << "Error aligning " << pep << "...\n" if verbose
+    end
+  end
+end
+
+# runs quickTree on alignment and populates db
+
+
 # main loop
 
 opts.fasta = asProt(opts.fasta, opts.verbose) if isDNA?(opts.fasta)
 
+taxonomy = loadTaxonomy(opts.taxonomy, opts.verbose)
 peps = loadPeps(opts.fasta, opts.verbose)
+blast = loadBlast(opts.fasta, opts.blast, opts.evalue, opts.maxhits, opts.verbose)
+alignment = createAlignmentDB(opts.fasta)
+trees = createTreesDB(opts.fasta)
+
 peps.query("SELECT name FROM peptides WHERE processed = 0").each do |pep|
-	p pep
+  blastids = blast.query("SELECT hit FROM blast WHERE name=?", pep.first).entries.flatten
+  if (blastids.size > 2) # 3 homologs + query is min tree
+    align(alignment, pep.first, peps, blastids, opts.database, opts.verbose)
+    nj(trees, alignment, pep.first)
+  end
+  peps.execute("UPDATE peptides SET processed = 1 WHERE name = ?", pep.first)
 end
