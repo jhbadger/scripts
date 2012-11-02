@@ -1,0 +1,98 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+require 'sqlite3'
+
+opts = Trollop::options do
+	banner "Usage: " << File.basename($0) << " [options]"
+	opt :blast, "NCBI Blast tab file(s) with seguids", :required =>true, :type => :strings
+	opt :database, "transporter database file", :required => true, :type => :string
+	opt :pfam, "PFAM/TIGRFAM file(s) with seguids", :required=> true, :type => :strings
+	opt :hmmdb, "HMM name conversion db", :type => :string
+	opt :verbose, "print status of pipeline to STDERR"
+end
+
+# helper functions
+
+# load entire (small) table to hash with given column as key and columns as other fields
+def loadHash(db, table, key, columns)
+	data = Hash.new
+	db.query("SELECT #{key}, #{columns.join(',')} FROM #{table}").each do |row|
+		data[row.first] = Hash.new
+		columns.size.times do |i|
+			data[row.first][columns[i]] = row[i+1]
+		end
+	end
+	data
+end
+
+db = SQLite3::Database.new(opts.database)
+
+transporter = loadHash(db, "transporter", "tc", ["family", "substrate"])
+cog_seguid = loadHash(db, "cog_seguid", "seguid", ["cog"])
+tc_seguid = loadHash(db, "tc_seguid", "seguid", ["tc"])
+hmm_info = loadHash(db, "hmm_info", "name", ["tc", "family", "subfamily"])
+cog_info = loadHash(db, "cog_info", "name", ["tc", "family", "subfamily", "substrate"])
+fp_cog = loadHash(db, "fp_cog", "name", ["name"])
+
+if (opts.hmmdb)
+	hmmdb = SQLite3::Database.new(opts.hmmdb)
+	hmm_names = loadHash(hmmdb, "hmm3", "hmm_name", ["hmm_acc"])
+else
+	hmm_names = Hash.new
+end
+
+tcBlast = Hash.new
+tcBlastSig = Hash.new
+cogBlast = Hash.new
+cogBlastSig = Hash.new
+
+pfam = Hash.new
+
+# parse hmm hit info
+opts.pfam.each do |hmm|
+	STDERR << "Loading hmm hit file #{File.basename(hmm)}...\n" if opts.verbose
+	File.new(hmm).each do |line|
+		hmm, date, d, prog, d, name = line.split("\t")
+		hmm = hmm_names[hmm]["hmm_acc"] if opts.hmmdb && hmm_names[hmm]
+		if (hmm)
+			pfam[name] = Hash.new if !pfam[name]
+			pfam[name][hmm] = true
+		end
+	end
+end
+
+# parse blast hit info
+opts.blast.each do |blast|
+	STDERR << "Loading blast #{File.basename(blast)}...\n" if opts.verbose
+	File.new(blast).each do |line|
+		name, seguid, percent, alen, gaps, qstart, qend, tstart, tend, n, sig = line.chomp.split("\t")
+		sig = sig.to_f
+		if (sig < 1e-5)
+			if (tc_seguid[seguid] && (!tcBlastSig[name] || sig < tcBlastSig[name]))
+				tcBlast[name] = tc_seguid[seguid]["tc"]
+				tcBlastSig[name] = sig
+			end
+			if (cog_seguid[seguid] && (!cogBlastSig[name] || sig < cogBlastSig[name]))
+				cogBlast[name] = cog_seguid[seguid]["cog"]
+				cogBlastSig[name] = sig
+			end
+		end
+	end
+end
+
+
+allNames = (pfam.keys + tcBlast.keys + cogBlast.keys - [nil]).uniq
+allNames.sort.each do |name|
+	if (cogBlast[name] && fp_cog[cogBlast[name]])
+		STDERR << "Removing " << name << " as a false positive hitting " << cogBlast[name] << "...\n"
+		next
+	end
+	score = 0
+	score += 1 if (cog_info[cogBlast[name]])
+	score += 1 if (transporter[tcBlast[name]])
+	score += 1 if (hmm_info[pfam[name]])
+	p tcBlast[name]
+	printf("%s\t%d\n", name, score)
+end
