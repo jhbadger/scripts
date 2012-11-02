@@ -1,0 +1,91 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+require 'sqlite3'
+require 'bio'
+
+opts = Trollop::options do
+	banner "Usage: " << File.basename($0) << " 2.1 10/31/2012" << " [options]"
+	opt :blast, "NCBI Blast tab file(s) with seguids", :required =>true, :type => :strings
+	opt :database, "Seguid-based fastacmd indexed protein database", :required => true, :type => :string
+	opt :fasta, "DNA/Protein fasta file to process", :required => true, :type => :string
+	opt :taxonomy, "APIS usedTaxa file", :required => true, :type => :string
+	opt :verbose, "print verbose status messages to STDERR"
+end
+
+# helper functions
+
+# returns true if file likely to be DNA, false otherwise
+def isDNA?(fasta)
+  seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
+  seq.count("AGTCN").to_f / seq.length > 0.90
+end
+
+# returns mga called proteins from DNA
+def asProt(fasta, verbose)
+	header = nil
+  orfs = Hash.new
+  STDERR << "Running mga to find ORFS...\n" if verbose
+  `mga #{fasta}`.split("\n").each do |line|
+  	if (line =~/^#/ && (line !~ /gc =/ && line !~ /self:/))
+    	header = line.chomp.split("# ")[1].split(" ").first
+    elsif (line =~/^gene/)
+    	n, s, e, strand, frame = line.chomp.split(" ")
+      orfs[header] = [] if (orfs[header].nil?)
+      orfs[header].push("#{s} #{e} #{strand} #{frame}")
+    end
+  end
+  STDERR << "Writing peptides...\n" if verbose
+  pep = fasta + ".pep"
+  out = File.new(pep, "w")
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+  	if (orfs[seq.full_id])
+    	id = seq.full_id
+      seq = Bio::Sequence::NA.new(seq.seq)
+      orfs[id].each do |orf|
+      	s, e, strand, frame = orf.split(" ")
+        s = s.to_i
+        e = e.to_i
+        frame = frame.to_i + 1
+        subseq = seq.subseq(s, e)
+        next if (subseq.length < 3*minOrf)
+        id.gsub!("/","!")
+        subseq = subseq.complement if strand == "-"
+       	trans = subseq.translate(frame, 11)
+        out.print trans.to_fasta("#{id}_#{s}_#{e}_#{frame}_#{strand}", 60)
+      end
+    end
+    out.close
+   end
+   pep
+ end
+
+# load peptides (if needed) into sqlite db, returning db handle
+
+def loadPeps(fasta, verbose)
+	db = SQLite3::Database.new(fasta + "_pep.db")
+	begin
+		db.execute("CREATE TABLE peptides (name, seq, processed)")
+		db.execute("CREATE UNIQUE INDEX name_idx ON peptides(name)")
+		db.execute("CREATE INDEX processed_idx ON peptides(processed)")
+	rescue
+	end
+	if db.get_first_value("SELECT count(*) FROM peptides") == 0
+		STDERR << "Loading peptides...\n" if verbose
+		Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+			name = seq.definition.split(" ").first
+			db.execute("INSERT INTO peptides VALUES(?,?,?)", name, seq.seq, 0)
+		end
+	end
+	db
+end
+
+# main loop
+
+opts.fasta = asProt(opts.fasta, opts.verbose) if isDNA?(opts.fasta)
+
+peps = loadPeps(opts.fasta, opts.verbose)
+peps.query("SELECT name FROM peptides WHERE processed = 0").each do |pep|
+	p pep
+end
