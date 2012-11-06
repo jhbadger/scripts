@@ -8,8 +8,10 @@ opts = Trollop::options do
 	banner "Usage: " << File.basename($0) << " [options]"
 	opt :blast, "NCBI Blast tab file(s) with seguids", :required =>true, :type => :strings
 	opt :database, "transporter database file", :required => true, :type => :string
+	opt :full, "full (traditional qinghu) output" 
 	opt :pfam, "PFAM/TIGRFAM file(s) with seguids", :required=> true, :type => :strings
 	opt :hmmdb, "HMM name conversion db", :type => :string
+	opt :tmhmm, "TMHMM output for file", :type => :string, :required => true
 	opt :verbose, "print status of pipeline to STDERR"
 end
 
@@ -49,16 +51,39 @@ cogBlast = Hash.new
 cogBlastSig = Hash.new
 
 pfam = Hash.new
+pfamSig = Hash.new
+
+tLength = Hash.new
+tPredHel = Hash.new
+tTopology = Hash.new
+
+# parse tmhmm file
+STDERR << "Loading TMHMM output...\n" if opts.verbose
+File.new(opts.tmhmm).each do |line|
+	if line =~ /^\# ([^\s]+) Length: (\d+)\s*/
+		tLength[$1] = $2.to_i
+	elsif line =~ /^\# ([^\s]+) Number of predicted TMHs:\s+(\d+)\s*/
+		tPredHel[$1] = "PredHel=" + $2
+  elsif line =~/^([^\s]+)\t[^\s]+\t(inside|outside|TMhelix)\t([^\n]+)/
+  	tTopology[$1]="Topology=" if !tTopology[$1]
+  	tTopology[$1] += $2[0].chr if $2 == "inside" || $2 == "outside"
+  	tTopology[$1] += $3.split(" ").join("-") if $2 == "TMhelix"
+  end
+end
 
 # parse hmm hit info
 opts.pfam.each do |hmm|
 	STDERR << "Loading hmm hit file #{File.basename(hmm)}...\n" if opts.verbose
 	File.new(hmm).each do |line|
-		hmm, date, d, prog, d, name = line.split("\t")
+		fields = line.chomp.split("\t")
+		hmm, date, d, prog, d, name = fields
+		evalue = fields.last.to_f
 		hmm = hmm_names[hmm]["hmm_acc"] if opts.hmmdb && hmm_names[hmm]
-		if (hmm)
-			pfam[name] = Hash.new if !pfam[name]
-			pfam[name][hmm] = true
+		if hmm && hmm_info[hmm]
+			if pfam[name].nil? || pfamSig[name] > evalue
+				pfam[name] = hmm
+				pfamSig[name] = evalue
+			end
 		end
 	end
 end
@@ -85,14 +110,37 @@ end
 
 allNames = (pfam.keys + tcBlast.keys + cogBlast.keys - [nil]).uniq
 allNames.sort.each do |name|
-	if (cogBlast[name] && fp_cog[cogBlast[name]])
-		STDERR << "Removing " << name << " as a false positive hitting " << cogBlast[name] << "...\n"
-		next
-	end
 	score = 0
-	score += 1 if (cog_info[cogBlast[name]])
-	score += 1 if (transporter[tcBlast[name]])
-	score += 1 if (hmm_info[pfam[name]])
-	p tcBlast[name]
-	printf("%s\t%d\n", name, score)
+	score += 1 if cog_info[cogBlast[name]]
+	score += 1 if transporter[tcBlast[name]]
+	score += 1 if hmm_info[pfam[name]]
+	if score > 1
+		if fp_cog[cogBlast[name]]
+			STDERR << "Removing " << name << " as a false positive hitting " << cogBlast[name] << "...\n" if verbose
+			next
+		end
+		if (cog_info[cogBlast[name]])
+			cog = cog_info[cogBlast[name]]
+			tc, family, subfamily, substrate = cog["tc"], cog["family"], 
+				cog["subfamily"], cog["substrate"]
+		elsif (hmm_info[pfam[name]])
+			hmm = hmm_info[pfam[name]]
+			tc, family, subfamily, substrate = hmm["tc"], hmm["family"], 
+				hmm["subfamily"], hmm["substrate"]
+		else
+			tinfo = transporter[tcBlast[name]]
+			tc, family, subfamily, substrate = tcBlast[name], tinfo["family"],
+			"", tinfo["substrate"] 
+		end
+
+		if (opts.full)
+			print [name, name.split("|").first, family, subfamily, substrate,
+				tc, pfam[name], pfamSig[name].to_s, cogBlast[name], 
+				cogBlastSig[name].to_s, tLength[name], tPredHel[name], 
+				tTopology[name]].join("\t") + "\n"
+		else
+			family = family + " (" + subfamily + ")" if subfamily != "" && subfamily != family
+			print [name, family, substrate].join("\t") + "\n"
+		end
+	end
 end
