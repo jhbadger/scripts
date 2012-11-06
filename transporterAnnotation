@@ -116,7 +116,7 @@ allNames.sort.each do |name|
 	score += 1 if hmm_info[pfam[name]]
 	if score > 1
 		if fp_cog[cogBlast[name]]
-			STDERR << "Removing " << name << " as a false positive hitting " << cogBlast[name] << "...\n" if verbose
+			STDERR << "Removing " << name << " as a false positive hitting " << cogBlast[name] << "...\n" if opts.verbose
 			next
 		end
 		if (cog_info[cogBlast[name]])
