@@ -12,6 +12,7 @@ opts = Trollop::options do
 	opt :pfam, "PFAM/TIGRFAM file(s) with seguids", :required=> true, :type => :strings
 	opt :hmmdb, "HMM name conversion db", :type => :string
 	opt :tmhmm, "TMHMM output for file", :type => :string, :required => true
+	opt :score, "score threshold to report", :type => :integer, :default => 2
 	opt :verbose, "print status of pipeline to STDERR"
 end
 
@@ -78,9 +79,9 @@ opts.pfam.each do |hmm|
 		fields = line.chomp.split("\t")
 		hmm, date, d, prog, d, name = fields
 		evalue = fields.last.to_f
-		hmm = hmm_names[hmm]["hmm_acc"] if opts.hmmdb && hmm_names[hmm]
-		if hmm && hmm_info[hmm]
-			if pfam[name].nil? || pfamSig[name] > evalue
+		hmm = hmm_names[hmm]["hmm_acc"] if hmm_names[hmm]
+		if hmm_info[hmm] && evalue < 0.0001 
+			if !pfam[name] || pfamSig[name] > evalue
 				pfam[name] = hmm
 				pfamSig[name] = evalue
 			end
@@ -92,16 +93,18 @@ end
 opts.blast.each do |blast|
 	STDERR << "Loading blast #{File.basename(blast)}...\n" if opts.verbose
 	File.new(blast).each do |line|
-		name, seguid, percent, alen, gaps, qstart, qend, tstart, tend, n, sig = line.chomp.split("\t")
-		sig = sig.to_f
-		if (sig < 1e-5)
-			if (tc_seguid[seguid] && (!tcBlastSig[name] || sig < tcBlastSig[name]))
+		name, seguid, percent, alen, gaps, qstart, qend, tstart, tend, n, evalue = line.chomp.split("\t")
+		evalue = evalue.to_f
+		if tc_seguid[seguid] && evalue < 1e-5 
+			if !tcBlast[name] || tcBlastSig[name] > evalue
 				tcBlast[name] = tc_seguid[seguid]["tc"]
-				tcBlastSig[name] = sig
+				tcBlastSig[name] = evalue
 			end
-			if (cog_seguid[seguid] && (!cogBlastSig[name] || sig < cogBlastSig[name]))
+		end
+		if cog_seguid[seguid] && evalue < 1e-5 
+			if !cogBlast[name] || cogBlastSig[name] > evalue
 				cogBlast[name] = cog_seguid[seguid]["cog"]
-				cogBlastSig[name] = sig
+				cogBlastSig[name] = evalue
 			end
 		end
 	end
@@ -111,10 +114,10 @@ end
 allNames = (pfam.keys + tcBlast.keys + cogBlast.keys - [nil]).uniq
 allNames.sort.each do |name|
 	score = 0
-	score += 1 if cog_info[cogBlast[name]]
-	score += 1 if transporter[tcBlast[name]]
-	score += 1 if hmm_info[pfam[name]]
-	if score > 1
+	score += 1 if cogBlast[name]
+	score += 1 if tcBlast[name]
+	score += 1 if pfam[name]
+	if score >= opts.score
 		if fp_cog[cogBlast[name]]
 			STDERR << "Removing " << name << " as a false positive hitting " << cogBlast[name] << "...\n" if opts.verbose
 			next
@@ -127,10 +130,12 @@ allNames.sort.each do |name|
 			hmm = hmm_info[pfam[name]]
 			tc, family, subfamily, substrate = hmm["tc"], hmm["family"], 
 				hmm["subfamily"], hmm["substrate"]
-		else
+		elsif transporter[tcBlast[name]]
 			tinfo = transporter[tcBlast[name]]
 			tc, family, subfamily, substrate = tcBlast[name], tinfo["family"],
-			"", tinfo["substrate"] 
+			"", tinfo["substrate"]
+		else
+			next
 		end
 
 		if (opts.full)
