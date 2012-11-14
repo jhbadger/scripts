@@ -14,6 +14,7 @@ opts = Trollop::options do
 	opt :fasta, "DNA/Protein fasta file to process", :required => true, :type => :string
   opt :maxhits, "Maximum blast hits per query sequence", :default=>50, :type => :integer
 	opt :taxonomy, "APIS usedTaxa file", :required => true, :type => :string
+  opt :phylo, "Phylogenetic method", :default=>"nj", :type => :string
 	opt :verbose, "print verbose status messages to STDERR"
 end
 
@@ -23,6 +24,21 @@ end
 def isDNA?(fasta)
   seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
   seq.count("AGTCN").to_f / seq.length > 0.90
+end
+
+# returns species from phylodb-formattted string
+def headerSpecies(header)
+  header.split("::")[1].split("||")[0]
+end
+
+# returns pure seguid from phylodb-formatted string
+def headerSeguid(header)
+  header.gsub(">","").gsub("lcl|","").split(" ")[0]
+end
+
+#returns first word from header
+def headerName(header)
+  header.split(" ")[0]
 end
 
 # returns mga called proteins from DNA
@@ -102,8 +118,12 @@ def loadPeps(fasta, verbose)
 	if db.get_first_value("SELECT count(*) FROM peptides") == 0
 		STDERR << "Loading peptides...\n" if verbose
 		Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
-			name = seq.definition.split(" ").first
-			db.execute("INSERT INTO peptides VALUES(?,?,?)", name, seq.seq, 0)
+			name = headerName(seq.definition)
+      begin
+			 db.execute("INSERT INTO peptides VALUES(?,?,?)", name, seq.seq, 0)
+      rescue
+        STDERR << "Error #{$!} loading peptide #{pep}...\n" if verbose
+      end
 		end
 	end
 	db
@@ -131,6 +151,7 @@ def loadBlast(fasta, blasts, ethresh, maxhits, verbose)
             db.execute("INSERT INTO blast VALUES(?,?,?,?)", name, hit, evalue, score)
             counts[name] += 1
           rescue
+            STDERR << "Error #{$!} loading blast for #{pep}...\n" if verbose
           end
         end
       end
@@ -163,32 +184,85 @@ end
 
 # return seqs from fastacmd formatted blast database
 def fetchSeqs(blastids, database)
-  `fastacmd -d #{database} -s "#{blastids.join(',')}"`.split(/^>/)
-end
-
-# runs muscle to align sequences, populates db
-def align(db, pep, peps, blastids, database, verbose)
-  if db.get_first_value("SELECT count(*) FROM alignment") == 0
-    STDERR << "Making alignment for " << pep << "...\n" if verbose
-    seq = peps.get_first_value("SELECT seq FROM peptides WHERE name = ?", pep)
-    homologs = fetchSeqs(blastids, database)
-    hom = pep + ".hom"
-    afa = pep + ".afa"
-    out = File.new(hom, "w")
-    out.print ">" + pep + "\n" + seq  + "\n" + homologs.join(">")
-    out.close
-    begin
-      system("muscle -in '#{hom}' -out '#{afa}' -quiet")
-      db.execute("INSERT INTO alignment VALUES(?,?)", pep, File.read(afa))
-      File.unlink(hom)
-      File.unlink(afa)
-    rescue
-      STDERR << "Error aligning " << pep << "...\n" if verbose
+  seqs = []
+  `fastacmd -d #{database} -s "#{blastids.join(',')}"`.split(/^>/).each do |seq|
+    lines = seq.split("\n")
+    if (!lines.empty?)
+      header = lines.shift
+      out = ">" + headerSeguid(header) + "__" + headerSpecies(header) + "\n"
+      out += lines.join("\n")
+      seqs.push(out)
     end
   end
+  seqs
 end
 
-# runs quickTree on alignment and populates db
+# runs muscle to align sequences, populates db returns aligment
+def align(db, pep, peps, blastids, database, verbose)
+  STDERR << "Making alignment for " << pep << "...\n" if verbose
+  seq = peps.get_first_value("SELECT seq FROM peptides WHERE name = ?", pep)
+  homologs = fetchSeqs(blastids, database)
+  hom = pep + ".hom"
+  afa = pep + ".afa"
+  out = File.new(hom, "w")
+  out.print ">" + pep + "\n" + seq  + "\n" + homologs.join("\n")
+  out.close
+  begin
+    system("muscle -in '#{hom}' -out '#{afa}' -quiet")
+    db.execute("INSERT INTO alignment VALUES(?,?)", pep, File.read(afa))
+    File.unlink(hom)
+  rescue
+    STDERR << "Error #{$!} aligning " << pep << "...\n" if verbose
+  end
+  afa
+end
+
+# produces stock format needed for quicktree from fastaFormat
+def fasta2Stockholm(alignFile)
+  stock = alignFile + ".stock"
+  stockf = File.new(stock, "w")
+  stockf.printf("# STOCKHOLM 1.0\n")
+  align = Hash.new 
+  aSize = 0
+  nSize = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(alignFile)).each do |seq|
+    name = headerName(seq.definition)
+    align[name] = seq.seq
+    aSize = seq.seq.length
+    nSize = name.size if (nSize < name.size)
+  end
+  0.step(aSize, 50) do |i|
+    stockf.printf("\n")
+    align.keys.sort.each do |key|
+      stockf.printf("%-#{nSize}s %s\n", key, align[key][i..i+49]) 
+    end
+  end
+  stockf.printf("//\n")
+  stockf.close
+  stock
+end
+
+# infers tree by desired method, populates db, returns tree
+def infer(db, afa, pep, method, verbose)
+  STDERR << "Making tree for " << pep << "...\n" if verbose
+  tree = nil
+  if (method == "nj")
+    begin
+      stock = fasta2Stockholm(afa)
+      tree = NewickTree.new(`quickTree -boot 100 '#{stock}'`.tr("\n",""))
+      tree.midpointRoot
+    rescue
+      STDERR << "Error #{$!} inferring nj tree for " << pep << "...\n" if verbose
+    end
+  end
+  begin
+    db.execute("INSERT INTO trees VALUES(?,?)", pep, tree.to_s)
+    File.unlink(afa, stock)
+  rescue
+    STDERR << "Error #{$!} writing tree for " << pep << "...\n" if verbose
+  end
+  tree
+end
 
 
 # main loop
@@ -204,8 +278,8 @@ trees = createTreesDB(opts.fasta)
 peps.query("SELECT name FROM peptides WHERE processed = 0").each do |pep|
   blastids = blast.query("SELECT hit FROM blast WHERE name=?", pep.first).entries.flatten
   if (blastids.size > 2) # 3 homologs + query is min tree
-    align(alignment, pep.first, peps, blastids, opts.database, opts.verbose)
-    nj(trees, alignment, pep.first)
+    afa = align(alignment, pep.first, peps, blastids, opts.database, opts.verbose)
+    infer(trees, afa, pep.first, opts.phylo, opts.verbose)
   end
   peps.execute("UPDATE peptides SET processed = 1 WHERE name = ?", pep.first)
 end
