@@ -111,7 +111,7 @@ opts.blast.each do |blast|
 end
 
 
-allNames = (pfam.keys + tcBlast.keys + cogBlast.keys - [nil]).uniq
+allNames = (pfam.keys + tcBlast.keys + cogBlast.keys - [nil]).uniq # total set of peptides with any evidence
 allNames.sort.each do |name|
 	score = 0
 	score += 1 if cogBlast[name]
