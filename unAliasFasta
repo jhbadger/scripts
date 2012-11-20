@@ -28,7 +28,7 @@ end
 File.new(inF).each do |line|
   if (line =~/>/)
     id = line[1..line.length].split(" ").first
-    line =  line.chomp + " " + realNames[id] + "\n"
+    line =  ">" + realNames[id]+"\n"
   end
   print line
 end
