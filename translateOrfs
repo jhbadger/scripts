@@ -13,5 +13,18 @@ dna, code = ARGV
 code = code.to_i
 
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(dna)).each do |seq|
-  print  seq.naseq.translate(1, code).to_fasta(seq.definition, 60)
+	frame = 1
+  pep = seq.naseq.translate(frame, code)
+  while (pep.count("*") > 1)
+  	frame += 1
+  	pep = seq.naseq.translate(frame, code)
+  	if frame > 3
+  		STDERR << "Can't find working frame for " << seq.entry_id << "\n"
+  		break
+  	end
+  end
+  if (frame > 1 && frame < 4)
+  	STDERR << "found frame " << frame << " for " << seq.entry_id << "\n"
+  end
+  print pep.to_fasta(seq.definition, 60)
 end
