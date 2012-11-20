@@ -2,7 +2,7 @@
 
 require 'rubygems'
 require 'trollop'
-require 'newick'
+require 'Newick'
 require 'sqlite3'
 require 'bio'
 
@@ -13,6 +13,7 @@ opts = Trollop::options do
   opt :evalue, "maximum evalue for blast hit to be counted", :default=>1e-9, :type => :float
 	opt :fasta, "DNA/Protein fasta file to process", :required => true, :type => :string
   opt :maxhits, "Maximum blast hits per query sequence", :default=>50, :type => :integer
+  opt :rulemaj, "Use majority rule rather than absolute consensus for classification", :default=>false
 	opt :taxonomy, "APIS usedTaxa file", :required => true, :type => :string
   opt :phylo, "Phylogenetic method", :default=>"nj", :type => :string
 	opt :verbose, "print verbose status messages to STDERR"
@@ -28,7 +29,7 @@ end
 
 # returns species from phylodb-formattted string
 def headerSpecies(header)
-  header.split("::")[1].split("||")[0]
+  header.split("::")[1].split("||")[0].tr("()","")
 end
 
 # returns pure seguid from phylodb-formatted string
@@ -39,6 +40,38 @@ end
 #returns first word from header
 def headerName(header)
   header.split(" ")[0]
+end
+
+class Array
+  # return majority consensus for counts array
+  def majority
+    consensus = []
+    size.times do |i|
+      total = 0.0
+      self[i].values.each{|val|total+=val}
+      name = self[i].keys.sort {|x,y| self[i][y] <=> self[i][x]}.first
+      
+      if (self[i][name]/total > 0.5)
+        consensus[i] = name
+      else
+        consensus[i] = "Mixed"
+      end
+    end
+    return consensus
+  end
+
+  # return absolute consensus for counts array
+  def absolute
+    consensus = []
+    size.times do |i|
+      if (self[i].size == 1)
+        consensus.push(self[i].keys.first)
+      else
+        consensus.push("Mixed")
+      end
+    end
+    return consensus
+  end
 end
 
 # returns mga called proteins from DNA
@@ -96,12 +129,13 @@ def loadTaxonomy(taxf, verbose)
   sp = Hash.new
   File.new(taxf).each do |line|
     current, name, parent, rank = line.chomp.split("\t")
+    name = name.tr("()","")
     tax[current.to_i] = [name, parent.to_i, rank]
     sp[name] = current.to_i if rank == "species"
   end
   taxonomy = Hash.new
   sp.keys.each do |s|
-    taxonomy[s] = recurseTaxonomy(tax, sp[s])
+    taxonomy[s.gsub(" ","_")] = recurseTaxonomy(tax, sp[s])
   end
   taxonomy
 end
@@ -173,7 +207,7 @@ end
 
 # creates trees db and returns handle to it
 def createTreesDB(fasta)
-  db = SQLite3::Database.new(fasta + "_trees.db")
+  db = SQLite3::Database.new(fasta + "_tree.db")
   begin
     db.execute("CREATE TABLE trees (name, tree)")
     db.execute("CREATE UNIQUE INDEX name_idx ON trees(name)")
@@ -264,6 +298,66 @@ def infer(db, afa, pep, method, verbose)
   tree
 end
 
+# creates classification db and returns handle to it
+def createClassificationDB(fasta)
+  ranks = ["kingdom", "phylum", "class", "ord", "family", "genus", "species"]
+  cols = ranks.collect{|x| [x, x + "_outgroup"]}.flatten
+  begin
+    db = SQLite3::Database.new(fasta + "_classification.db")
+    db.execute("CREATE TABLE classification (name, #{cols.join(",")})")
+    db.execute("CREATE UNIQUE INDEX name_idx ON classification(name)")
+    cols.each do |col|
+      db.execute("CREATE INDEX #{col}_idx ON classification(#{col})")
+    end
+  rescue
+  end
+  db
+end
+
+# returns array of consensus taxonomy at each relative level of tree
+  def consensusTax(tree, taxon, taxonomy, ruleMaj)
+    consensus = []
+    return  [] if (tree.relatives(taxon).nil?)
+    tree.relatives(taxon).each do |list|
+      counts = []
+      list.each do |relative|
+        seqid, sp = relative.split("__")
+        groups = taxonomy[sp]
+        next if (groups.nil?)
+        groups.size.times do |i|
+          counts[i] = Hash.new if counts[i].nil?
+          counts[i][groups[i]] = 0 if counts[i][groups[i]].nil?
+          counts[i][groups[i]] += 1
+        end
+      end
+      if (ruleMaj)
+        consensus.push(counts.majority)
+      else
+        consensus.push(counts.absolute)
+      end
+    end
+    return consensus
+  end
+
+# calculates outgroup status for each level in tree
+def outgroups(consensus)
+  outgroups = []
+  consensus[0].size.times do |i|
+    if !consensus[1] || consensus[0][i] != consensus[1][i]
+      outgroups[i] = 1
+    else
+      outgroups[i] = 0
+    end 
+  end
+  outgroups
+end
+
+# creates classification from tree, populates db
+def classify(db, pep, tree, ruleMaj, taxonomy, verbose)
+  consense = consensusTax(tree, pep, taxonomy, ruleMaj)
+  outgroups = outgroups(consense)
+  p outgroups
+end
 
 # main loop
 
@@ -274,12 +368,14 @@ peps = loadPeps(opts.fasta, opts.verbose)
 blast = loadBlast(opts.fasta, opts.blast, opts.evalue, opts.maxhits, opts.verbose)
 alignment = createAlignmentDB(opts.fasta)
 trees = createTreesDB(opts.fasta)
+classification = createClassificationDB(opts.fasta)
 
 peps.query("SELECT name FROM peptides WHERE processed = 0").each do |pep|
   blastids = blast.query("SELECT hit FROM blast WHERE name=?", pep.first).entries.flatten
   if (blastids.size > 2) # 3 homologs + query is min tree
     afa = align(alignment, pep.first, peps, blastids, opts.database, opts.verbose)
-    infer(trees, afa, pep.first, opts.phylo, opts.verbose)
+    tree = infer(trees, afa, pep.first, opts.phylo, opts.verbose)
+    classify(classification, pep, tree, opts.rulemaj, taxonomy, opts.verbose)
   end
   peps.execute("UPDATE peptides SET processed = 1 WHERE name = ?", pep.first)
 end
