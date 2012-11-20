@@ -1,24 +1,66 @@
 #!/usr/bin/env ruby
 require 'bio'
+require 'trollop'
+require 'ostruct'
 
-if (ARGV.size != 2)
-  STDERR << "Usage: " << File.basename($0) << " gff-file fasta-file\n"
-  exit(1)
+opts = Trollop::options do
+  banner "Usage: " << File.basename($0) << " [options]"
+  opt :gff, "gff file", :required =>true, :type => :string
+  opt :fasta, "fasta file of genome", :required=>true, :type => :string
+  opt :protein, "write protein rather than DNA", :default => false 
 end
 
-gff, fasta = ARGV
+class GTF
+  def initialize(file)
+    @file = File.new(file)
+  end
+  def each
+    @file.each do |line|
+      next if line=~/^#/
+      entry = OpenStruct.new
+      entry.seqname, entry.source, entry.feature, entry.start, entry.end, 
+      entry.score, entry.strand, entry.frame, attributes = line.chomp.split("\t")
+      entry.score = entry.score.to_f
+      entry.frame = entry.frame.to_i
+      entry.start = entry.start.to_i
+      entry.end = entry.end.to_i
+      entry.attributes=Hash[attributes.split(";").map{|x| k, v = x.split(" ");[k,v.to_s.gsub("\"","")]}]
+      yield entry
+    end
+  end
+end
+
 
 seqs = Hash.new
-Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
-  seqs[seq.entry_id] = seq
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.fasta)).each do |seq|
+  seqs[seq.entry_id] = seq.seq
 end
 
-File.new(gff).each do |line|
-  next if line=~/^#/
-  seqname, source, feature, start, stop, score, strand, frame, attribute = line.chomp.split("\t")
-  subseq = seqs[seqname].naseq.subseq(start.to_i, stop.to_i)
-  if (strand == "-")
-    subseq = subseq.complement
+sub = Hash.new
+strand = Hash.new
+
+GTF.new(opts.gff).each do |entry|
+  if (entry.feature == "CDS")
+    tran = entry.attributes["proteinId"]
+    if (!tran)
+      STDERR << "Cannot find proteinId for " << entry << "\n"
+      next
+    end
+    strand[tran] = entry.strand
+    subseq = seqs[entry.seqname][entry.start - 1 .. entry.end - 1]
+    sub[tran] = "" if !sub[tran]
+    sub[tran] += subseq.seq
   end
-  print subseq.to_fasta(seqname + "_" + start + "_" + stop + "_" + strand + " " + attribute, 60)
+end
+
+sub.keys.sort.each do |key|
+  seq = Bio::Sequence::NA.new(sub[key])
+  seq = seq.complement if strand[key] == "-"
+  if (opts.protein)
+    seq = seq.translate
+    seq.chop! if seq[-1] == "*"
+  else
+    seq = seq.upcase
+  end
+  print seq.to_fasta(key, 60)
 end
