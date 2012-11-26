@@ -1,84 +1,48 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'optparse'
 require 'rubygems'
+require 'trollop'
 require 'bio'
 require 'SunGrid'
 
-opt = OpenStruct.new
+ARGV.push("-h") if ARGV.empty?
 
-opt.evalue = 1e-9
-opt.blast = "blastp"
-opt.maxHits = 50
-opt.btab = false
-opt.project = nil
-opt.queue = "default"
-opt.gridSize = nil
-opt.m8 = false
-$VERBOSE = nil
-
-
-ARGV.options do |opts|
-  opts.banner << " db fasta [fasta...]"
-  opts.on("-b ", "--blast ", String, 
-          "choose BLAST to use (default #{opt.blast})") {|t| opt.blast = t}
-  opts.on("-e", "--evalue ", Float, 
-          "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
-  opts.on("-m ", "--maxHits ", Integer, 
-          "max number of BLAST hits (default #{opt.maxHits})") {|t| opt.maxHits = t}
-  opts.on("-p", "--project ", String,  "JCVI project number") {|t| opt.project = t}
-  opts.on("-q ", "--queue ", String, 
-	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
-  opts.on("-8 ", "--m8", "Use NCBI m8 tab format") {opt.m8=true}
-  opts.on("-t", "--tab", "use btab format (#{opt.btab})") {|t| opt.btab = t}
-  opts.on("-z ", "--size ", Integer,  
-	  "number of sequences per each grid job (default automatic)") {|t| opt.gridSize = t} 
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 2)
-    STDERR.puts opts
-    exit(1)
-  end
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :blast, "NCBI Blast tab file(s) with seguids", :default=>"blastp", :type => :string
+  opt :database, "BLAST database to use", :required => true, :type => :string
+  opt :evalue, "BLAST evalue", :default => 1e-9, :type => :float
+  opt :format, "BLAST output format (ncbi, m8, btab)", :default=>"ncbi"
+  opt :input, "FASTA input file(s) to blast", :required => true, :type => :strings
+  opt :maxhits, "max number of BLAST hits", :default => 50, :type => :integer
+  opt :project, "JCVI project number", :required => true, :type => :string
+  opt :sizejob, "number of sequences per grid job", :default => 1000
 end
 
-if (opt.project.nil?)
-  STDERR.printf("A project is required\n")
-  exit(1)
+if (File.basename(opts.database) == opts.database)
+  opts.database = Dir.pwd + "/" + opts.database
 end
 
-db = ARGV.shift
-if (File.basename(db) == db)
-  db = Dir.pwd + "/" + db
-end
-
-if (opt.blast !~ /^blast[n|p|x]/ && opt.blast !~/tblastn/ && opt.blast !~ /tblastx/)
+if (opts.blast !~ /^blast[n|p|x]/ && opts.blast !~/tblastn/ && opts.blast !~ /tblastx/)
   STDERR.printf("Only blastn, blastp, blastx, tblastn, and tblastx are valid grid BLAST programs\n")
   exit(1)
 end
 
+blast = "blastall -p #{opts.blast} -d #{opts.database} -b#{opts.maxhits}"
+blast += " -m8 " if opts.format == "m8"
+blast += " -v#{opts.maxhits} -e#{opts.evalue} -i "
+blast = [blast, "badgerBtab"] if (opts.format == "btab")
 
-blast = "blastall -p #{opt.blast} -d #{db} -b#{opt.maxHits}"
-blast += " -m8 " if opt.m8
-blast += " -v#{opt.maxHits} -e#{opt.evalue} -i "
-blast = [blast, "badgerBtab"] if (opt.btab && !opt.m8)
-ARGV.each do |file|
-  opt.gridSize = `grep -c ">" #{file}`.to_i / 1000 if (opt.gridSize.nil?)
-  opt.gridSize = 150 if opt.gridSize == 0
+opts.input.each do |file|
   if (!File.exists?(file))
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
-  grid = SunGrid.new(blast, opt.project, "4G")
+  grid = SunGrid.new(blast, opts.project, "4G")
   out = nil
   count = 0
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
-    if (count % opt.gridSize == 0)
+    if (count % opts.sizejob == 0)
       out.close if (!out.nil?)
       out = File.new(grid.next, "w")
     end 
@@ -88,8 +52,8 @@ ARGV.each do |file|
   out.close
   grid.submit(sync = true)
   grid.cleanup
-  bout = File.basename(file) + "_vs_" + File.basename(db) + ".#{opt.blast}"
-  bout += ".btab" if (opt.btab)
+  bout = File.basename(file) + "_vs_" + File.basename(db) + ".#{opts.blast}"
+  bout += ".btab" if (opts.format == "btab")
   berr = File.basename(file) + "_vs_" + File.basename(db) + ".err"
   File.rename("blastall.out", bout)
   File.rename("blastall.err", berr)
