@@ -9,7 +9,7 @@ ARGV.push("-h") if ARGV.empty?
 
 opts = Trollop::options do
   banner File.basename($0)
-  opt :blast, "NCBI Blast tab file(s) with seguids", :default=>"blastp", :type => :string
+  opt :blast, "blast program", :default=>"blastp", :type => :string
   opt :database, "BLAST database to use", :required => true, :type => :string
   opt :evalue, "BLAST evalue", :default => 1e-9, :type => :float
   opt :format, "BLAST output format (ncbi, m8, btab)", :default=>"ncbi"

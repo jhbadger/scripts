@@ -1,56 +1,33 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'optparse'
+require 'rubygems'
+require 'trollop'
 
-opt = OpenStruct.new
-opt.btab = false
-opt.evalue = 1e-9
-opt.maxHits = 50
-opt.project = 215011
-opt.queue = "medium"
-$VERBOSE = nil
-opt.blast = "blastp"
-opt.size = 1000
+ARGV.push("-h") if ARGV.empty?
 
-ARGV.options {|opts|
-  opts.banner << " fasta [fasta...fasta...]"
-  begin
-    opts.on("-b ", "--blast ", String, 
-    "blast to use (default #{opt.blast})") {|t| opt.blast = t}
-    opts.on("-e", "--evalue ", Float, 
-            "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
-    opts.on("-m ", "--maxHits ", Integer, 
-          "max number of BLAST hits (default #{opt.maxHits})") {|t| opt.maxHits = t}
-    opts.on("-p", "--project ", String,  "JCVI project number") {|t| opt.project = t}
-    opts.on("-q ", "--queue ", String, 
-	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
-    opts.on("-x", "--btab", "run btab (default #{opt.btab})") {|t| opt.btab = t}
-    opts.on("-z ", "--size ", Integer,  "Size for blast jobs") {|t| opt.size = t}
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
-}
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :blast, "blast program", :default=>"blastp", :type => :string
+  opt :evalue, "BLAST evalue", :default => 1e-9, :type => :float
+  opt :format, "BLAST output format (ncbi, m8, btab)", :default=>"ncbi"
+  opt :input, "FASTA input file(s) to blast", :required => true, :type => :strings
+  opt :maxhits, "max number of BLAST hits", :default => 50, :type => :integer
+  opt :project, "JCVI project number", :required => true, :type => :string
+  opt :sizejob, "number of sequences per grid job", :default => 1000
+end
 
-ARGV.each {|pep1|
-  ARGV.each {|pep2|
+
+opts.input.each do |pep1|
+  opts.input.each do |pep2|
     if (pep1 != pep2)
-      if (opt.project.nil?)
+      if (opts.project.nil?)
                else
         if (Dir.glob("#{pep2}_vs_#{pep1}*").empty?)
-          system("pblastNCBI -b #{opt.blast} -e #{opt.evalue} -m #{opt.maxHits} -q #{opt.queue} -p #{opt.project} -z #{opt.size} #{pep1} #{pep2}")
-          system("btab #{pep2}_vs_#{pep1}.blastp") if opt.btab
+          system("pblastNCBI -b #{opts.blast} -e #{opts.evalue} -m #{opts.maxHits} -p #{opts.project} -s #{opts.size} -d #{pep1} -f #{opts.format} -i #{pep2}")
         else
           STDERR.printf("Skipping #{pep1}_vs_#{pep2} due to existing results...\n")
         end
       end
     end
-  }
-}
+  end
+end
