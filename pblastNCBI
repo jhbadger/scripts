@@ -52,9 +52,9 @@ opts.input.each do |file|
   out.close
   grid.submit(sync = true)
   grid.cleanup
-  bout = File.basename(file) + "_vs_" + File.basename(db) + ".#{opts.blast}"
+  bout = File.basename(file) + "_vs_" + File.basename(opts.database) + ".#{opts.blast}"
   bout += ".btab" if (opts.format == "btab")
-  berr = File.basename(file) + "_vs_" + File.basename(db) + ".err"
+  berr = File.basename(file) + "_vs_" + File.basename(opts.database) + ".err"
   File.rename("blastall.out", bout)
   File.rename("blastall.err", berr)
 end
