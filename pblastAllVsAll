@@ -23,7 +23,7 @@ opts.input.each do |pep1|
       if (opts.project.nil?)
                else
         if (Dir.glob("#{pep2}_vs_#{pep1}*").empty?)
-          system("pblastNCBI -b #{opts.blast} -e #{opts.evalue} -m #{opts.maxHits} -p #{opts.project} -s #{opts.size} -d #{pep1} -f #{opts.format} -i #{pep2}")
+          system("pblastNCBI -b #{opts.blast} -e #{opts.evalue} -m #{opts.maxhits} -p #{opts.project} -s #{opts.sizejob} -d #{pep1} -f #{opts.format} -i #{pep2}")
         else
           STDERR.printf("Skipping #{pep1}_vs_#{pep2} due to existing results...\n")
         end
