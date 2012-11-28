@@ -1,22 +1,24 @@
 #!/usr/bin/env ruby
 
-if (ARGV.size != 2)
-  STDERR.printf("usage: %s csv num-to-pick\n", $0)
-  exit(1)
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+
+opts = Trollop::options do
+  banner File.basename($0) 
+  opt :csv, "csv file to pick from", :required =>true, :type => :string
+  opt :num, "number of lines to pick", :required=>true, :type=> :integer
+  opt :header, "include header line"
 end
 
-csv, num = ARGV
-
-num = num.to_i
-total = 0
-
-total = `wc -l #{csv}`.to_i
+total = `wc -l #{opts.csv}`.to_i
 
 STDERR.printf("%d lines in file\n", total)
 
 pick = Hash.new
-num.times {|i|
+opts.num.times do |i|
   rnum = rand(total)
+  rnum += 1 if opts.header
   if (pick[rnum].nil?)
     pick[rnum] = true
   else
@@ -29,10 +31,11 @@ num.times {|i|
       end
     end
   end
-}
+end
 
 total = 0
-File.new(csv).each {|line|
+File.new(opts.csv).each do |line|
+  print line if opts.header && total == 0
   print line if (pick[total])
   total += 1
-}
+end
