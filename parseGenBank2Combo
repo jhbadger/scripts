@@ -6,12 +6,10 @@ require 'optparse'
 require 'bio'
 require 'ostruct'
 require 'ZFile'
-#require 'ApisDB'
 
 opt = OpenStruct.new
 opt.sep = false
 opt.tax = false
-#ApisDB.loadOptions(opt)
 
 ARGV.options do |opts|
   opts.banner << " gbk-file [..gbk-file...]"
@@ -205,15 +203,7 @@ ARGV.each do |gb|
 	      product = ""
       end
     end
-    if (opt.tax)
-      db = ApisDB.new(opt.host + "/" + opt.database, opt.database)
-      taxonomy = buildTaxFromTaxId(taxonid, true)
-      if (taxonomy.nil?)
-        STDERR.printf("No info for %d\n", taxonid)
-      end
-    else
-      taxonomy = genome.taxonomy.chop
-    end
+    taxonomy = genome.taxonomy.chop
     att.print acc + "\t" + genome.seq.length.to_s + "\t"
     att.print organism + "\t" + strain + "\t" + taxonid + "\t"
     att.print taxonomy.gsub(",", "") + "\t" + classifyMolecule(genome.definition) + "\t"
