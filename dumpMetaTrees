@@ -1,34 +1,16 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
+require 'rubygems'
+require 'trollop'
 require 'Newick'
-require 'ostruct'
-require 'ApisDB'
 require 'fpdf'
+require 'csv'
 
-opt = OpenStruct.new
+ARGV.push("--help") if ARGV.empty?
 
-opt.all = false
-opt.storage = "misc_apis"
-
-ApisDB.loadOptions(opt)
-
-ARGV.options do |o|
-  o.banner << " [dataset .. dataset..]"
-  o.on("-a", "--all", "include all datasets in database (#{opt.all})") {opt.all = true}
-  o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
-  o.on("-s ", "--storage ", String, "storage database (default #{opt.storage})") {|t| opt.storage = t}
-  begin
-    o.parse!
-  rescue
-    STDERR << $!.message << "\n"
-    STDERR << o 
-    exit(1)
-  end
-  if ARGV.size < 1 && !opt.all
-    STDERR << o
-    exit(1)
-  end
+opts = Trollop::options do
+  banner "Usage: " << File.basename($0) << " [options]"
+  opt :csv, "phylometarep formatted apis tab file", :required => true, :type => :string
 end
 
 # function to generate seguid link to metarep for drawing tree
@@ -37,40 +19,10 @@ def segLink(entry)
   return metalink + entry.gsub(":","<>").gsub("/", "[]").gsub("+","()")
 end
 
-db = ApisDB.new(opt.host + "/" + opt.storage)
-db.loadTaxonomy(opt.proteindb)
-
-if (opt.all || opt.exp)
-  db.query("select dataset from dataset").each do |row|
-    dataset, rest = row
-    ARGV.push(dataset.to_s.quote) if (!opt.exp || dataset =~/#{opt.exp}/)
-  end
+Dir.mkdir("tree") if !Dir.exists?("tree")
+CSV.foreach(opts.csv, :col_sep=>"\t") do |row|
+  name = row.first
+  tree = row.last
+  tree = NewickTree.new(tree)
+  tree.draw("tree/" + name + ".pdf", boot="width", linker = :segLink)
 end
-
-out = Hash.new
-
-datasets = ARGV
-
-seen = Hash.new
-datasets.each do |dset|
-  db.query("SELECT seq_name, tree FROM tree WHERE dataset='#{dset}'" ).each do |row|
-    name, tree = row
-    dataset, rest = name.split("|")
-    dir = Dir.glob("/usr/local/projects/PHYLO-METAREP/ncgr/*/#{dataset}/phylodb").first
-    if (dir.nil?)
-      STDERR.printf("Dataset %s not found!", dataset)
-      exit(1)
-    end
-    if (!File.exists?(dir+"/tree"))
-      Dir.mkdir(dir+"/tree")
-    end
-    if (!seen[dataset])
-      STDERR.printf("Processing %s...\n", dataset)
-      seen[dataset] = true
-    end
-    tree = NewickTree.new(tree)
-    tree.draw(dir + "/tree/" + name + ".pdf", boot="width", linker = :segLink)
-  end
-end
-
-db.close
