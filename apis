@@ -9,6 +9,7 @@ begin
   require 'Newick'
   require 'sqlite3'
   require 'bio'
+  require 'fpdf'
 rescue LoadError # gems not installed
   miss = $!.to_s.gsub(">","").split(" ").last
   miss = "newick-ruby" if miss=="Newick"
@@ -26,11 +27,13 @@ opts = Trollop::options do
 	opt :blast, "NCBI Blast tab file(s) with seguids", :required =>true, :type => :strings
 	opt :database, "Seguid-based fastacmd indexed protein database", :required => true, :type => :string
   opt :evalue, "maximum evalue for blast hit to be counted", :default=>1e-9, :type => :float
+  opt :flatfile, "write flatfile to file specified summarizing results when done", :type => :string
   opt :exclude, "taxa to exclude in classification", :type => :strings
 	opt :input, "DNA/Protein input fasta file to process", :required => true, :type => :string
   opt :maxhits, "Maximum blast hits per query sequence", :default=>50, :type => :integer
   opt :rulemaj, "Use majority rule rather than absolute consensus for classification", :default=>false
 	opt :taxonomy, "APIS usedTaxa file", :required => true, :type => :string
+  opt :trees, "create pdf-formatted versions of trees in specified directory", :type => :string
   opt :phylo, "Phylogenetic method", :default=>"nj", :type => :string
 	opt :verbose, "print verbose status messages to STDERR"
 end
@@ -150,6 +153,12 @@ class NewickTree # Additional methods for NewickTree class
   end
 end
 
+# function to generate seguid link to metarep for drawing tree
+def segLink(entry)
+  metalink = "http://www.jcvi.org/phylo-metarep/phylodb/seguid/"
+  return metalink + entry.gsub(":","<>").gsub("/", "[]").gsub("+","()")
+end
+
 # returns mga called proteins from DNA
 def asProt(fasta, verbose)
 	header = nil
@@ -203,12 +212,18 @@ def loadTaxonomy(taxf, verbose)
   STDERR << "Loading taxonomy...\n" if verbose
   tax = Hash.new
   sp = Hash.new
-  File.new(taxf).each do |line|
+  if taxf =~/.gz/ # compressed file
+    intax = IO.popen("gunzip -c #{taxf}")
+  else
+    inTax = File.new(taxf)
+  end
+  inTax.each do |line|
     current, name, parent, rank = line.chomp.split("\t")
     name = name.tr("()","")
     tax[current.to_i] = [name, parent.to_i, rank]
     sp[name] = current.to_i if rank == "species"
   end
+  inTax.close
   taxonomy = Hash.new
   sp.keys.each do |s|
     taxonomy[s.gsub(" ","_")] = recurseTaxonomy(tax, sp[s])
@@ -422,3 +437,31 @@ peps.query("SELECT name FROM peptides WHERE processed = 0").each do |pep|
   end
   peps.execute("UPDATE peptides SET processed = 1 WHERE name = ?", pep.first)
 end
+
+if (opts.flatfile)
+  STDERR << "Creating " << opts.flatfile << "...\n" if opts.verbose
+  out = File.new(opts.flatfile, "w")
+  trees.query("SELECT name, tree FROM trees ORDER BY name").each do |row|
+    name, tree = row
+    classy = classification.get_first_row("SELECT * FROM classification WHERE name=?", name)
+    out.print [classy + [tree]].join("\t") + "\n"
+  end
+  out.close
+end
+
+
+
+if (opts.trees)
+  STDERR << "Writing trees to " << opts.trees << "...\n" if opts.verbose
+  Dir.mkdir(opts.trees) if !Dir.exists?(opts.trees)
+  trees.query("SELECT name, tree FROM trees").each do |row|
+    name, tree = row
+    begin
+      NewickTree.new(tree).draw(opts.trees + "/" + name + ".pdf", boot="width", linker = :segLink)
+    rescue
+      STDERR << "Error #{$!} writing tree for #{name}...\n" if opts.verbose
+    end
+  end
+end
+
+
