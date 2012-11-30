@@ -233,7 +233,7 @@ end
 
 # load peptides (if needed) into sqlite db, returning db handle
 def loadPeps(fasta, verbose)
-	db = SQLite3::Database.new(fasta + "_pep.db")
+	db = SQLite3::Database.new(File.basename(fasta) + "_pep.db")
 	begin
 		db.execute("CREATE TABLE peptides (name, seq, processed)")
 		db.execute("CREATE UNIQUE INDEX name_idx ON peptides(name)")
@@ -256,7 +256,7 @@ end
 
 # load BLAST output into sqlite db, returning db handle
 def loadBlast(fasta, blasts, ethresh, maxhits, verbose)
-  db = SQLite3::Database.new(fasta + "_blast.db")
+  db = SQLite3::Database.new(File.basename(fasta) + "_blast.db")
   begin
     db.execute("CREATE TABLE blast (name, hit, evalue, score)")
     db.execute("CREATE INDEX name_idx ON blast(name)")
@@ -287,7 +287,7 @@ end
 
 # creates alignment db and returns handle to it
 def createAlignmentDB(fasta)
-  db = SQLite3::Database.new(fasta + "_alignment.db")
+  db = SQLite3::Database.new(File.basename(fasta) + "_alignment.db")
   begin
     db.execute("CREATE TABLE alignment (name, alignment)")
     db.execute("CREATE UNIQUE INDEX name_idx ON alignment(name)")
@@ -298,7 +298,7 @@ end
 
 # creates trees db and returns handle to it
 def createTreesDB(fasta)
-  db = SQLite3::Database.new(fasta + "_tree.db")
+  db = SQLite3::Database.new(File.basename(fasta) + "_tree.db")
   begin
     db.execute("CREATE TABLE trees (name, tree)")
     db.execute("CREATE UNIQUE INDEX name_idx ON trees(name)")
@@ -394,7 +394,7 @@ def createClassificationDB(fasta)
   ranks = ["kingdom", "phylum", "class", "ord", "family", "genus", "species"]
   cols = ranks.collect{|x| [x, x + "_outgroup"]}.flatten
   begin
-    db = SQLite3::Database.new(fasta + "_classification.db")
+    db = SQLite3::Database.new(File.basename(fasta) + "_classification.db")
     db.execute("CREATE TABLE classification (name, #{cols.join(",")})")
     db.execute("CREATE UNIQUE INDEX name_idx ON classification(name)")
     cols.each do |col|
