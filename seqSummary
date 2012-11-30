@@ -1,41 +1,33 @@
 #!/usr/bin/env ruby
 # provides some information about sequence(s) in a FASTA file
 
-require 'ostruct'
+require 'rubygems'
+require 'trollop'
 require 'bio'
-require 'optparse'
 require 'ZFile'
 require 'csv'
 
-opt = OpenStruct.new
 
-opt.csv = false
-opt.total = false
-opt.format = Bio::FastaFormat
-
-ARGV.options do |opts|
-  opts.banner << " fasta [...fasta...]"
-  opts.on("-c", "--csv", "output as csv") {|t| opt.csv = t}    
-  opts.on("-t", "--total", "run all sequences in each file as one") {|t| opt.total = t}
-  opts.on("-q", "--fastq", "use fastq format") {opt.format = Bio::Fastq}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input sequence file(s)", :required=>true, :type=>:strings
+  opt :csv, "output as csv", :default=>false
+  opt :total, "run all sequences in each file as one", :default=>false
+  opt :fastq, "use fastq format", :default=>false
 end
 
-if (opt.csv)
+if (opts.csv)
   print ["Name", "Sequences", "Avg. Length", "% Ambiguous bases", "%GC"].to_csv
 end
 
-ARGV.each do |file|
+if (opts.fastq)
+  format = Bio::Fastq
+else
+  format = Bio::FastaFormat
+end
+
+opts.input.each do |file|
   tLen = 0
   tgc = 0
   tat = 0
@@ -44,16 +36,16 @@ ARGV.each do |file|
   min = 1e99
   max = 0
   stream = ZFile.new(file)
-  Bio::FlatFile.new(opt.format, stream).each do |seq|
+  Bio::FlatFile.new(format, stream).each do |seq|
     gc =  seq.seq.count("GCgc")
     at =  seq.seq.count("ATUatu")
     ambig = seq.seq.count("NRYWSnryws")
     max = seq.seq.length if seq.seq.length > max
     min = seq.seq.length if seq.seq.length < min
-    if (!opt.total)
+    if (!opts.total)
       gcper = ((gc*100.0) / (gc + at)).round(1)
       amper = ((ambig*100.0)/seq.seq.length).round(1)
-      if (opt.csv)
+      if (opts.csv)
         print [seq.definition, 1, seq.length, amper, gcper].to_csv
       else
         printf("---%s---\n", seq.definition)
@@ -70,11 +62,11 @@ ARGV.each do |file|
     end
   end
   stream.close
-  if (opt.total)
+  if (opts.total)
     avg = (tLen/count.to_f).round(1)
     gcper = ((tgc*100.0) / (tgc + tat)).round(1)
     amper = (100*tam/tLen.to_f).round(1)
-    if (opt.csv)
+    if (opts.csv)
       print [file, count, avg, amper, gcper].to_csv
     else
       printf("---%s---\n", file)
