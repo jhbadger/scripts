@@ -1,63 +1,40 @@
 #!/usr/bin/env ruby 
 
-require 'optparse'
 require 'ZFile'
-require 'ostruct'
+require 'trollop'
 require 'csv'
 
-opt = OpenStruct.new
-
-opt.csv = false
-opt.delimiter = " "
-opt.redundant = false
-
-ARGV.options {|o|
-  o.banner << " col [file]"
-  o.on("-c", "--csv", 
-  "Parse using csv library (default #{opt.csv})") {opt.csv = true}
-  o.on("-d ", "--delimiter ", String, 
-          "delimiter character (default \"#{opt.delimiter}\")") {|d| opt.delimiter = d}
-  o.on("-r", "--redundant", 
-  "keep redundant items (#{opt.redundant})") {opt.redundant = true}    
-  begin
-    o.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts o
-    exit(1)
-  end
-  if (ARGV.size != 2 && ARGV.size != 1)
-    STDERR.puts o
-    exit(1)
-  end
-}
-
-if (ARGV.size == 2)
-  col, file = ARGV
-else
-  col = ARGV.shift
-  file = STDIN
-end
-col = col.to_i
-toPrint = Hash.new
-
-opt.delimiter = "\t" if opt.delimiter == "\\t"
-
-if (opt.csv)
-  CSV.foreach(file) {|fields|
-    toPrint.push(fields[col]) if (!fields[col].nil?)
-  }
-else
-  file = ZFile.new(file) if file != STDIN
-  file.each {|line|
-    fields = line.chomp.split(opt.delimiter)
-    toPrint[fields[col]] = true 
-  }
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :col, "column to use", :required=>true, :type=>:integer
+  opt :csv, "Parse using csv library"
+  opt :delimiter, "delimter character", :default=>" ", :type=>:string
+  opt :file, "use file rather than STDIN", :type => :string
+  opt :redundant, "Include redundant values", :default=>false
 end
 
-toPrint.keys.sort.each {|field|
-  printf("%s\n", field)
-}
+if opts.file
+  inFile = ZFile.new(opts.file)
+else
+  inFile = STDIN
+end
+
+if (opts.csv)
+  iter=CSV.new(inFile)
+else
+  iter = inFile
+end
+
+seen = Hash.new
+
+iter.each do |row|
+  row = row.chomp.split(opts.delimiter) if !opts.csv
+  field = row[opts.col]
+  print field + "\n" if opts.redundant || !seen[field]
+  seen[field] = true
+end
+
 
 
 
