@@ -17,6 +17,7 @@ opts = Trollop::options do
   opt :maxhits, "max number of BLAST hits", :default => 50, :type => :integer
   opt :project, "JCVI project number", :required => true, :type => :string
   opt :sizejob, "number of sequences per grid job", :default => 1000
+  opt :queue, "grid queue to use", :type=>:string, :default => "medium" 
 end
 
 if (File.basename(opts.database) == opts.database)
@@ -38,7 +39,7 @@ opts.input.each do |file|
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
-  grid = SunGrid.new(blast, opts.project, "4G")
+  grid = SunGrid.new(blast, opts.project, "4G", opts.queue)
   out = nil
   count = 0
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
