@@ -22,7 +22,7 @@ end
 
 mk = true
 outFile = File.new("project.pln", "w")
-ARGV.each do |xsq|
+opts.input.each do |xsq|
   lib = File.basename(xsq, ".xsq").split("-").last
   ldir = dirname + "/" + lib
   if (!File.exists?(ldir))
