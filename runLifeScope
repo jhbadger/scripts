@@ -1,40 +1,20 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
-require 'ostruct'
+require 'rubygems'
+require 'trollop'
 
-opt = OpenStruct.new
-opt.project = nil
-opt.reference = nil
-opt.user = "lifescope"
-opt.password = "lifescope"
-opt.workflow = "whole.transcriptome.pe"
-
-o = OptionParser.new
-o.banner << " xsq [...xseq...]"
-o.on("-f ", "--workflow ", String, "workflow (#{opt.workflow})") {|t| opt.workflow = t}
-o.on("-p ", "--project ", String, "project name") {|t| opt.project = t}
-o.on("-r ", "--reference ", String, "mapping reference") {|t| opt.reference = t}
-o.on("-u ", "--user ", String, "user (#{opt.user})") {|t| opt.user = t}
-o.on("-w ", "--password ", String, "password (#{opt.password})") {|t| opt.password = t}
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
-end
-if (ARGV.size < 1)
-  STDERR << o
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input xsq file(s) to map", :required=>true, :type=>:strings
+  opt :workflow, "workflow", :default=>"whole.transcriptome.pe", :type=>:string
+  opt :project, "project name", :required=>true, :type=>:string
+  opt :reference, "mapping reference", :required=>true, :type=>:string
+  opt :user, "user", :default=>"lifescope", :type=>:string
+  opt :password, "password", :default=>"lifescope", :type=>:string
 end
 
-if (opt.project.nil? || opt.reference.nil?)
-  STDERR << "Both a project and a reference are required\n"
-  exit(1)
-end
-
-dirname = "/data/lifescope_data/projects/#{opt.user}/#{opt.project}"
+dirname = "/data/lifescope_data/projects/#{opts.user}/#{opts.project}"
 if (!File.exists?(dirname))
   Dir.mkdir(dirname)
   STDERR << "Making " << dirname << "\n"
@@ -51,19 +31,19 @@ ARGV.each do |xsq|
   end
   if (Dir.glob(ldir + "/*").empty?)
     outFile.printf("cd /projects\n")
-    outFile.printf("mk %s\n", opt.project) if mk
-    outFile.printf("cd %s\n", opt.project)
+    outFile.printf("mk %s\n", opts.project) if mk
+    outFile.printf("cd %s\n", opts.project)
     outFile.printf("mk %s\n", lib)
     outFile.printf("cd %s\n", lib)
-    outFile.printf("set workflow %s\n",opt.workflow)
+    outFile.printf("set workflow %s\n",opts.workflow)
     outFile.printf("add xsq %s\n", xsq)
-    outFile.printf("set reference %s\n", opt.reference)
+    outFile.printf("set reference %s\n", opts.reference)
     outFile.printf("run\n")
     mk = false
   end
 end
 outFile.printf("exit\n")
 outFile.close
-system("lscope.sh -u #{opt.user} -w #{opt.password} < project.pln")
+system("lscope.sh -u #{opts.user} -w #{opts.password} < project.pln")
 sleep 0.1
 File.unlink("project.pln")

@@ -54,8 +54,6 @@ opts.input.each do |dir|
     out.print command
     out.close
     system("qsub #{library}.sh")
-    sleep 0.1
-    File.unlink("#{library}.sh")
   end
   opts.lane += 1
 end
