@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'csv'
+require 'trollop'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop.options do
+	banner File.basename($0)
+	opt :clstr, "cd-hit cluster file", :required=>true, :type=>:string
+	opt :btab, "btab file to get taxonomy info", :required=>true, :type=>:string 
+	opt :seq, "fasta file", :required=>true, :type=>:string 
+end
+
+sp = Hash.new
+File.new(opts.btab).each do |line|
+	fields = line.chomp.split("\t")
+	name = fields.first
+	species = fields[5].split("_", 2)[1]
+	sp[name] = species if !sp[name]
+end
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.seq)).each do |seq|
+	seqs[seq.definition] = seq.seq
+end
+
+clusters = Hash.new
+num = nil
+File.new(opts.clstr).each do |line|
+	if line=~/^>Cluster ([0-9]*)/
+		num = $1.to_i
+		clusters[num] = []
+	elsif line=~/>(.*)\.\.\./
+		clusters[num].push($1)
+	else
+		raise line
+	end
+end
+
+def classify(cluster, sp)
+	sps = cluster.collect{|x| sp[x]}
+	counts = Hash.new
+	sps.each {|x| counts[x] = 0 if !counts[x];counts[x]+=1}
+	counts.keys.sort{|a,b| counts[b]<=>counts[a]}.first
+end
+
+print ["Name", "Cluster Size", "Members", "Example"].to_csv
+
+names = Hash.new
+clusters.keys.sort {|x, y| clusters[y].size <=> clusters[x].size}.each do |key|
+	species = classify(clusters[key], sp)
+	cname = species += "_1"
+	while(names[cname])
+		cname.succ!
+	end
+	seq = nil
+	clusters[key].each do |s|
+		seq = seqs[s]
+		break if !seq.nil?
+	end
+	print [cname, clusters[key].size, clusters[key].sort.join(" "), seq].to_csv
+	names[cname] = true
+end
