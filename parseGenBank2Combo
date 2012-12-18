@@ -2,35 +2,17 @@
 
 Encoding.default_external="ASCII-8BIT"
 
-require 'optparse'
+require 'rubygems'
+require 'trollop'
 require 'bio'
-require 'ostruct'
 require 'ZFile'
 
-opt = OpenStruct.new
-opt.sep = false
-opt.tax = false
-
-ARGV.options do |opts|
-  opts.banner << " gbk-file [..gbk-file...]"
-  opts.on("-d ", "--database ", String, 
-       "protein database to use (default #{opt.database})") {|d| opt.database = d}
-  opts.on("-s", "--separate", 
-          "output in separate files for each accession (#{opt.sep})") {|t| opt.sep = t}
-  opts.on("-h ", "--host ", String, "database host (default #{opt.host})") {|t| opt.host = t}
-  opts.on("-t", "--taxonomy", 
-          "use taxonomy from combodb database, not file (#{opt.tax})") {|t| opt.tax = t}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "genbank file(s) to process", :type=>:strings, :required=>true
+  opt :prefix, "prefix for merged file", :type=>:string, :default=>"all"
+  opt :separate, "separate files for each accession"
 end
 
 # classify type of molecule given definition string
@@ -67,18 +49,18 @@ end
 
 pep, cds, rna, trna, ent, con = nil
 
-if (!opt.sep)
-  pep = File.new("all.pep", "w")
-  cds = File.new("all.cds", "w")
-  rna = File.new("all.rRNA", "w")
-  trna = File.new("all.tRNA", "w")
-  ent = File.new("all.ent", "w")
-  att = File.new("all.att", "w")
-  con = File.new("all.con", "w")
+if (!opts.separate)
+  pep = File.new(opts.prefix + ".pep", "w")
+  cds = File.new(opts.prefix + ".cds", "w")
+  rna = File.new(opts.prefix + ".rRNA", "w")
+  trna = File.new(opts.prefix + ".tRNA", "w")
+  ent = File.new(opts.prefix + ".ent", "w")
+  att = File.new(opts.prefix + ".att", "w")
+  con = File.new(opts.prefix + ".con", "w")
 end
 
 org = ""
-ARGV.each do |gb|
+opts.input.each do |gb|
   Bio::FlatFile.new(Bio::GenBank, ZFile.new(gb)).each do |genome|
     organism = genome.organism
     if (organism == "")
@@ -104,11 +86,11 @@ ARGV.each do |gb|
     product = ""
     dna = genome.seq
     next if (dna.length == 0) # skip empty records
-    if (opt.sep)
+    if (opts.separate)
       pep = File.new(acc + ".pep", "w")
       cds = File.new(acc + ".cds", "w")
       rna = File.new(acc + ".rRNA", "w")
-      trna = File.new(acc + ".tRNA", "w")
+      trna = File.newopt(acc + ".tRNA", "w")
       ent = File.new(acc + ".ent", "w")
       att = File.new(acc + ".att", "w")
       con = File.new(acc + ".con", "w")
@@ -212,7 +194,7 @@ ARGV.each do |gb|
     att.print sprintf("%5.2f%%\n", gc * 100)
     header = acc + " " + genome.definition
     con.print Bio::Sequence::AA.new(dna).to_fasta(header, 60)
-    if(opt.sep)
+    if(opts.separate)
       att.close
       pep.close
       cds.close
@@ -224,7 +206,7 @@ ARGV.each do |gb|
   end
 end
 
-if(!opt.sep)
+if(!opts.separate)
   att.close
   pep.close
   cds.close
