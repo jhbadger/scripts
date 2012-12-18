@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+require 'bio'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "genbank file(s) to process", :type=>:strings, :required=>true
+end
+
+opts.input.each do |gb|
+	name = File.basename(gb).split(".").first
+	if !File.exists?(name + ".pep")
+		`parseGenbank2Combo -p #{name} -i #{gb}`
+	end
+end
