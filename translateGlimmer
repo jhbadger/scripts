@@ -1,56 +1,40 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
 require 'rubygems'
 require 'bio'
-require 'optparse'
-opt = OpenStruct.new
+require 'trollop'
 
-opt.code = 11
-ARGV.options {|opts|
-  opts.banner << " glimmer.predict fasta"
-  opts.on("-c ", "--code ", Integer,
-          "set NCBI genetic code (default #{opt.code})")  {|t| opt.code = t}    
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size != 2)
-    STDERR.puts opts
-    exit(1)
-  end
-}
-
-glim, dna = ARGV
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :code, "NCBI genetic code", :default=>11, :type=>:integer
+  opt :glimmer, "glimmer position output", :type=>:string, :required=>true
+  opt :input, "fasta file to translate", :type=>:string, :required=>true
+end
 
 contig = nil
 cds = Hash.new
-File.new(glim).each {|line|
-  if (line =~/^>/)
-    contig = line.chomp.gsub(">","")
+File.new(opts.glimmer).each do |line|
+  if line =~/^>/
+    contig = line.chomp.gsub(">","").split(" ").first
     cds[contig] = []
   else
     id, start, stop = line.split(" ")
     coords = [id, start.to_i, stop.to_i]
     cds[contig].push(coords)
   end
-}
+end
 
-
-Bio::FlatFile.new(Bio::FastaFormat, File.new(dna)).each {|seq|
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
   next if cds[seq.entry_id].nil?
-  cds[seq.entry_id].each {|orf|
+  cds[seq.entry_id].each do |orf|
     id, start, stop = orf
     if (start < stop)
       subseq = seq.naseq.subseq(start, stop)
     else
       subseq = seq.naseq.subseq(stop, start).complement
     end
-    header = File.basename(glim, ".predict") + "_" + id + "_" + 
-                      seq.entry_id + " " + start.to_s + " " + stop.to_s
-    print subseq.translate(1, opt.code).to_fasta(header, 60)
-  }
-}
+    header =  seq.entry_id + " " + start.to_s + " " + stop.to_s
+    print subseq.translate(1, opts.code).to_fasta(header, 60)
+  end
+end
