@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do 
+	banner File.basename($0)
+	opt :csv, "csv file", :required=>true, :type=>:string
+	opt :fasta, "fasta file", :required=>true, :type=>:string	
+end
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.fasta)).each do |seq|
+	seqs[seq.definition.split(" ").first] = seq.seq
+end
+
+headers = false
+CSV.foreach(opts.csv, :headers=>true) do |row|
+	if (!headers)
+		print (row.headers + ["Sequence"]).to_csv
+		headers = true
+	end
+	seq = ""
+	forward = row["Forward Full Name"]
+	if (forward)
+		if (!seqs[forward])
+			STDERR << "Error: cannot find " << forward << "\n"
+			next
+		end
+		seq += seqs[forward]
+	end
+	reverse = row["Reverse Full Name"]
+	if (reverse)
+		if (!seqs[reverse])
+			STDERR << "Error: cannot find " << reverse << "\n"
+			next
+		end
+		seq += "N" * 5 if seq != ""
+		seq += Bio::Sequence::NA.new(seqs[reverse]).complement.seq.upcase
+	end
+	print (row.fields + [seq]).to_csv
+end
