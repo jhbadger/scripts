@@ -43,8 +43,8 @@ opts.input.each do |file|
     max = seq.seq.length if seq.seq.length > max
     min = seq.seq.length if seq.seq.length < min
     if (!opts.total)
-      gcper = ((gc*100.0) / (gc + at)).round(1)
-      amper = ((ambig*100.0)/seq.seq.length).round(1)
+      gcper = ((gc*100.0) / (gc + at)).round
+      amper = ((ambig*100.0)/seq.seq.length).round
       if (opts.csv)
         print [seq.definition, 1, seq.length, amper, gcper].to_csv
       else
@@ -63,9 +63,9 @@ opts.input.each do |file|
   end
   stream.close
   if (opts.total)
-    avg = (tLen/count.to_f).round(1)
-    gcper = ((tgc*100.0) / (tgc + tat)).round(1)
-    amper = (100*tam/tLen.to_f).round(1)
+    avg = (tLen/count.to_f).round
+    gcper = ((tgc*100.0) / (tgc + tat)).round
+    amper = (100*tam/tLen.to_f).round
     if (opts.csv)
       print [file, count, avg, amper, gcper].to_csv
     else
