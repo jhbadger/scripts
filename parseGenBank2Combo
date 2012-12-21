@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-Encoding.default_external="ASCII-8BIT"
+#Encoding.default_external="ASCII-8BIT"
 
 require 'rubygems'
 require 'trollop'
