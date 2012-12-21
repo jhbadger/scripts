@@ -3,7 +3,7 @@
 require 'rubygems'
 require 'trollop'
 require 'bio'
-require 'ZFile'
+require 'fastercsv'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -11,9 +11,108 @@ opts = Trollop::options do
   opt :input, "genbank file(s) to process", :type=>:strings, :required=>true
 end
 
+# add commas to number
+def commafy(n)
+	n.to_s.gsub(/(\d)(?=\d{3}+(?:\.|$))(\d{3}\..*)?/,'\1,\2')
+end
+
+cog_categories={"J"=>"Translation","A"=>"RNA processing and modification","K"=>"Transcription","L"=>"Replication, recombination and repair","B"=>"Chromatin structure and dynamics","D"=>"Cell cycle control, mitosis and meiosis","Y"=>"Nuclear structure","V"=>"Defense mechanisms","T"=>"Signal transduction mechanisms","M"=>"Cell wall/membrane biogenesis","N"=>"Cell motility","Z"=>"Cytoskeleton","W"=>"Extracellular structures","U"=>"Intracellular trafficking and secretion","O"=>"Posttranslational modification, protein turnover, chaperones","C"=>"Energy production and conversion","G"=>"Carbohydrate transport and metabolism","E"=>"Amino acid transport and metabolism","F"=>"Nucleotide transport and metabolism","H"=>"Coenzyme transport and metabolism","I"=>"Lipid transport and metabolism","P"=>"Inorganic ion transport and metabolism","Q"=>"Secondary metabolites biosynthesis, transport and catabolism","R"=>"General function prediction only","S"=>"Function unknown", "X"=>"Unassigned to COG"}
+stats_categories = ["Size (bp)", "G+C content (bp)", "Total genes", "RNA genes", 
+	"Protein-coding genes", "Genes assigned to COGs", "Genes with transmembrane helices"]
+cog_counts = Hash.new
+stats_counts = Hash.new
 opts.input.each do |gb|
 	name = File.basename(gb).split(".").first
+	cog_counts[name] = Hash.new
+	cog_categories.keys.each {|c| cog_counts[name][c] = 0}
+	stats_counts[name] = Hash.new
+	stats_categories.each {|c| stats_counts[name][c] = 0}
 	if !File.exists?(name + ".pep")
 		`parseGenbank2Combo -p #{name} -i #{gb}`
 	end
+	cogBlast = name+".pep_vs_cog_class.pep.blastp"
+	if !File.exist?(cogBlast)
+		`pblastNCBI -e 1e-5 -f m8 -i g*.pep -m 1 -p 0116 -d cog_class.pep -s 100`
+	end
+	tmhmm = name + ".tmhmm"
+	if !File.exist?(tmhmm)
+		`tmhmm #{name}.pep > #{name}.tmhmm`
+	end
+	File.new(tmhmm).each do |line|
+		if line =~/Number of predicted TMHs/
+			num = line.chomp.split(" ").last.to_i
+			stats_counts[name]["Genes with transmembrane helices"] += 1 if num > 0
+		end
+	end
+	File.new(cogBlast).each do |line|
+		pep, cog = line.chomp.split("\t")
+		cog, cat = cog.split("_")
+		if cat.length > 1
+			cat.length.times do |i|
+				cog_counts[name][cat[i].chr] += 1.0/cat.length
+			end
+		else
+			cog_counts[name][cat] += 1
+		end
+	end
+
+	Bio::FlatFile.new(Bio::FastaFormat, File.new(name + ".con")).each do |seq|
+		stats_counts[name]["Size (bp)"] += seq.length
+		stats_counts[name]["G+C content (bp)"] += seq.seq.count("GC")
+	end
+	Bio::FlatFile.new(Bio::FastaFormat, File.new(name + ".pep")).each do |seq|
+		stats_counts[name]["Protein-coding genes"] += 1
+	end
+	Bio::FlatFile.new(Bio::FastaFormat, File.new(name + ".rRNA")).each do |seq|
+		stats_counts[name]["RNA genes"] += 1
+	end
+	Bio::FlatFile.new(Bio::FastaFormat, File.new(name + ".tRNA")).each do |seq|
+		stats_counts[name]["RNA genes"] += 1
+	end
+	stats_counts[name]["Total genes"] = stats_counts[name]["Protein-coding genes"] + 
+		stats_counts[name]["RNA genes"]
+	stats_counts[name]["Genes assigned to COGs"] = cog_counts[name].values.reduce(:+).to_i
+	cog_counts[name]["X"] = stats_counts[name]["Protein-coding genes"] - 
+		stats_counts[name]["Genes assigned to COGs"]
 end
+out = File.new("genome_stats.csv", "w")
+headers = [""]
+headers2 = [""]
+stats_counts.keys.sort.each do |key|
+	headers.push(key)
+	headers.push("")
+	headers2.push("Value")
+	headers2.push("% of total")
+end
+out.print headers.to_csv
+out.print headers2.to_csv
+stats_categories.each do |cat|
+	row = [cat]
+	stats_counts.keys.sort.each do |key|
+		val = stats_counts[key][cat]
+		row.push(commafy(val))
+		tot = stats_counts[key]["Size (bp)"]
+		tot = stats_counts[key]["Total genes"] if cat=~/genes|Genes/
+		row.push(sprintf("%4.2f%%", val*100.0/tot))
+	end
+	out.print row.to_csv
+end
+out.close
+out = File.new("cog_stats.csv", "w")
+out.print headers.to_csv
+out.print headers2.to_csv
+cog_categories.keys.sort.each do |cat|
+	row = [cat + " " + cog_categories[cat]]
+	trow = 0
+	cog_counts.keys.each {|x|trow+=cog_counts[x][cat]}
+	if trow > 0
+		stats_counts.keys.sort.each do |key|
+			val = cog_counts[key][cat].round
+			row.push(commafy(val))
+			tot = stats_counts[key]["Genes assigned to COGs"]
+			row.push(sprintf("%4.2f%%", val*100.0/tot))
+		end
+		out.print row.to_csv
+	end
+end
+out.close
