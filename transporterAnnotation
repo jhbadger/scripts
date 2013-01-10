@@ -16,14 +16,16 @@ end
 ARGV.push("-h") if ARGV.empty?
 
 opts = Trollop::options do
-	banner File.basename($0) << " version 2.1 11/27/2012"
-	opt :blast, "NCBI Blast tab file(s) with seguids", :required =>true, :type => :strings
+	banner File.basename($0) << " version 2.2 01/09/2013"
+	opt :blast, "blast tab file(s) with seguids", :required =>true, :type => :strings
 	opt :database, "transporter database file", :required => true, :type => :string
 	opt :full, "full (traditional qinghu) output" 
 	opt :pfam, "PFAM/TIGRFAM file(s) with seguids", :required=> true, :type => :strings
 	opt :tmhmm, "TMHMM output for file", :type => :string, :required => true
 	opt :score, "score threshold to report", :type => :integer, :default => 2
 	opt :output, "output to file (default: stdout)", :type=>:string
+	opt :tbl, "Use HMM3 tbl format for HMMs, not htab"
+	opt :btab, "use btab format rather than NCBI m8 for blast"
 	opt :verbose, "print status of pipeline to STDERR"
 end
 
@@ -83,9 +85,17 @@ opts.pfam.each do |hmm|
 	STDERR << "Loading hmm hit file #{File.basename(hmm)}...\n" if opts.verbose
 	File.new(hmm).each do |line|
 		fields = line.chomp.split("\t")
-		hmm, date, d, prog, d, name = fields
-		hmm = hmm.split(".").first # remove version num
-		evalue = fields.last.to_f
+		if (opts.tbl)
+			hmm, d, name, d, evalue = line.split(" ")
+			evalue = evalue.to_f
+			prog = nil
+			date = nil
+		else
+			fields = line.chomp.split("\t")
+			hmm, date, d, prog, d, name = fields
+			hmm = hmm.split(".").first # remove version num
+			evalue = fields.last.to_f
+		end
 		if hmm_info[hmm] && evalue < 0.0001 
 			if !pfam[name] || pfamSig[name] > evalue
 				pfam[name] = hmm
@@ -99,7 +109,13 @@ end
 opts.blast.each do |blast|
 	STDERR << "Loading blast #{File.basename(blast)}...\n" if opts.verbose
 	File.new(blast).each do |line|
-		name, seguid, percent, alen, gaps, qstart, qend, tstart, tend, n, evalue = line.chomp.split("\t")
+		if (opts.btab)
+			name, d, d, d, d, seguid, qstart, qend, tstart, tend, d, d, d, score, d,
+      		d, d, d, d, evalue = line.chomp.split("\t")
+      		name = name.split(" ").first
+		else
+			name, seguid, percent, alen, gaps, qstart, qend, tstart, tend, n, evalue = line.chomp.split("\t")
+		end
 		evalue = evalue.to_f
 		if tc_seguid[seguid] && evalue < 1e-5 
 			if !tcBlast[name] || tcBlastSig[name] > evalue
