@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+	banner File.basename($0)
+	opt :input, "input file", :required =>true, :type => :string
+	opt :alias, "alias file with orig, replacement", :required =>true, :type => :string
+	opt :col, "column to replace", :required => true, :type=>:integer
+	opt :delim, "delimiter", :type=>:string, :default=>"\t"
+	opt :only, "only count first word of col field"
+end
+
+ali = Hash.new
+
+File.new(opts.alias).each do |line|
+	n, al = line.chomp.split("\t")
+	ali[n] = al
+end
+
+File.new(opts.input).each do |line|
+	fields = line.chomp.split(opts.delim)
+	field = fields[opts.col]
+	field = field.split(" ").first if opts.only
+	fields[opts.col] = ali[field] if (ali[field])
+	print fields.join(opts.delim)+"\n"
+end

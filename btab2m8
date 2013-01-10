@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+
+ARGV.push("-h") if ARGV.empty?
+
+opts = Trollop::options do
+	banner File.basename($0)
+	opt :input, "btab blast file", :required =>true, :type => :string
+end
+
+File.new(opts.input).each do |line|
+	query, date, qlen, program, database, subject, qleft, qright, 
+      sleft, sright, percentId, percentSim, dummy, score, dummy2,
+      desc, frame, strand, slen, evalue = line.chomp.split("\t")
+    desc = dummy2 if (desc.nil? || desc.length < 10) # fix timelogic btab
+    print [query.split(" ").first, subject.split(" ").first, percentId,
+    	nil, nil, nil, qleft, qright, sleft, sright, evalue, score].join("\t")+"\n"
+end
