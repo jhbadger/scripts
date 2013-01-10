@@ -1,0 +1,144 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+require 'Newick'
+require File.dirname($0)+"/apis_lib"
+require 'fastercsv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :database, "Seguid-based fastacmd indexed protein database", :required => true, :type => :string,
+    :default=>"/usr/local/projects/EVOL/phylodb/1.05/phylodb.pep"
+  opt :exclude, "exclude from target", :type=>:strings
+  opt :ingroup , "ingroup taxa", :type=>:strings
+  opt :must, "taxa that must come before target", :type=>:strings
+  opt :only, "target clade only has target"
+  opt :target, "target taxon", :type=>:strings, :required=>true
+  opt :spreadsheet, "spreadsheet to read in", :required=>true
+  opt :verbose, "be verbose"
+end
+
+# convert non-standard groups to standard
+def convertTax(entry)
+  return false if !entry
+  entry.gsub!("prokaryotes", "Bacteria|Archaea")
+  entry.gsub!("stramenopiles", "Bacillariophyta|Bicosoecida|Pelagophyceae|Peronosporales|Phaeophyceae|Synurophyceae")
+  entry.gsub!("diatoms", "Bacillariophyta")
+  return entry
+end
+
+# summarize set of matching taxonomies
+def summarizeTax(consense)
+  num = consense.first.size
+  match = []
+  done = false
+  num.times do |i|
+    match[i] = ""
+    consense.each do |tax|
+      tax = tax.split("; ")
+      if (match[i] == "")
+        match[i] = tax[i]
+      elsif (match[i] != tax[i])
+        done = true
+        break
+      end
+    end
+    break if done
+  end
+  summary = ""
+  match.each do |m|
+    break if m.nil?
+    summary += "; " if summary != ""
+    summary += m
+  end
+  return summary
+end
+
+db = ApisDB.new(opt.host + "/" + opt.storage)
+db.loadTaxonomy(opt.proteindb)
+tax = db.fullSpeciesTaxonomyHash
+
+STDERR << "Loading Trees...\n"
+
+treeCount = db.get("SELECT count(*) FROM tree WHERE dataset = '#{dataset.quote}'").first.to_i
+
+opt.target = convertTax(opt.target) 
+opt.ingroup = convertTax(opt.ingroup)
+opt.exclude = convertTax(opt.exclude)
+opt.must = convertTax(opt.must)
+
+print ["Id", "Tree", "Target", "Bootstrap", "Annotation"].to_csv
+count = 0
+db.query("SELECT seq_name, tree FROM tree WHERE dataset = '#{dataset}'").each do |row|
+  seq_name, tree = row
+  begin
+    root =  NewickTree.new(tree).root
+  rescue
+    STDERR << "Cannot parse tree for #{seq_name}...\n"
+    next
+  end
+  alltaxa = root.taxa.size
+  query = root.findNode(seq_name)
+  count += 1
+  STDERR.printf("%4.2f%% done...\n", count*100.0/treeCount) if (count % 1000 == 0)
+  if (!query.nil?)
+    found = false
+    only = true
+    ingroup = true
+    must = false
+    boot = 100
+    while (query != nil && query.taxa.size < alltaxa)
+      consense = []
+      p query.taxa
+      query.taxa.each do |taxon|
+        next if taxon == seq_name
+        taxsp = taxon.split(/-|__/)[1]
+        if (!opt.name)
+          tname = tax[taxsp]
+        else
+          tname = taxon
+        end
+        if (!opt.ingroup || tname !~/#{opt.ingroup}/ || tname =~/#{opt.target}/)
+          ingroup = false 
+        end
+        if (opt.must && tname =~/#{opt.must}/)
+          must = true
+          if (opt.verbose)
+            STDERR.printf("Must requirement met by #{tname}\n")
+          end
+        end
+        if (tname =~/#{opt.target}/ && tname !~/#{opt.exclude}/ && !ingroup)
+          if (!found)
+            found = true
+            if (opt.verbose)
+              STDERR.printf("Found target at %s\n", tname)
+            end
+            consense = [tname]
+          else
+            consense.push(tname)
+          end
+          if (query.name.to_i > 0)
+            boot = query.name.to_i
+          end
+        elsif (tname !~/#{opt.ingroup}/ && tname !~/#{opt.exclude}/)
+          only = false
+          if (found && opt.verbose && opt.only)
+            STDERR.printf("%s fails only criteron\n", tname)
+          end
+        end
+      end
+      break if (found && (!opt.only || only))
+      break if (opt.ingroup && !ingroup)
+      query = query.parent
+    end
+    if (found && ((only || !opt.only) || ingroup))
+      if (must || !opt.must)
+        tid = seq_name
+        ann = db.get("SELECT annotation FROM annotation WHERE seq_name = '#{seq_name.quote}' AND dataset = '#{dataset.quote}' AND source = 'APIS'")
+        print [tid, root.to_s, summarizeTax(consense), boot, ann.first].to_csv
+      end
+    end
+  end
+end
