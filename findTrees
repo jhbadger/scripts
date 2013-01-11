@@ -152,7 +152,7 @@ FasterCSV.foreach(opts.spreadsheet, :headers=>true) do |row|
     if (found && ((only || !opts.only) || ingroup))
       if (must || !opts.must)
         tid = seq_name
-        print [tid, root.to_s, summarizeTax(consense), boot, ann].to_csv
+        print [tid, root.to_s.chomp, summarizeTax(consense), boot, ann].to_csv
       end
     end
   end
