@@ -7,7 +7,6 @@ require 'rubygems'
 begin
   require 'trollop'
   require 'Newick'
-  require 'sqlite3'
   require 'bio'
   require 'fpdf'
   require File.dirname($0)+"/apis_lib"

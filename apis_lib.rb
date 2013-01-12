@@ -53,16 +53,40 @@ class Array # additional methods for Array class
   end
 end
 
-class NewickTree # Additional methods for NewickTree class
+# get taxonomy array (or string) for taxon
+def getTaxonomy(taxon, taxonomy, joined=false)
+  seqid, sp = taxon.split("__")
+  tx=taxonomy[sp]
+  if tx.nil?
+    nil
+  elsif joined
+    return tx.join("; ")
+  else
+    tx
+  end
+end
+
+class NewickNode # additional methods for NewickNode class
+  # return array of arrays of taxa representing relatives at each level
+  def relatives
+    relatives = []
+    node = self
+    while(!node.parent.nil?)
+      relatives.push(node.parent.taxa - node.taxa)
+      node = node.parent
+    end
+    return relatives
+  end
+
   # returns array of consensus taxonomy at each relative level of tree
-  def consensusTax(pep, taxonomy, ruleMaj)
+  def consensusTax(taxonomy, ruleMaj = false)
     consensus = []
-    return  [] if relatives(pep).nil?
-    relatives(pep).each do |list|
+    rels = relatives
+    return  [] if rels.nil?
+    rels.each do |list|
       counts = []
       list.each do |relative|
-        seqid, sp = relative.split("__")
-        groups = taxonomy[sp]
+        groups = getTaxonomy(relative, taxonomy)
         next if groups.nil?
         groups.size.times do |i|
           counts[i] = Hash.new if counts[i].nil?
@@ -78,10 +102,12 @@ class NewickTree # Additional methods for NewickTree class
     end
     return consensus
   end
+end
 
+class NewickTree # Additional methods for NewickTree class
   # returns classification of node based on taxonomy
   def createClassification(pep, exclude, taxonomy, ruleMaj)
-    cons = consensusTax(pep, taxonomy, ruleMaj)
+    cons = consensusTax(findNode(pep), taxonomy, ruleMaj)
     lines = []
     cons.each do |line|
       excluded = false
@@ -181,7 +207,7 @@ def loadTaxonomy(taxf, verbose)
     current, name, parent, rank = line.chomp.split("\t")
     name = name.tr("()","")
     tax[current.to_i] = [name, parent.to_i, rank]
-    sp[name] = current.to_i if rank == "species"
+    sp[name] = current.to_i if rank == "species" || rank == "no rank"
   end
   inTax.close
   taxonomy = Hash.new

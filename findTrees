@@ -9,33 +9,13 @@ require 'fastercsv'
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :exclude, "exclude from target", :type=>:strings
-  opt :ingroup , "ingroup taxa", :type=>:strings
-  opt :must, "taxa that must come before target", :type=>:strings
+  opt :exclude, "exclude from target", :type=>:strings, :default=>[""]
+  opt :ingroup , "ingroup taxa", :type=>:strings, :default=>[""]
   opt :only, "target clade only has target"
   opt :target, "target taxon", :type=>:strings, :required=>true
   opt :spreadsheet, "spreadsheet to read in", :required=>true, :type=>:string
   opt :taxonomy, "APIS usedTaxa file", :required => true, :type => :string
   opt :verbose, "be verbose"
-end
-
-# convert non-standard groups to standard
-def convertTax(entry)
-  entry=[] if entry.nil?
-  fixed = []
-  entry.each do |taxon|
-    if taxon == "prokaryotes"
-      fixed += ["Bacteria", "Archaea"] 
-    elsif taxon == "stramenopiles" 
-      fixed += ["Bacillariophyta", "Bicosoecida","Pelagophyceae",
-        "Peronosporales","Phaeophyceae","Synurophyceae"]
-    elsif taxon == "diatoms"
-      fixed += ["Bacillariophyta"]
-    else
-      fixed += [taxon]
-    end
-  end
-  fixed
 end
 
 # summarize set of matching taxonomies
@@ -50,34 +30,47 @@ def summarizeTax(consense)
       if (match[i] == "")
         match[i] = tax[i]
       elsif (match[i] != tax[i])
+        match[i] = ""
         done = true
         break
       end
     end
     break if done
   end
-  summary = ""
-  match.each do |m|
-    break if m.nil?
-    summary += "; " if summary != ""
-    summary += m
+  match = match - [nil] - [""]
+  match.join("; ")
+end
+
+
+# convert non-standard groups to standard
+def convertTax(entry)
+  fixed = []
+  entry.each do |taxon|
+    if taxon == "prokaryotes"
+      fixed += ["Bacteria", "Archaea"] 
+    elsif taxon == "stramenopiles" 
+      fixed += ["Bacillariophyta", "Bicosoecida","Pelagophyceae",
+        "Peronosporales","Phaeophyceae","Synurophyceae"]
+    elsif taxon == "diatoms"
+      fixed += ["Bacillariophyta"]
+    else
+      fixed += [taxon] if taxon != ""
+    end
   end
-  return summary
+  fixed
 end
 
 # return true if taxon matches any of the entries
 def match(query,entries)
-  entries = [] if !entries
   entries.each do |taxon|
     return true if query =~/#{taxon}/
   end
   false
 end
 
-opts.target = convertTax(opts.target) 
-opts.ingroup = convertTax(opts.ingroup)
-opts.exclude = convertTax(opts.exclude)
-opts.must = convertTax(opts.must)
+ctarget = convertTax(opts.target) 
+cingroup = convertTax(opts.ingroup)
+cexclude = convertTax(opts.exclude)
 
 tax = loadTaxonomy(opts.taxonomy, opts.verbose)
 
@@ -100,60 +93,34 @@ FasterCSV.foreach(opts.spreadsheet, :headers=>true) do |row|
   STDERR.printf("%4.2f%% done...\n", count*100.0/treeCount) if (count % 1000 == 0)
   if (!query.nil?)
     found = false
-    only = true
-    ingroup = true
-    must = false
     boot = 100
-    while (query != nil && query.taxa.size < alltaxa)
-      consense = []
+    consense = []
+    missed = false
+
+    while !found && !query.nil? && query.taxa.size < alltaxa
+      taxa = query.taxa   
       query.taxa.each do |taxon|
-        next if taxon == seq_name
-        seqid, taxsp = taxon.split("__")
-        if opts.name
-          tname = taxon
-        elsif tax[taxsp]
-          tname = tax[taxsp].join("; ")
-        else
-          tname = ""
-        end
-        if !match(tname, opts.ingroup) || match(tname, opts.target)
-          ingroup = false 
-        end
-        if match(tname, opts.must)
-          must = true
-          if (opt.verbose)
-            STDERR.printf("Must requirement met by #{tname}\n")
-          end
-        end
-        if match(tname, opts.target) && !match(tname, opts.exclude) && !ingroup
-          if (!found)
-            found = true
-            if (opts.verbose)
-              STDERR.printf("Found target at %s\n", tname)
-            end
-            consense = [tname]
-          else
-            consense.push(tname)
-          end
+        tname = getTaxonomy(taxon, tax, true)
+        next if taxon == seq_name || tname.nil? || match(tname, cingroup) || match(tname, cexclude)
+        if match(tname, ctarget)
+          consense.push(tname)
+          found = true
           if (query.name.to_i > 0)
             boot = query.name.to_i
           end
-        elsif !match(tname, opts.ingroup) && !match(tname, opts.exclude)
-          only = false
-          if (found && opts.verbose && opts.only)
-            STDERR.printf("%s fails only criteron\n", tname)
-          end
+        else
+          STDERR.printf("%s removing %s because of only clause\n", seq_name, tname) if found && opts.verbose && opts.only
+          missed = true
+          break
         end
       end
-      break if (found && (!opts.only || only))
-      break if (opts.ingroup && !ingroup)
       query = query.parent
     end
-    if (found && ((only || !opts.only) || ingroup))
-      if (must || !opts.must)
-        tid = seq_name
-        print [tid, root.to_s.chomp, summarizeTax(consense), boot, ann].to_csv
-      end
+    found = false if found && missed && opts.only
+    if found
+      print [seq_name, root.to_s.chomp, summarizeTax(consense), boot, ann].to_csv
+    else
+      STDERR.printf("%s : target not found\n", seq_name) if opts.verbose
     end
   end
 end

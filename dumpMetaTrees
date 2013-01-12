@@ -4,13 +4,15 @@ require 'rubygems'
 require 'trollop'
 require 'Newick'
 require 'fpdf'
-require 'csv'
+require 'fastercsv'
 
 ARGV.push("--help") if ARGV.empty?
 
 opts = Trollop::options do
   banner "Usage: " << File.basename($0) << " [options]"
-  opt :csv, "phylometarep formatted apis tab file", :required => true, :type => :string
+  opt :csv, "apis flat file with tree", :required => true, :type => :string
+  opt :sep, "separator for fields", :type=>:string, :default=>"\t"
+  opt :headers, "file has header, use that", :default=>false
 end
 
 # function to generate seguid link to metarep for drawing tree
@@ -19,10 +21,16 @@ def segLink(entry)
   return metalink + entry.gsub(":","<>").gsub("/", "[]").gsub("+","()")
 end
 
-Dir.mkdir("tree") if !Dir.exists?("tree")
-CSV.foreach(opts.csv, :col_sep=>"\t") do |row|
-  name = row.first
-  tree = row.last
-  tree = NewickTree.new(tree)
-  tree.draw("tree/" + name + ".pdf", boot="width", linker = :segLink)
+Dir.mkdir("tree") if !File.exists?("tree")
+FasterCSV.foreach(opts.csv, :col_sep=>opts.sep, :headers=>opts.headers) do |row|
+	if opts.headers
+		name, tree = row["Seq Name"], row["Tree"]
+	else
+  		name = row.first
+  		tree = row.last
+  	end
+  if tree != "Tree" && !tree.nil?
+  	tree = NewickTree.new(tree)
+  	tree.draw("tree/" + name + ".pdf", boot="width", linker = :segLink)
+  end
 end
