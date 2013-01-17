@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 
-VER = "2.1"
-DATE = "11/29/2012"
+VER = "2.1a"
+DATE = "01/17/2013"
 
 require 'rubygems'
 begin
@@ -74,7 +74,7 @@ end
 
 if (opts.trees)
   STDERR << "Writing trees to " << opts.trees << "...\n" if opts.verbose
-  Dir.mkdir(opts.trees) if !Dir.exists?(opts.trees)
+  Dir.mkdir(opts.trees) if !File.exists?(opts.trees)
   trees.query("SELECT name, tree FROM trees").each do |row|
     name, tree = row
     begin
