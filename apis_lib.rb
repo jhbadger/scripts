@@ -107,7 +107,9 @@ end
 class NewickTree # Additional methods for NewickTree class
   # returns classification of node based on taxonomy
   def createClassification(pep, exclude, taxonomy, ruleMaj)
-    cons = consensusTax(findNode(pep), taxonomy, ruleMaj)
+    node = findNode(pep)
+    return nil if node.nil?
+    cons = node.consensusTax(taxonomy, ruleMaj)
     lines = []
     cons.each do |line|
       excluded = false

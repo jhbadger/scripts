@@ -9,6 +9,7 @@ begin
   require 'Newick'
   require 'bio'
   require 'fpdf'
+  require 'sqlite3'
   require File.dirname($0)+"/apis_lib"
 rescue LoadError # gems not installed
   miss = $!.to_s.gsub(">","").split(" ").last
