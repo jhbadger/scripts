@@ -71,7 +71,7 @@ if (opts.flatfile)
   trees.query("SELECT name, tree FROM trees ORDER BY name").each do |row|
     name, tree = row
     classy = classification.get_first_row("SELECT * FROM classification WHERE name=?", name)
-    out.print [classy + [tree]].join("\t") + "\n"
+    out.print [classy + [tree]].join("\t") + "\n" if classy && tree
   end
   out.close
 end
