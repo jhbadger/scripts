@@ -322,11 +322,11 @@ def align(db, pep, peps, blastids, database, verbose)
   out.close
   begin
     system("muscle -in '#{hom}' -out '#{afa}' -quiet")
-    db.execute("INSERT INTO alignment VALUES(?,?)", pep, File.read(afa))
-    File.unlink(hom)
   rescue
     STDERR << "Error #{$!} aligning " << pep << "...\n" if verbose
   end
+  db.execute("REPLACE INTO alignment VALUES(?,?)", pep, File.read(afa))
+  File.unlink(hom)
   afa
 end
 
@@ -362,14 +362,14 @@ def infer(db, afa, pep, method, verbose)
   if (method == "nj")
     begin
       stock = fasta2Stockholm(afa)
-      tree = NewickTree.new(`quickTree -boot 100 '#{stock}'`.tr("\n",""))
+      tree = NewickTree.new(`quicktree -boot 100 '#{stock}'`.tr("\n",""))
       tree.midpointRoot
     rescue
       STDERR << "Error #{$!} inferring nj tree for " << pep << "...\n" if verbose
     end
   end
   begin
-    db.execute("INSERT INTO trees VALUES(?,?)", pep, tree.to_s)
+    db.execute("REPLACE INTO trees VALUES(?,?)", pep, tree.to_s)
     File.unlink(afa, stock)
   rescue
     STDERR << "Error #{$!} writing tree for " << pep << "...\n" if verbose
@@ -399,7 +399,7 @@ def classify(db, pep, tree, ruleMaj, exclude, taxonomy, verbose)
   classification = tree.createClassification(pep, exclude, taxonomy, ruleMaj)
   begin
     line = ([pep] + classification).collect{|x| "\"#{x}\""}.join(",")
-    db.execute("INSERT INTO classification VALUES(#{line})")
+    db.execute("REPLACE INTO classification VALUES(#{line})")
   rescue
     STDERR << "Error #{$!} writing classification for " << pep << "...\n" if verbose
   end

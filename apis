@@ -50,14 +50,19 @@ alignment = createAlignmentDB(opts.input)
 trees = createTreesDB(opts.input)
 classification = createClassificationDB(opts.input)
 
-peps.query("SELECT name FROM peptides WHERE processed = 0").each do |pep|
-  blastids = blast.query("SELECT hit FROM blast WHERE name=?", pep.first).entries.flatten
+unprocessed = Hash.new
+peps.query("SELECT name FROM peptides WHERE processed = 0").each do |row|
+  unprocessed[row.first] = true
+end
+
+unprocessed.keys.sort.each do |pep|
+  blastids = blast.query("SELECT hit FROM blast WHERE name=?", pep).entries.flatten
   if (blastids.size > 2) # 3 homologs + query is min tree
-    afa = align(alignment, pep.first, peps, blastids, opts.database, opts.verbose)
-    tree = infer(trees, afa, pep.first, opts.phylo, opts.verbose)
-    classify(classification, pep.first, tree, opts.rulemaj, opts.exclude, taxonomy, opts.verbose) if tree
+    afa = align(alignment, pep, peps, blastids, opts.database, opts.verbose)
+    tree = infer(trees, afa, pep, opts.phylo, opts.verbose)
+    classify(classification, pep, tree, opts.rulemaj, opts.exclude, taxonomy, opts.verbose) if tree
   end
-  peps.execute("UPDATE peptides SET processed = 1 WHERE name = ?", pep.first)
+  peps.execute("UPDATE peptides SET processed = 1 WHERE name = ?", pep)
 end
 
 if (opts.flatfile)
@@ -70,8 +75,6 @@ if (opts.flatfile)
   end
   out.close
 end
-
-
 
 if (opts.trees)
   STDERR << "Writing trees to " << opts.trees << "...\n" if opts.verbose
