@@ -71,7 +71,7 @@ class NewickNode # additional methods for NewickNode class
   def relatives
     relatives = []
     node = self
-    while(!node.parent.nil?)
+    while(!node.nil? && !node.parent.nil?)
       relatives.push(node.parent.taxa - node.taxa)
       node = node.parent
     end
