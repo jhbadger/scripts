@@ -4,7 +4,7 @@ require 'rubygems'
 require 'trollop'
 require 'bio'
 require 'apis_lib'
-require 'newick'
+require 'Newick'
 require 'fpdf'
 
 origARGV = ARGV.dup # keep unparsed copy for grid
