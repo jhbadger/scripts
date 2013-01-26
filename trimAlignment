@@ -1,13 +1,16 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'Phylogeny'
+require 'apis_lib'
+require 'trollop'
+require 'bio'
 
-if (ARGV.size != 2 && ARGV.size != 3)
-  STDERR.printf("Usage: %s alignfile fraction-gaps-allowed [exclude-regexp]\n", File.basename($0))
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+	banner File.basename($0)
+  	opt :input, "Input fasta file", :required=>true, :type=>:string
+  	opt :fraction, "fraction gaps allowed", :default=>0.1, :type=>:float
+  	opt :exclude, "exclude-regexp", :type=>:string
 end
 
-alignment, fraction, exclude = ARGV
-
-trimAlignment(File.basename(alignment, ".afa") + "_trim.afa", alignment, fraction.to_f, exclude)
+trimAlignment(File.basename(opts.input, ".afa") + "_trim.afa", opts.input, opts.fraction, opts.exclude)

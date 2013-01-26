@@ -21,6 +21,7 @@ def headerName(header)
   header.split(" ")[0]
 end
 
+
 class Array # additional methods for Array class
   # return majority consensus for counts array
   def majority
@@ -403,4 +404,243 @@ def classify(db, pep, tree, ruleMaj, exclude, taxonomy, verbose)
   rescue
     STDERR << "Error #{$!} writing classification for " << pep << "...\n" if verbose
   end
+end
+
+def trimAlignment(trimFile, alignFile, maxGapFract = 0.5, exclude = nil)
+  if (File.exist?(alignFile) && !File.exist?(trimFile))
+    seqs = []
+    badCols = []
+    len = 0
+    Bio::FlatFile.new(Bio::FastaFormat, File.new(alignFile)).each do |seq|
+      seq.data.tr!("\n","")
+      seqs.push(seq)
+    end
+    seqs[0].data.length.times do |i|
+      gapNum = 0
+      count = 0
+      seqs.each do |seq|
+        next if (exclude && seq.full_id =~/#{exclude}/)
+        gapNum += 1 if (seq.data[i].chr == "-" || seq.data[i].chr == "?" || seq.data[i].chr == ".")
+        count += 1
+      end
+      badCols.push(i) if (gapNum > maxGapFract*count)
+    end
+    out = File.new(trimFile, "w")
+    seqs.each do |seq|
+      badCols.each do |col|
+        seq.data[col] = "!"
+      end
+      seq.data.tr!("!","")
+      len = seq.data.length
+      out.print Bio::Sequence.auto(seq.data).to_fasta(seq.definition, 60)
+    end
+    out.close
+    return len if len > 0
+  end
+  return nil
+end
+
+# back aligns dna to pep alignment and puts it in dnaAlign
+def backAlign(dna, pepAlign, dnaAlign)
+  pep = Hash.new
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pepAlign)).each do |seq|
+    pep[seq.full_id] = seq.seq
+  end
+  dnaAlign = File.new(dnaAlign, "w")
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(dna)).each do |seq|
+    if (!pep[seq.full_id])
+      raise "No #{seq.full_id} in #{pepAlign}\n"
+    end
+    dseq = ""
+    j = 0
+    pep[seq.full_id].length.times do |i|
+      c = pep[seq.full_id][i].chr
+      if (c == "-")
+        dseq += "---"
+      else
+        dseq += seq.seq[j..j+2]
+        j += 3
+      end
+    end
+    dnaAlign.print Bio::Sequence::NA.new(dseq).to_fasta(seq.definition, 60)
+  end
+  dnaAlign.close
+end
+
+# calc average percent identity of an fasta alignment
+def calcPercentIdent(fasta)
+  pos = nil
+  idents = []
+  len = nil
+  counts = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq1|
+    len = seq1.length if len.nil?
+    Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq2|
+      next if seq2.full_id == seq1.full_id
+      idents.push(0)
+      seq1.length.times do |i|
+        idents[idents.size - 1] += 1 if (seq1.seq[i] == seq2.seq[i])
+      end
+    end
+  end
+  tot = 0
+  idents.each {|ident| tot+=ident}
+  avIdent = (tot * 100 / idents.size) / len
+ return avIdent
+end
+
+# given a NewickTree and an alignment add ML distances
+def estimateMLBranchLengths(tree, alignFile, tmpdir)
+  outgroup = tree.taxa.sort.last
+  tree.reroot(tree.findNode(outgroup))
+  bClades = tree.clades(true)
+  fasta2Phylip(alignFile, "#{tmpdir}/infile")
+  tree.write("#{tmpdir}/intree")
+  treepuzzle = "puzzle infile intree"
+  system("cd #{tmpdir};echo  \"y\" | #{treepuzzle} > /dev/null")
+  tree = NewickTree.fromFile("#{tmpdir}/intree.tree")
+  tree.reroot(tree.findNode(outgroup))
+  tree.addBootStrap(bClades)
+  File.unlink(tmpdir+"/intree", tmpdir+"/intree.tree", tmpdir+"/infile")
+  File.unlink(tmpdir+"/intree.dist", tmpdir+"/intree.puzzle")
+  return tree
+end
+
+def fasta2Phylip(alignFile, phyFile) 
+  seqs = Hash.new
+  name = nil
+  inFile = File.new(alignFile)
+  inFile.each do |line|
+    line.chomp!
+    line.tr!("*","")
+    if (line =~ /^>/)
+      name = line[1..line.length].split(";").pop
+      seqs[name] = ""
+    else
+      seqs[name] += line.gsub(".","-")
+    end
+  end
+  inFile.close
+  phy = File.new(phyFile, "w")
+  lineLen = 60
+  phy.printf("%d %d\n", seqs.size, seqs[name].length)
+  pos = 0
+  while (pos < seqs[name].length)
+    seqs.keys.sort.each do |name|
+      if (pos == 0)
+        phy.printf("%-10s ", name)
+      end
+      phy.printf("%s\n", seqs[name][pos..pos + lineLen - 1])
+    end
+    pos += lineLen
+    phy.printf("\n")
+  end
+  phy.close
+end
+
+def removeAA(trimFile, alignFile, aaList)
+  if (File.exist?(alignFile) && !File.exist?(trimFile))
+    seqs = []
+    badCols = []
+    Bio::FlatFile.new(Bio::FastaFormat, File.new(alignFile)).each do |seq|
+      seq.data.tr!("\n","")
+      seqs.push(seq)
+    end
+    seqs[0].data.length.times do |i|
+      bad = 0
+      seqs.each do |seq|
+  bad += 1 if aaList.include?(seq.data[i].chr)
+      end
+      badCols.push(i) if (bad == seqs.size)
+    end
+    out = File.new(trimFile, "w")
+    seqs.each do |seq|
+      badCols.each do |col|
+  seq.data[col] = "!"
+      end
+      seq.data.tr!("!","")
+      out.print Bio::Sequence.auto(seq.data).to_fasta(seq.definition, 60)
+    end
+    out.close
+  end
+end
+
+def fasta2Nexus(alignFile, dna, nexFile = nil)
+  seqs = Hash.new
+  name = nil
+  seqFile = File.new(alignFile)
+  Bio::FlatFile.new(Bio::FastaFormat, seqFile).each do |seq|
+    seqs[seq.full_id] = seq.seq.gsub("?","-").gsub(".","-")
+  end
+  seqFile.close
+  if (dna)
+    type = "NUC"
+  else
+    type = "PROT"
+  end
+  if (nexFile.nil?)
+    out = STDOUT
+  else
+    out = File.new(nexFile, "w")
+  end 
+  lineLen = 40
+  aLen = seqs[seqs.keys.first].size
+  out.print "#NEXUS\nBEGIN DATA;\n"
+  out.print "DIMENSIONS NTAX=#{seqs.size} NCHAR=#{aLen};\n"
+  out.print "FORMAT DATATYPE=#{type} INTERLEAVE MISSING=-;\n"
+  out.print "MATRIX\n"
+  pos = 0
+  while (pos < aLen)
+    seqs.keys.sort.each do |name|
+      out.printf("%35s ", name)
+      out.printf("%s\n", seqs[name][pos..pos + lineLen - 1])
+    end
+    pos += lineLen 
+    out.printf("\n")
+  end
+  out.print ";\nEND;\n"
+  out.close if nexFile
+end
+
+def aliasFasta(fasta, ali, out, outgroup = nil, trim = false)
+  outFile = File.new(out, "w")
+  aliFile = File.new(ali, "w") if (!ali.nil?)
+  aliHash = Hash.new
+  orfNum = "SID0000001"
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+    newName = orfNum
+    name = seq.definition.split(" ").first
+    newName = "SID0000000" if (outgroup == name)
+    aliFile.printf("%s\t%s\n", newName, seq.definition) if (ali)
+    aliHash[newName] = seq.definition.tr("(),:","_")
+    seq.definition = newName
+    outFile.print seq
+    orfNum = orfNum.succ if (outgroup != name)
+  end
+  outFile.close
+  aliFile.close if (ali)
+  if (@trim)
+    trimAlignment(out+"_trim", out)
+    File.unlink(out)
+    File.rename(out+"_trim", out)
+  end
+  return aliHash
+end
+
+# do this to avoid splitting on "|"
+class Bio::FastaFormat
+  def full_id
+    return definition.split(" ").first
+  end
+end
+
+# run command on grid with project number
+def qsystem(cmd, project)
+  qsub = "qsub -P #{project} -e stderr -cwd -o stdout "
+  system("#{qsub} \"#{cmd}\"")
+end
+
+# gets rid of a directory
+def cleanup(dir)
+  system("rm -rf #{dir}") 
 end

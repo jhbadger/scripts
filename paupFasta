@@ -1,59 +1,37 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
 require 'rubygems'
-require 'Phylogeny'
-require 'ostruct'
+require 'trollop'
+require 'bio'
+require 'apis_lib'
+require 'newick'
 require 'fpdf'
 
-$VERBOSE = nil
+origARGV = ARGV.dup # keep unparsed copy for grid
 
-opt = OpenStruct.new
-opt.algorithm = "nj"
-opt.estimate = false
-opt.noboot = false
-opt.outgroup = nil
-opt.unrooted = false
-opt.trim = false
-opt.numboot = 100
-opt.project = nil
-
-def cleanup(dir)
-  system("rm -rf #{dir}")	
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "fasta alignment(s)", :required =>true, :type =>:strings
+  opt :bootstrap, "number of bootstraps (or 0 to not bootstrap)", :default=>100, :type=>:integer
+  opt :estimate, "estimate branch lengths with puzzle"
+  opt :algorithm, "algorithm from choices: nj, pars, ml", :default=>"nj", :type =>:string
+  opt :outgroup, "use specified taxon as outgroup", :type=>:string
+  opt :unrooted, "leave tree unrooted"
+  opt :project, "run on grid with project number specified", :type=>:string
 end
 
-ARGV.options {|opts|
-  opts.banner << " fasta [fasta...]"
-  opts.on("-b", "--noboot", 
-          "don't bootstrap (default #{opt.noboot})") {opt.noboot = true}
-  opts.on("-n ", "--numboot ", Integer, 
-        "number of bootstrap reps  (default #{opt.numboot})") {|n| opt.numboot = n}
-  opts.on("-e", "--estimate", 
-         "estimate branch lengths (default #{opt.estimate})") {opt.estimate = true}    
-  opts.on("-m ", "--method ", String, 
-          "method (default #{opt.algorithm} -  nj, pars, ml valid)") {|alg| opt.algorithm = alg}
-  opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
-  opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}
-  opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
-}
-
-if (opt.algorithm != "pars" && opt.algorithm != "nj" && opt.algorithm != "ml")
+if (opts.algorithm != "pars" && opts.algorithm != "nj" && opts.algorithm != "ml")
   STDERR.printf("only pars, ml, and nj are supported\n")
   exit(1)
 end
 
-ARGV.each {|fasta|
+if (opts.project)
+  qsystem($0 + " " + origARGV.join(" ").gsub(/ -p [0-9]*/,""), opts.project)
+  exit(0)
+end
+
+opts.input.each do |fasta|
   name = File.basename(fasta).split(".").first
   tmpdir = ENV["HOME"] + "/.tmp"
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
@@ -61,34 +39,34 @@ ARGV.each {|fasta|
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
   tname = tmpdir + "/" + name
   dna = isDNA?(fasta)
-  aliHash = aliasFasta(fasta, nil, tname, opt.trim)
+  aliHash = aliasFasta(fasta, nil, tname, opts.trim)
   fasta2Nexus(tname, dna, tname + ".nex")
   out = File.new("#{tname}.nex", "a+")
-  if (opt.outgroup)
-    aliHash.keys.each {|key|
-      out.print "Outgroup #{key};\n" if (aliHash[key] == opt.outgroup)
-    }
+  if (opts.outgroup)
+    aliHash.keys.each do |key|
+      out.print "Outgroup #{key};\n" if (aliHash[key] == opts.outgroup)
+    end
   end
-  if (opt.algorithm == "pars")
+  if (opts.algorithm == "pars")
     out.print "Set Criterion=parsimony;\n"
-    if (opt.noboot)
+    if (opts.bootstrap == 0)
       out.print "hsearch;\n"
     else
-      out.print "boot nreps=#{opt.numboot} keepall=y;\n"
+      out.print "boot nreps=#{opts.bootstrap} keepall=y;\n"
     end
-  elsif (opt.algorithm == "ml")
+  elsif (opts.algorithm == "ml")
     out.print "Set Criterion=likelihood;\n"
-    if (opt.noboot)
+    if (opts.bootstrap == 0)
       out.print "hsearch;\n"
     else
-      out.print "boot nreps=#{opt.numboot} keepall=y;\n"
+      out.print "boot nreps=#{opts.bootstrap} keepall=y;\n"
     end
-  elsif (opt.algorithm == "nj")
+  elsif (opts.algorithm == "nj")
     out.print "Set Criterion=distance;\n"
-    if (opt.noboot)
+    if (opts.bootstrap == 0)
       out.print "nj;\n"
     else
-      out.print "boot nreps=#{opt.numboot} search=nj keepall=y;\n"
+      out.print "boot nreps=#{opts.bootstrap} search=nj keepall=y;\n"
     end
   else
     out.print("hsearch;\n")
@@ -100,19 +78,19 @@ ARGV.each {|fasta|
   system("paup #{tname}.nex")
   tree = NewickTree.fromFile("#{tmpdir}/out.tree")
   tree.fixPhylip
-  tree = estimateMLBranchLengths(tree, tname, tmpdir) if (opt.estimate)
+  tree = estimateMLBranchLengths(tree, tname, tmpdir) if (opts.estimate)
   tree.unAlias(aliHash)
-  if (opt.outgroup)
-    outNode = tree.findNode(opt.outgroup)
+  if (opts.outgroup)
+    outNode = tree.findNode(opts.outgroup)
     if (outNode.nil?)
-      STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
+      STDERR.printf("taxon #{opts.outgroup} not found in tree!\n")
     else
       tree = tree.reroot(outNode)
     end 
-  elsif (!opt.unrooted)
+  elsif (!opts.unrooted)
     tree = tree.midpointRoot
   end  
-  tree.write("#{name}_#{opt.algorithm}.tree")
-  tree.draw("#{name}_#{opt.algorithm}.tree.pdf")
+  tree.write("#{name}_#{opts.algorithm}.tree")
+  tree.draw("#{name}_#{opts.algorithm}.tree.pdf")
   cleanup(tmpdir)
-}
+end
