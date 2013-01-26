@@ -3,7 +3,7 @@
 require 'rubygems'
 require 'ZFile'
 require 'trollop'
-require 'csv'
+require 'fastercsv'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -22,7 +22,7 @@ else
 end
 
 if (opts.csv)
-  iter=CSV.new(inFile)
+  iter=FasterCSV.new(inFile)
 else
   iter = inFile
 end
@@ -32,7 +32,7 @@ seen = Hash.new
 iter.each do |row|
   row = row.chomp.split(opts.delimiter) if !opts.csv
   field = row[opts.col]
-  print field + "\n" if opts.redundant || !seen[field]
+  print field + "\n" if !field.nil? && (opts.redundant || !seen[field])
   seen[field] = true
 end
 
