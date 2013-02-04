@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+# script to build spreadsheet of reads, peptides, for given sites and filter sizes
+
+require 'rubygems'
+require 'trollop'
+require 'fastercsv'
+require 'bio'
+require 'ZFile'
+require 'GOS'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :dir, "depot directory with GOS file structure", :default=>"/usr/local/depot/projects/GOS/indian_ocean", 
+  	:type=>:string
+  opt :sites, "list of sites to process", :required=>true, :type=>:integers
+  opt :filters, "list of filters for sites", :required=>true, :type=>:floats
+end
+
+reads = Hash.new
+totLen = Hash.new
+peptides = Hash.new
+apis = Hash.new
+bact = Hash.new
+
+if (opts.filters.size != opts.sites.size)
+	STDERR << "need equal numbers of sites and filters"
+	exit(1)
+else
+	opts.sites.size.times do |i|
+		key = opts.sites[i].to_s + "_" + opts.filters[i].to_s
+		reads[key] = 0
+		peptides[key] = 0
+		totLen[key] = 0
+		apis[key] = 0
+		bact[key] = 0
+	end
+end
+
+Dir.glob(opts.dir+"/*").each do |file|
+	site = siteName(File.basename(file)).gsub("GS","")
+	filter = classifySample(File.basename(file))
+	key = site.to_s + "_" + filter.to_s
+	if (reads[key])
+		rd = Dir.glob(file+"/orf-calling/input/*").first
+		if (rd.nil?)
+			STDERR << "Problem with " << file << ". Missing reads\n"
+			next
+		else
+			STDERR << "Processing " << File.basename(file) << "...\n"
+			Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(rd)).each do |seq|
+				reads[key] += 1
+				totLen[key] += seq.length
+			end
+			atab = Dir.glob(file+"/apis/*").first
+			ZFile.new(atab).each do |line|
+				if line !~/^Seq Name/
+					peptides[key] += 1
+					if line !~/NO_TREE/
+						apis[key] += 1
+						if line =~/Bacteria/
+							bact[key] += 1
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+print ["","","reads", "avg read length", "peptides", "APIS classified peptides", "Bacterial Peptides"].to_csv
+opts.sites.size.times do |i|
+	key = opts.sites[i].to_s + "_" + opts.filters[i].to_s
+	row = [opts.sites[i], opts.filters[i], reads[key], totLen[key]/reads[key], peptides[key], apis[key], bact[key]]
+	print row.to_csv
+end
