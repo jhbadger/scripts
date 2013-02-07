@@ -356,6 +356,31 @@ def fasta2Stockholm(alignFile)
   stock
 end
 
+# converts pointless stockholm alignment to a useful fasta one
+def stockholm2Fasta(alignFile)
+  afa = alignFile + ".afa"
+  afaf = File.new(afa, "w")
+  seqs = Hash.new
+  start = false
+  File.new(alignFile).each do |line|
+    if (line =~ /^#|\/\//)
+      start = true
+      next
+    end
+    next if !start
+    name, ali = line.split(" ")
+    next if (!start || ali.nil?)
+    ali.gsub!(".","-")
+    seqs[name] = "" if (seqs[name].nil?)
+    seqs[name] += ali += "\n"
+  end
+  seqs.keys.each do |name|
+   afaf.printf(">%s\n%s",name,seqs[name])
+ end
+ afaf.close
+ afa
+end
+
 # infers tree by desired method, populates db, returns tree
 def infer(db, afa, pep, method, verbose)
   STDERR << "Making tree for " << pep << "...\n" if verbose

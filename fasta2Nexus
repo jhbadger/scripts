@@ -1,14 +1,15 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'Phylogeny'
+require 'trollop'
+require 'bio'    
+require 'apis_lib'
 
-if (ARGV.size != 1)
-  STDERR.printf("usage: %s fasta-file\n", $0)
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
 end
 
-fasta, rest = ARGV
-
-dna = isDNA?(fasta)
-fasta2Nexus(fasta, dna)
+dna = isDNA?(opts.input)
+fasta2Nexus(opts.input, dna)

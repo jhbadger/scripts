@@ -1,64 +1,74 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
 require 'rubygems'
-require 'Phylogeny'
-require 'optparse'
+require 'trollop'
+require 'bio'
+require 'apis_lib'
+require 'Newick'
 require 'fpdf'
 
-opt = OpenStruct.new
+quicktree = `which quicktree`.chomp
 
-opt.dist = false
-opt.noroot = false
-opt.outgroup = nil
-opt.numboot = 100
-
-ARGV.options do |opts|
-  opts.banner << " prot.fasta [prot.fasta...]"
-  opts.on("-d", "--dist", "output distance matrix") {|t| opt.dist = t}    
-  opts.on("-n ", "--numboot ", Integer, 
-        "number of bootstrap reps  (default #{opt.numboot})") {|t| opt.numboot = t}
-  opts.on("-o ", "--outgroup ", String, "outgroup") {|t| opt.outgroup = t}
-  opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}    
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
+if quicktree == ""
+  STDERR << "I can't find quicktree on your path!\n"
+  exit(1)
 end
 
+origARGV = ARGV.dup # keep unparsed copy for grid
 
-ARGV.each do |prot|
-  fasta2Stockholm(prot + ".stock", prot)
-  if (!opt.dist)
-    tree = NewickTree.new(`quicktree -boot #{opt.numboot} #{prot + '.stock'}`.tr("\n",""))
-    if (!opt.unrooted)
-      if (opt.outgroup.nil?)
-        tree = tree.midpointRoot
-      else
-        node = tree.findNode(opt.outgroup)
-        if (node.nil?)
-          STDERR.printf("node %s not in tree!\n", opt.outgroup)
-          exit(1)
-        else
-          tree = tree.reroot(node)
-        end
-      end
-    end
-  else
-    dist = `quicktree -out m #{prot + '.stock'}`
-    out = File.new(File.basename(prot).split(".").first + ".dist", "w")
-    out.print dist
-    out.close
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "fasta alignment(s)", :required =>true, :type =>:strings
+  opt :bootstrap, "number of bootstraps (or 0 to not bootstrap)", :default=>100, :type=>:integer
+  opt :distance, "output distance matrix rather than tree"
+  opt :outgroup, "use specified taxon as outgroup", :type=>:string
+  opt :unrooted, "leave tree unrooted"
+  opt :project, "run on grid with project number specified", :type=>:string
+end
+
+if (opts.project)
+  qsystem($0 + " " + origARGV.join(" ").gsub(/ [\-p|\-\-project] [0-9]*/,""), opts.project)
+  exit(0)
+end
+
+opts.input.each do |fasta|
+  dna = isDNA?(fasta)
+  if (dna)
+    STDERR << "quicktree only handles proteins\n"
+    exit(1)
   end
-  filename = File.basename(prot).split(".").first + "_quicktree.tree"
-  tree.write(filename)
-  tree.draw(filename + ".pdf")
-  File.unlink(prot + '.stock')
+  name = File.basename(fasta).split(".").first
+  tmpdir = ENV["HOME"] + "/.tmp"
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  tname = tmpdir + "/" + name
+  aliHash = aliasFasta(fasta, nil, tname, opts.trim)
+  stock = fasta2Stockholm(tname)
+  if (opts.bootstrap > 0)
+    boot = "-b #{opts.bootstrap}"
+  else
+    boot = ""
+  end
+  if (opts.distance)
+    system("#{quicktree} -out m #{stock} > #{name}_quick.dist")
+  else
+    system("cd #{tmpdir};#{quicktree} #{boot} #{stock} > #{tmpdir}/quick.tree")
+    tree = NewickTree.fromFile("#{tmpdir}/quick.tree")
+    tree.unAlias(aliHash)
+    if (opts.outgroup)
+      outNode = tree.findNode(opts.outgroup)
+      if (outNode.nil?)
+        STDERR.printf("taxon #{opts.outgroup} not found in tree!\n")
+      elsif (!opts.unrooted)
+        tree = tree.reroot(outNode)
+      end 
+    else
+      tree = tree.midpointRoot
+    end  
+    tree.write("#{name}_quick.tree")
+    tree.draw("#{name}_quick.tree.pdf")
+  end
+  cleanup(tmpdir)
 end

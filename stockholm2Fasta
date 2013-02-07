@@ -1,13 +1,14 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'Phylogeny'
+require 'trollop'
+require 'bio'    
+require 'apis_lib'
 
-if (ARGV.size != 1)
-  STDERR.printf("usage: %s stockholm-file\n", $0)
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input stockholm file", :required=>true, :type=>:string
 end
 
-stock, rest = ARGV
-
-stockholm2Fasta(stock.split(".").first + ".afa", stock)
+stockholm2Fasta(opts.input)
