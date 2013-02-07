@@ -1,63 +1,39 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
 require 'rubygems'
-require 'Phylogeny'
-require 'ostruct'
+require 'trollop'
+require 'bio'
+require 'apis_lib'
+require 'Newick'
 require 'fpdf'
 
-$VERBOSE = nil
+raxml = `which raxmlHPC`.chomp
 
-raxml = "raxmlHPC"
+if raxml == ""
+  STDERR << "I can't find raxmlHPC on your path!\n"
+  exit(1)
+end
 
-opt = OpenStruct.new
-opt.outgroup = nil
-opt.trim = false
-opt.project = nil
-opt.model = nil
-opt.unrooted = false
+origARGV = ARGV.dup # keep unparsed copy for grid
 
-pflag = ARGV.index("-p")
-pflag = ARGV.index("--project") if (pflag.nil?)
-if (pflag)
-  opt.project = ARGV[pflag + 1]
-  ARGV[pflag] = ""
-  ARGV[pflag + 1] = ""
-  cmd = $0
-  ARGV.each {|arg|
-    cmd += (" " + arg.to_s) if (arg != "")
-  }
-  qsub = "qsub -P #{opt.project} -e stderr -cwd -o stdout "
-  system("#{qsub} \"#{cmd}\"")
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "fasta alignment(s)", :required =>true, :type =>:strings
+  opt :bootstrap, "number of bootstraps (or 0 to not bootstrap)", :default=>100, :type=>:integer
+  opt :model, "model (default: GTRGAMMA, PROTGAMMAWAGF)", :type=>:string
+  opt :outgroup, "use specified taxon as outgroup", :type=>:string
+  opt :seed, "seed for bootstrap analysis", :type=>:integer, :default=>1234
+  opt :unrooted, "leave tree unrooted"
+  opt :project, "run on grid with project number specified", :type=>:string
+end
+
+if (opts.project)
+  qsystem($0 + " " + origARGV.join(" ").gsub(/ [\-p|\-\-project] [0-9]*/,""), opts.project)
   exit(0)
 end
 
-def cleanup(dir)
-  system("rm -rf #{dir}")	
-end
-
-ARGV.options {|opts|
-  opts.banner << " fasta [fasta...]"
-  opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
-  opts.on("-m ", "--model ", String, "model (default GTRGAMMA, PROTGAMMAWAGF)") {|m| opt.model = m}
-  opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}
-  opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}
-  opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
-}
-
-
-ARGV.each {|fasta|
+opts.input.each do |fasta|
   name = File.basename(fasta).split(".").first
   tmpdir = ENV["HOME"] + "/.tmp"
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
@@ -65,23 +41,29 @@ ARGV.each {|fasta|
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
   tname = tmpdir + "/" + name
   dna = isDNA?(fasta)
-  if (!opt.model)
+  model = opts.model
+  if (!model)
     if (dna)
-      opt.model = "GTRGAMMA"
+      model = "GTRGAMMA"
     else
-      opt.model = "PROTGAMMAWAGF"
+      model = "PROTGAMMAWAGF"
     end
   end
-  aliHash = aliasFasta(fasta, nil, tname, opt.trim)
+  aliHash = aliasFasta(fasta, nil, tname, opts.trim)
   fasta2Phylip(tname, tname + ".phy")
-  system("cd #{tmpdir};#{raxml} -b 100 -m #{opt.model} -n #{name} -s #{tname}.phy")
+  if (opts.bootstrap > 0)
+    boot = "-b #{opts.seed} -N #{opts.bootstrap}"
+  else
+    boot = ""
+  end
+  system("cd #{tmpdir};#{raxml} -p #{opts.seed} #{boot} -m #{model} -n #{name} -s #{tname}.phy")
   tree = NewickTree.fromFile("#{tmpdir}/RAxML_result.#{name}")
   tree.unAlias(aliHash)
-  if (opt.outgroup)
-    outNode = tree.findNode(opt.outgroup)
+  if (opts.outgroup)
+    outNode = tree.findNode(opts.outgroup)
     if (outNode.nil?)
-      STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
-    elsif (!opt.unrooted)
+      STDERR.printf("taxon #{opts.outgroup} not found in tree!\n")
+    elsif (!opts.unrooted)
       tree = tree.reroot(outNode)
     end 
   else
@@ -91,4 +73,4 @@ ARGV.each {|fasta|
   tree.draw("#{name}_raxml.tree.pdf")
   File.link("#{tmpdir}/RAxML_info.#{name}", "#{name}_raxml.info")
   cleanup(tmpdir)
-}
+end

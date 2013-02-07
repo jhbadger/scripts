@@ -7,6 +7,13 @@ require 'apis_lib'
 require 'Newick'
 require 'fpdf'
 
+paup = `which paup`.chomp
+
+if paup == ""
+  STDERR << "I can't find paup on your path!\n"
+  exit(1)
+end
+
 origARGV = ARGV.dup # keep unparsed copy for grid
 
 ARGV.push("--help") if ARGV.empty?
@@ -27,7 +34,7 @@ if (opts.algorithm != "pars" && opts.algorithm != "nj" && opts.algorithm != "ml"
 end
 
 if (opts.project)
-  qsystem($0 + " " + origARGV.join(" ").gsub(/ -p [0-9]*/,""), opts.project)
+  qsystem($0 + " " + origARGV.join(" ").gsub(/ [\-p|\-\-project] [0-9]*/,""), opts.project)
   exit(0)
 end
 
@@ -75,7 +82,7 @@ opts.input.each do |fasta|
   out.print "savetrees from=1 to=1 format=phylip file=#{tmpdir}/out.tree;\n"
   out.print "quit;\n"
   out.close
-  system("paup #{tname}.nex")
+  system("#{paup} #{tname}.nex")
   tree = NewickTree.fromFile("#{tmpdir}/out.tree")
   tree.fixPhylip
   tree = estimateMLBranchLengths(tree, tname, tmpdir) if (opts.estimate)

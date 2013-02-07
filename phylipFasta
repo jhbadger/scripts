@@ -7,6 +7,14 @@ require 'apis_lib'
 require 'Newick'
 require 'fpdf'
 
+dnapars = `which dnapars`.chomp
+
+if dnapars == ""
+  STDERR << "I can't find phylip programs (e.g. dnapars) on your path!\n"
+  exit(1)
+end
+
+
 origARGV = ARGV.dup # keep unparsed copy for grid
 
 ARGV.push("--help") if ARGV.empty?
@@ -29,7 +37,7 @@ if (opts.algorithm != "pars" && opts.algorithm != "nj" && opts.algorithm != "ml"
 end
 
 if (opts.project)
-  qsystem($0 + " " + origARGV.join(" ").gsub(/ -p [0-9]*/,""), opts.project)
+  qsystem($0 + " " + origARGV.join(" ").gsub(/ [\-p|\-\-project] [0-9]*/,""), opts.project)
   exit(0)
 end
 

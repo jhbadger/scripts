@@ -1,64 +1,38 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
 require 'rubygems'
-require 'Phylogeny'
-require 'ostruct'
+require 'trollop'
+require 'bio'
+require 'apis_lib'
+require 'Newick'
 require 'fpdf'
 
-$VERBOSE = nil
+phyml = `which phyml`.chomp
 
-phyml = "phyml"
+if phyml == ""
+  STDERR << "I can't find phyml on your path!\n"
+  exit(1)
+end
 
-opt = OpenStruct.new
-opt.outgroup = nil
-opt.trim = false
-opt.project = nil
-opt.model = nil
-opt.data = nil
-opt.unrooted = false
+origARGV = ARGV.dup # keep unparsed copy for grid
 
-pflag = ARGV.index("-p")
-pflag = ARGV.index("--project") if (pflag.nil?)
-if (pflag)
-  opt.project = ARGV[pflag + 1]
-  ARGV[pflag] = ""
-  ARGV[pflag + 1] = ""
-  cmd = $0
-  ARGV.each {|arg|
-    cmd += (" " + arg.to_s) if (arg != "")
-  }
-  qsub = "qsub -P #{opt.project} -e stderr -cwd -o stdout "
-  system("#{qsub} \"#{cmd}\"")
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "fasta alignment(s)", :required =>true, :type =>:strings
+  opt :bootstrap, "number of bootstraps (or 0 to use fast SH-like branch supports)", :default=>0, :type=>:integer
+  opt :model, "model (default: GTR, WAG)", :type=>:string
+  opt :outgroup, "use specified taxon as outgroup", :type=>:string
+  opt :unrooted, "leave tree unrooted"
+  opt :project, "run on grid with project number specified", :type=>:string
+end
+
+if (opts.project)
+  qsystem($0 + " " + origARGV.join(" ").gsub(/ [\-p|\-\-project] [0-9]*/,""), opts.project)
   exit(0)
 end
 
-def cleanup(dir)
-  system("rm -rf #{dir}")	
-end
-
-ARGV.options {|opts|
-  opts.banner << " fasta [fasta...]"
-  opts.on("-o ", "--outgroup ", String, "outgroup") {|g| opt.outgroup = g}
-  opts.on("-m ", "--model ", String, "model (default GTR, WAG)") {|m| opt.model = m}
-  opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}
-  opts.on("-u", "--unrooted", "leave tree unrooted") {opt.unrooted = true}
-  opts.on("-t", "--trim", "trim alignment (default #{opt.trim})") {opt.trim = true}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
-}
-
-
-ARGV.each {|fasta|
+opts.input.each do |fasta|
   name = File.basename(fasta).split(".").first
   tmpdir = ENV["HOME"] + "/.tmp"
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
@@ -66,31 +40,38 @@ ARGV.each {|fasta|
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
   tname = tmpdir + "/" + name
   dna = isDNA?(fasta)
-  if (dna)
-    opt.model = "GTR" if (!opt.model)
-    opt.data = "nt"
-  else
-    opt.model = "WAG" if (!opt.model)
-    opt.data = "aa"
+  model = opts.model
+  if (!model)
+    if (dna)
+      model = "GTR"
+      data = "nt"
+    else
+      model = "WAG"
+      data = "aa"
+    end
   end
-  aliHash = aliasFasta(fasta, nil, tname, opt.trim)
+  aliHash = aliasFasta(fasta, nil, tname, opts.trim)
   fasta2Phylip(tname, tname + ".phy")
-  system("cd #{tmpdir};#{phyml} --no_memory_check -d #{opt.data} -m #{opt.model} -i #{tname}.phy")
+  if (opts.bootstrap > 0)
+    boot = "-b #{opts.bootstrap}"
+  else
+    boot = "-b -4"
+  end
+  system("cd #{tmpdir};#{phyml} --no_memory_check -d #{data} -m #{model} -i #{tname}.phy")
   tree = NewickTree.fromFile("#{tmpdir}/#{name}.phy_phyml_tree.txt")
   tree.unAlias(aliHash)
-  if (opt.outgroup)
-    outNode = tree.findNode(opt.outgroup)
+  if (opts.outgroup)
+    outNode = tree.findNode(opts.outgroup)
     if (outNode.nil?)
-      STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
+      STDERR.printf("taxon #{opts.outgroup} not found in tree!\n")
     else
       tree = tree.reroot(outNode)
     end 
-  elsif (!opt.unrooted)
+  elsif (!opts.unrooted)
     tree = tree.midpointRoot
   end  
   tree.write("#{name}_phyml.tree")
   tree.draw("#{name}_phyml.tree.pdf")
-  #system("sed -e 's/2011[0-9]*/v3.0/' #{tmpdir}/#{name}.phy_phyml_stats.txt > #{name}_phyml_stats.txt")
   system("cp #{tmpdir}/#{name}.phy_phyml_stats.txt #{name}_phyml_stats.txt")
   cleanup(tmpdir)
-}
+end
