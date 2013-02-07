@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+require 'rubygems' 
+require 'trollop'
+require 'fastercsv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "phone html file", :required=>true, :type=>:string
+end
+
+print ["Name","Pic", "Title", "Email", "Phone", "Loc", "Dept", "Boss"].to_csv
+File.new(opts.input).each do |line|
+	fields = line.chomp.split(/<|>/)
+	pic = fields[3].split("/").last.gsub("\"","")
+	name = fields[8]
+	title = fields[10]
+	email = fields[16]
+	phone = fields[26]
+	loc = fields[22]
+	dept = fields[30].gsub("&amp;", "and")
+	boss = fields[36]
+	print [name, pic, title, email, phone, loc, dept, boss].to_csv
+end
