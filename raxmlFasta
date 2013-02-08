@@ -57,7 +57,11 @@ opts.input.each do |fasta|
     boot = ""
   end
   system("cd #{tmpdir};#{raxml} -p #{opts.seed} #{boot} -m #{model} -n #{name} -s #{tname}.phy")
-  tree = NewickTree.fromFile("#{tmpdir}/RAxML_result.#{name}")
+  if (opts.bootstrap > 0)
+    tree = NewickTree.fromFile("#{tmpdir}/RAxML_bipartitions.#{name}")
+  else
+    tree = NewickTree.fromFile("#{tmpdir}/RAxML_result.#{name}")
+  end
   tree.unAlias(aliHash)
   if (opts.outgroup)
     outNode = tree.findNode(opts.outgroup)
