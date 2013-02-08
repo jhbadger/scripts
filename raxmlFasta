@@ -52,7 +52,7 @@ opts.input.each do |fasta|
   aliHash = aliasFasta(fasta, nil, tname, opts.trim)
   fasta2Phylip(tname, tname + ".phy")
   if (opts.bootstrap > 0)
-    boot = "-b #{opts.seed} -N #{opts.bootstrap}"
+    boot = "-f a -x #{opts.seed} -# #{opts.bootstrap}"
   else
     boot = ""
   end
