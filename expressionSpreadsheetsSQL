@@ -1,90 +1,53 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
-require 'ostruct'
+require 'rubygems'
+require 'trollop'
 require 'sqlite3'
 require 'GeneExpression'
-require 'csv'
+require 'fastercsv'
 
-opt = OpenStruct.new
-opt.org = "pt"
-opt.trina = false
-
-o = OptionParser.new
-o.banner << " rnaseq.sqlite experiment-name"
-o.on("-o ", "--organism ", String, "mapped organism (#{opt.org})") {|t|opt.org = t}
-o.on("-t", "--trina", "include Trina's RPKMs if available") {opt.trina = true}
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
-end
-if (ARGV.size != 2)
-  STDERR << o
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :database, "rnaseq sqlite database", :required=>true, :type=>:string
+  opt :experiment, "experiment name", :type=>:string
 end
 
-dbname, exp = ARGV
-
-db = SQLite3::Database.new(dbname)
-samples, desc = samplesFromExperiment(db, exp)
-rpkms = samplePivot("genome_rpkm", samples, "genome_rpkm.rpkm")
-
-if (samples.empty? || rpkms.empty?)
-	STDERR.printf("I can't find data for %s in the database!\n", exp)
-	exit(1)
-end
-
-trina = Hash.new
-if (opt.trina)
-	sql = "SELECT transcripts, sample, rpkm FROM trina WHERE experiment='#{exp}'"
-	db.execute(sql) do |row|
-		tran, sample, rpkm = row
-		rpkm = rpkm.to_f
-		trina[tran] = Hash.new if !trina[tran]
-	 	trina[tran][sample] = rpkm
+db = SQLite3::Database.new(opts.database)
+if (!opts.experiment || db.get_first_value("SELECT count(sample) FROM counts WHERE experiment=?",opts.experiment)==0)
+	STDERR << "You need to supply an experiment from the following:\n"
+	db.execute("SELECT DISTINCT experiment FROM counts").each do |row|
+		STDERR << row.first << "\n"
 	end
-end
-
-sql = "SELECT genome_rpkm.transcripts, #{rpkms}, "
-sql += "#{ann_headers.to_csv.chomp} FROM genome_rpkm "
-sql += "LEFT JOIN #{opt.org}_ann ON genome_rpkm.transcripts=#{opt.org}_ann.transcripts "
-sql += "WHERE genome_rpkm.experiment='#{exp}' GROUP BY genome_rpkm.transcripts"
-
-samNames = Hash.new
-samples.each do |sample|
-	samNames[sample] = sample
-	samNames[sample] += " " + desc[sample] if desc[sample] != sample
-end
-headers = ["Transcript"] + samples.map{|k| samNames[k] + " RPKM"}
-headers += samples.map{|k| samNames[k] + " rank"}
-tpos = headers.length 
-headers += samples.map{|k| samNames[k] + " Trina RPKM"} if (opt.trina) 
-headers += samples.map{|k| samNames[k] + " Trina rank"} if (opt.trina)
-headers += ann_headers
-print headers.to_csv
-
-db.execute(sql) do |row|
-	samples.size.times do |i|
-		row[i + 1] = row[i + 1].to_f # make nil rpkms 0
-	end
-	rvalues = row[1..samples.size]
-	rank = rankValues(rvalues)
-	row.insert(1 + samples.size, rank)
-	row.flatten!
-	if (opt.trina)
-		if (trina[row[0]])
-			tvalues = samples.map{|k| trina[row[0]][k].to_f}
-			trank = rankValues(tvalues)
-		else
-			tvalues = [nil]*samples.size
-			trank = [nil]*samples.size
+else
+	org = db.get_first_value("SELECT org FROM sample_desc WHERE experiment=?", opts.experiment)
+	ann = annFromOrg(db, org)
+	lengths = gene_lengths(db, org)
+	samples, desc = samplesFromExperiment(db, opts.experiment)
+	counts, total = countsFromExperiment(db, opts.experiment)
+	header = ["Transcript"]
+	["RPKM","Counts","Rank"].each do |label|
+		samples.each do |sample|
+			header.push(sample + " " + desc[sample] + " " + label)
 		end
-		row.insert(tpos, tvalues + trank)
-		row.flatten!
 	end
-	print row.to_csv
+	header += ann_headers
+	STDERR << "Writing Spreadsheet...\n"
+	print header.to_csv
+	ann.keys.sort.each do |transcript|
+		rcount = Hash.new
+		row = [transcript]
+		samples.each do |sample|
+			rpkm = gene_rpkm(counts[sample][transcript].to_i, total[sample], lengths[transcript])
+			row.push(rpkm)
+		end
+		samples.each do |sample|
+			row.push(counts[sample][transcript])
+			rcount[sample] = counts[sample][transcript]
+		end
+		row += rankValues(rcount)
+		row += ann[transcript]
+		print row.to_csv
+	end
 end
 db.close

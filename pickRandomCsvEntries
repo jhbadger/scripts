@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 
+require 'rubygems'
 require 'trollop'
 
 ARGV.push("--help") if ARGV.empty?

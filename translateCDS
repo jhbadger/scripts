@@ -1,35 +1,25 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
-require 'ostruct'
 require 'rubygems'
 require 'ZFile'
 require 'bio'
+require 'trollop'
 
-opt = OpenStruct.new
-o = OptionParser.new
-o.banner << " cds.txt fasta [...fasta...]"
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :cds, "Input cds file", :required=>true, :type=>:string
+  opt :input, "Input fasta file(s)", :required=>true, :type=>:strings
+  opt :gencode, "Genetic code to use", :default=>11, :type=>:integer
+  opt :transcript, "Output transcripts, not peptides"
 end
-if (ARGV.size < 2)
-  STDERR << o
-  exit(1)
-end
-
 
 starts = Hash.new
 stops = Hash.new
 
-cds = ARGV.shift
-
-ARGV.each do |fasta|
+opts.input.each do |fasta|
   Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
-    File.new(cds).each do |line|
+    File.new(opts.cds).each do |line|
       name, start, stop, comment = line.chomp.split(" ")
       next if name != seq.entry_id
       start = start.to_i
@@ -39,7 +29,17 @@ ARGV.each do |fasta|
       else
         subseq = seq.naseq.subseq(stop, start).complement
       end
-      print subseq.translate(1).to_fasta(seq.entry_id + " " + comment.to_s, 60)
+      if (comment)
+        header = comment
+      else
+        header = seq.entry_id + "_" + start.to_s + "_" + stop.to_s
+      end
+      if (opts.transcript)
+        outseq = subseq.upcase
+      else
+        outseq = subseq.translate(opts.gencode)
+      end
+      print outseq.to_fasta(header, 60)
     end
   end
 end

@@ -28,6 +28,10 @@ end
 File.new(inF).each do |line|
   if (line =~/>/)
     id = line[1..line.length].split(" ").first
+    if (!realNames[id])
+      STDERR << "Error: No alias for " << id << "\n"
+      exit(1)
+    end
     line =  ">" + realNames[id]+"\n"
   end
   print line
