@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+require 'sqlite3'
+require 'GeneExpression'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :counts, "counts file(s)", :required=>true, :type=>:strings
+  opt :database, "rnaseq sqlite database", :required=>true, :type=>:string
+  opt :organism, "mapped organism", :default=>"pt", :type=>:string  
+end
+
+db = SQLite3::Database.new(opts.database)
+
+opts.counts.each do |file|
+	loadCounts(file, db, opts.organism)
+end
