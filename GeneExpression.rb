@@ -79,10 +79,15 @@ def ann_headers
 end
 
 
-#rank by size list of values
-def rankValues(values)
-  ranks = Hash[values.sort.uniq.reverse.each_with_index.to_a]
-  values.collect{ |v| ranks[v] + 1 }
+#rank hash by values descending
+def rankHash(standings)
+  ranks = Hash.new
+  rank = 1
+  standings.keys.sort{|x,y| standings[y]<=>standings[x]}.each do |key|
+    ranks[key] = rank
+    rank += 1
+  end
+  ranks
 end
 
 

@@ -45,7 +45,10 @@ else
 			row.push(counts[sample][transcript])
 			rcount[sample] = counts[sample][transcript]
 		end
-		row += rankValues(rcount)
+		ranks = rankHash(rcount)
+		samples.each do |sample|
+			row.push(ranks[sample])
+		end
 		row += ann[transcript]
 		print row.to_csv
 	end
