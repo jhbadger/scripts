@@ -12,7 +12,7 @@ class GeneExpression
       u = rand
       p = p *u
     end
-    return k -1
+    k -1
   end
   
   # calculate Strekel (2000) R value
@@ -25,7 +25,7 @@ class GeneExpression
         r += (counts[i]*Math.log((counts[i])/(total[i]*freq)))
       end
     end
-    return (100*r).to_i/100.0 # round nicely
+    (100*r).to_i/100.0 # round nicely
   end
 end
 
@@ -45,15 +45,15 @@ def countsFromExperiment(db, experiment)
   STDERR << "Loading counts from database...\n"
   sql = "SELECT sample, transcript, count FROM counts WHERE experiment=? GROUP BY sample, transcript"
   counts = Hash.new
-  total = Hash.new
+  totals = Hash.new
   db.execute(sql, experiment) do |row|
     sample, transcript, count = row
     counts[sample] = Hash.new if !counts[sample]
-    total[sample] = 0 if !total[sample]
+    totals[sample] = 0 if !totals[sample]
     counts[sample][transcript] = count.to_i
-    total[sample] += count.to_i
+    totals[sample] += count.to_i
   end
-  return counts, total
+  return counts, totals
 end 
 
 # return annotation info for organism
@@ -127,4 +127,20 @@ end
 # compute gene-based rpkm from counts, total_mapped_reads, gene_exons_length
 def gene_rpkm(counts, total_mapped_reads, gene_length)
   return sprintf("%.2f",(10e8*counts.to_f)/(total_mapped_reads*gene_length)).to_f
-end 
+end
+
+# compute array of gene-based rpkms (and maximums) from counts, total, gene lengths
+def rpkmsFromCounts(counts, totals, lengths)
+  STDERR << "Calculating RPKMs...\n"
+  rpkms = Hash.new
+  maxrpkms = Hash.new
+  counts.keys.each do |sample|
+    rpkms[sample] = Hash.new if !rpkms[sample]
+    counts[sample].keys.each do |transcript|
+      maxrpkms[transcript] = 0 if !maxrpkms[transcript]
+      rpkms[sample][transcript] = gene_rpkm(counts[sample][transcript].to_i, totals[sample], lengths[transcript])
+      maxrpkms[transcript] = rpkms[sample][transcript] if rpkms[sample][transcript] > maxrpkms[transcript]
+    end
+  end
+  return rpkms, maxrpkms
+end

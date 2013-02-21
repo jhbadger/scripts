@@ -24,8 +24,9 @@ else
 	ann = annFromOrg(db, org)
 	lengths = gene_lengths(db, org)
 	samples, desc = samplesFromExperiment(db, opts.experiment)
-	counts, total = countsFromExperiment(db, opts.experiment)
-	header = ["Transcript"]
+	counts, totals = countsFromExperiment(db, opts.experiment)
+	rpkms, maxrpkms = rpkmsFromCounts(counts, totals, lengths)
+	header = ["Transcript", "Max RPKM"]
 	["RPKM","Counts","Rank"].each do |label|
 		samples.each do |sample|
 			header.push(sample + " " + desc[sample] + " " + label)
@@ -34,12 +35,11 @@ else
 	header += ann_headers
 	STDERR << "Writing Spreadsheet...\n"
 	print header.to_csv
-	ann.keys.sort.each do |transcript|
+	ann.keys.sort {|x, y| maxrpkms[y] <=> maxrpkms[x]}.each do |transcript|
 		rcount = Hash.new
-		row = [transcript]
+		row = [transcript, maxrpkms[transcript]]
 		samples.each do |sample|
-			rpkm = gene_rpkm(counts[sample][transcript].to_i, total[sample], lengths[transcript])
-			row.push(rpkm)
+			row.push(rpkms[sample][transcript])
 		end
 		samples.each do |sample|
 			row.push(counts[sample][transcript])
