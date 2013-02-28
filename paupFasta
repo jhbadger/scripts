@@ -34,7 +34,8 @@ if (opts.algorithm != "pars" && opts.algorithm != "nj" && opts.algorithm != "ml"
 end
 
 if (opts.project)
-  qsystem($0 + " " + origARGV.join(" ").gsub(/ [\-p|\-\-project] [0-9]*/,""), opts.project)
+  cmd = cmdLine($0, opts, [:project])
+  qsystem(cmd, opts.project)
   exit(0)
 end
 
