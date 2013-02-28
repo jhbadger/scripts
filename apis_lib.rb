@@ -665,6 +665,17 @@ def qsystem(cmd, project)
   system("#{qsub} \"#{cmd}\"")
 end
 
+# generate command line from trollop opts, minus unwanted options
+def cmdLine(prog, opts, exclude)
+    cmd = prog
+    keys = opts.keys - exclude - [:help]
+    keys.each do |key|
+      k = key.to_s
+      cmd += " --#{key} #{opts[key]}" if !k.index("_given") && opts[key]
+    end
+    cmd
+end
+
 # gets rid of a directory
 def cleanup(dir)
   system("rm -rf #{dir}") 

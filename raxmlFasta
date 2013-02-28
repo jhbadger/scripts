@@ -20,7 +20,7 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "fasta alignment(s)", :required =>true, :type =>:strings
-  opt :bootstrap, "number of bootstraps (or 0 to not bootstrap)", :default=>100, :type=>:integer
+  opt :bootstrap, "number of bootstraps (or 0 to not bootstrap)", :default=>0, :type=>:integer
   opt :model, "model (default: GTRGAMMA, PROTGAMMAWAGF)", :type=>:string
   opt :outgroup, "use specified taxon as outgroup", :type=>:string
   opt :seed, "seed for bootstrap analysis", :type=>:integer, :default=>1234
@@ -29,7 +29,8 @@ opts = Trollop::options do
 end
 
 if (opts.project)
-  qsystem($0 + " " + origARGV.join(" ").gsub(/ [\-p|\-\-project] [0-9]*/,""), opts.project)
+  cmd = cmdLine($0, opts, [:project])
+  qsystem(cmd, opts.project)
   exit(0)
 end
 
