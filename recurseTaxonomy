@@ -1,29 +1,38 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
+require 'trollop'
 require 'mysql'
 
-if (ARGV.size < 1)
-  STDERR.printf("Usage: %s [-v] num [usedTaxa.tab]\n", File.basename($0))
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "tax num file", :type=>:string, :required=>true
+  opt :usedTaxa, "use usedTaxa.tab rather than phylodb mysql for info"
+  opt :nodes, "use NCBI nodes.dmp", :type=>:string
+  opt :names, "use NCBI names.dmp (with nodes.dmp)", :type=>:string
+  opt :verbose, "verbose messaging"
 end
 
-if (ARGV.first == "-v")
-  verbose = true
-  ARGV.shift
-else
-  verbose = false
-end
-
-num, db = ARGV
-
-if (db.nil?)
+if (!opts.usedTaxa && !opts.nodes)
   db = Mysql.new("mysql-lan-pro", "access", "access", "phylodb")
-else
+elsif (opts.usedTaxa)
   tax = Hash.new
-  File.new(db).each do |line|
+  File.new(opts.usedTaxa).each do |line|
     current, name, parent, rank = line.chomp.split("\t")
     tax[current.to_i] = [name, parent.to_i, rank]
+  end
+  db = tax
+elsif (opts.nodes)
+  tax = Hash.new
+  names = Hash.new
+  File.new(opts.names).each do |line|
+    num, name = line.chomp.split("\t|\t")
+    names[num.to_i] = name
+  end
+  File.new(opts.nodes).each do |line|
+    current, parent, rank = line.chomp.split("\t|\t")
+    tax[current.to_i] = [names[current.to_i], parent.to_i, rank]
   end
   db = tax
 end
@@ -43,7 +52,17 @@ def recurseTaxonomy(db, current, verbose)
 end
 
 
-id = num.to_i
+if (opts.file)
+  ids = []
+  File.new(opts.input).each do |line|
+    ids.push(line.chomp.to_i)
+  end
+else
+  ids = opts.input
+end
 
-
-print recurseTaxonomy(db, id, verbose).join("; ") + "\n"
+File.new(opts.input).each do |line|
+  name, taxid = line.chomp.split(" ")
+  taxid = name if !taxid
+  print name + "\t " + recurseTaxonomy(db, taxid.to_i, opts.verbose).join("; ") + "\n"
+end

@@ -1,0 +1,21 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+	banner File.basename($0)
+  	opt :input, "Input fasta file", :required=>true, :type=>:string
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+	name, rest = seq.definition.split(" ", 2)
+	sp = rest.split("{").last.gsub("}","")
+	sp.tr!(" ","_")
+	sp.tr!("().{},;","")
+	header = name + "__" + sp
+	print seq.seq.upcase.to_fasta(header, 60)
+end

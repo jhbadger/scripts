@@ -1,47 +1,65 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'optparse'
 require 'rubygems'
-require'bio'
-include Bio
-opt = OpenStruct.new
+require 'bio'    
+require 'trollop'
 
-ARGV.options {|opts|
-  opts.banner << " aligned-fasta aligned-fasta [...aligned-fasta]"
-  #opts.on(nil, "--report", "run apisReport when done") {|t| opt.report = t}    
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input alignment file(s)", :required=>true, :type=>:strings
+  opt :phylip, "use PHYLIP format for input"
+  opt :amphora2, "fix amphora2 style headers"
+end
+
+def fix_amphora2(key)
+  if key =~/-NC/
+    key = key.split("-").last
+  elsif key=~/_[0-9]*$/
+    key = key.split("_")[0..-2].join("_")
   end
-  if (ARGV.size < 2)
-    STDERR.puts opts
-    exit(1)
-  end
-}
+end
 
-seqs = Hash.new
-first = ARGV.shift
-FlatFile.new(FastaFormat, File.new(first)).each {|seq|
-  seqs[seq.entry_id] = seq.seq
-}
+if opts.phylip
+  Alignment = Bio::Phylip::PhylipFormat
+else
+  Alignment = Bio::Alignment::MultiFastaFormat
+end
 
+keys = Alignment.new(File.read(opts.input.first)).alignment.keys
 
-ARGV.each {|fasta|
-  FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|
-    id = seq.entry_id
-    if (seqs[id].nil?)
-      STDERR.printf("Error: %s not in all alignments. Aborting\n", id)
-      exit(1)
+keys = keys.collect{|x| fix_amphora2(x)} if (opts.amphora2)
+
+bad = []
+multi = Hash.new
+keys.each do |key|
+  multi[key] = ""
+end
+
+opts.input.each do |file|
+  aln = Alignment.new(File.read(file)).alignment
+  seen = Hash.new
+  aln.keys.each do |key|
+    if (opts.amphora2)
+      goodkey = fix_amphora2(key)
     else
-      seqs[id] += seq.seq
+      goodkey = key
     end
-  }
-}
+    if (keys.include?(goodkey))
+      multi[goodkey] += aln[key]
+      seen[goodkey] = true
+    else
+      #STDERR << goodkey << " not in keys. Removing...\n"
+      bad.push(goodkey)
+    end
+  end
+  missing = keys - seen.keys
+  STDERR << missing.length << " from " << file << "\n"
+  keys -= missing
+end
 
-seqs.keys.sort.each {|id|
-  print Sequence::AA.new(seqs[id]).to_fasta(id, 60)
-}
+finalkeys = keys - bad
+
+finalkeys.each do |key|
+  print Bio::Sequence::AA.new(multi[key]).to_fasta(key, 60)
+end

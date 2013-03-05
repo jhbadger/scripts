@@ -1,80 +1,27 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
-require 'ostruct'
 require 'rubygems'
-require 'bio'
-require 'Phylogeny'
+require 'bio'    
+require 'trollop'
 
-opt = OpenStruct.new
-o = OptionParser.new
-opt.file = nil
-opt.min = 0
-opt.max = 100
-
-o.banner << " fasta [..fasta...]"
-o.on("-f ", "--file ", String, "file of seqs to deal with") {|f| opt.file = f}
-o.on("-m ", "--min ", Integer, "minimum identity to count (#{opt.min})") {|m| opt.min = m}
-o.on("-x ", "--max ", Integer, "maximum identity to count (#{opt.max})") {|x| opt.max = x}
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
-end
-if (ARGV.size < 1)
-  STDERR << o
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input afa files", :required=>true, :type=>:strings
 end
 
-
-align = Hash.new
-taxa = []
-files = ARGV
-
-if (opt.file)
-  files = []
-  File.new(opt.file).each do |line|
-    fields = line.chomp.split(" ")
-    files.push(fields.first + ".dfa")
-  end
-end
-
-
-counted = 0
-totIdent = 0
-files.each {|file|
-  ident = calcPercentIdent(file)
-  next if (ident <= opt.min || ident >= opt.max)
-  counted += 1
-  totIdent += ident
-  STDERR << "Processed " << counted << " alignments (" << 
-    counted*100/files.size << "%)...\n" if (counted % 100 == 0)
-  if (taxa.empty?)
-    Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
-      taxa.push(seq.entry_id)
-      align[seq.entry_id] = ""
-    end
-  end
-  seen = Hash.new
+peps = Hash.new
+opts.input.each do |file|
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
-    if (!taxa.include?(seq.entry_id))
-      STDERR << "Error: odd taxon " << seq.entry_id << " in " << file << "\n"
-      exit(1)
-    end
-    seen[seq.entry_id] = true
-    align[seq.entry_id] += seq.seq
+    peps[seq.entry_id] = Hash.new if !peps[seq.entry_id]
+    peps[seq.entry_id][file] = seq.seq
   end
-  taxa.each do |taxon|
-    if (!seen[taxon])
-      STDERR << taxon << " missing in " << file << "\n"
-      exit(1)
-    end
-  end
-}
-STDERR << "Picked " << counted << " alignments with average identity " << totIdent / counted << "\n"
+end
 
-taxa.each do |taxon|
-  print Bio::Sequence::AA.new(align[taxon]).to_fasta(taxon, 60)
+peps.keys.sort.each do |sp|
+  printf(">%s\n",sp)
+  peps[sp].keys.sort.each do |pep|
+    print peps[sp][pep].seq
+  end
+  printf("\n")
 end

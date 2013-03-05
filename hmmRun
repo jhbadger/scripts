@@ -35,8 +35,14 @@ File.new(cut).each do |line|
   names[hmm]=name
 end
 
+hmmRun = `which hmm3search`
+if (hmmRun == "")
+  hmmRun = "hmmsearch"
+end
+
+
 cutoff.keys.each do |hmm|
-  cmd = "hmm3search -T #{cutoff[hmm]} --tblout #{names[hmm]}.tbl #{db}/#{hmm}.HMM #{pep}"
+  cmd = "#{hmmRun} -T #{cutoff[hmm]} --tblout #{names[hmm]}.tbl #{db}/#{hmm}.HMM #{pep}"
   if (opt.project.nil?)
     STDERR.printf("Processing #{names[hmm]}...\n")
     system("#{cmd} > /dev/null")

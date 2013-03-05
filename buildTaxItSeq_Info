@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+require 'fastercsv'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :taxids, "taxids.txt", :required=>true, :type=>:string
+end
+
+taxids = Hash.new
+File.new(opts.taxids).each do |line|
+	num, name = line.chomp.split(" # ")
+	taxids[name] = num.to_i
+end
+
+print ["seqname","accession","tax_id","species_name","is_type"].to_csv
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+	sp = seq.entry_id.split("__").last.gsub("_", " ")
+	while !taxids[sp] && sp != ""
+		fields = sp.split(" ")
+		fields.pop
+		sp = fields.join(" ")
+	end
+	if taxids[sp]
+		print [seq.entry_id, seq.entry_id, taxids[sp], sp, "FALSE"].to_csv
+	else
+		STDERR << "I can't find taxid for " << seq.entry_id << "\n"
+	end
+end

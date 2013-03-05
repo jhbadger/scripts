@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+require 'fastercsv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :dir, "core-hmm-dir", :required=>true, :type=>:string
+  opt :peps, "Input peptides files (one per species)", :required=>true, :type=>:strings
+end
+
+thresholds = Hash.new
+models = Hash.new
+File.new(opts.dir+"/core.txt").each do |line|
+  gene, model, thresh = line.chomp.split(" ")
+  thresholds[gene] = thresh
+  models[gene] = model
+end
+
+hmmRun = `which hmm3search`
+if (hmmRun == "")
+  hmmRun = "hmmsearch"
+end
+
+shared = Hash.new
+hits = Hash.new
+opts.peps.each do |pep|
+  hits[pep] = Hash.new
+  STDERR << "Processing " << pep << "...\n"
+  seqs = Hash.new
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each do |seq|
+    seqs[seq.entry_id] = seq
+  end
+  models.keys.each do |gene|
+    tbl = "#{pep}.#{gene}.tbl"
+    system("#{hmmRun} --tblout #{tbl} -T #{thresholds[gene]} #{opts.dir}/#{models[gene]}.HMM #{pep} > /dev/null")
+    count = 0
+    File.new(tbl).each do |line|
+      next if line=~/^#/
+      hit = line.chomp.split(" ").first
+      hits[pep][gene] = seqs[hit].seq
+      count += 1
+    end
+    if (count == 1)
+      shared[gene] = 0 if !shared[gene]
+      shared[gene] += 1
+    elsif (count > 1)
+      hits[pep].delete(gene) # remove multicopy genes
+    end
+    File.unlink(tbl) if File.exists?(tbl)
+  end
+  STDERR << pep << " has " << hits[pep].keys.size << " core genes: " << hits[pep].keys.sort.join(" ") << "\n"
+end
+conserved = shared.keys.reject{|x| shared[x] != opts.peps.size}.sort
+STDERR << conserved.size << " conserved across all organisms: " << conserved.join(" ") << "\n"
+conserved.each do |gene|
+  out = File.new(gene + ".fa","w")
+  hits.keys.sort.each do |pep|
+    out.printf(">%s\n%s\n", pep, hits[pep][gene])
+  end
+  out.close
+  system("muscle -in #{gene}.fa -out #{gene}.afa -quiet")
+  File.unlink(gene + ".fa") if File.exists?(gene + ".fa")
+end
