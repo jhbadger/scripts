@@ -13,6 +13,7 @@ opts = Trollop::options do
 end
 
 makefile = ENV['HOME'] + "/lib/makefiles/bwa.makefile"
+bwa = `which bwa`.chomp
 
 if !File.exists?(makefile)
 	STDERR << makefile << " not found!\n"
@@ -29,7 +30,7 @@ while(!reads.empty?)
 		STDERR << r1 << " and " << r2 << " do not share a common library!\n"
 		exit(1)
 	else
-		cmd = "make -f #{makefile} GENOME=#{opts.reference} LIB=#{lib1}"
+          cmd = "make -f #{makefile} GENOME=#{opts.reference} LIB=#{lib1} BWA=#{bwa}"
 		l = "memory=12G"
 		l = opts.queue + "," + l if opts.queue != "default"
 		qsub = "qsub -P #{opts.project} -l #{l} -cwd \"#{cmd}\""
