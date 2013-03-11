@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "reads to map", :required=>true, :type=>:strings
+  opt :reference, "reference to map to", :required=>true, :type=>:string
+  opt :project, "grid project number", :required=>true, :type=>:string
+end
+
+makefile = ENV['HOME'] + "/lib/makefiles/bwa.makefile"
+
+if !File.exists?(makefile)
+	STDERR << makefile << " not found!\n"
+	exit(1)
+end
+
+reads = opts.input.dup
+while(!reads.empty?)
+	r1 = reads.shift
+	r2 = reads.shift
+	lib1 = r1.split("_1").first
+	lib2 = r2.split("_2").first
+	if lib1 != lib2
+		STDERR << r1 << " and " << r2 << " do not share a common library!\n"
+		exit(1)
+	else
+		cmd = "make -f #{makefile} GENOME=#{opts.reference} LIB=#{lib1}"
+		qsub = "qsub -P #{opts.project} -l memory=7G -cwd \"#{cmd}\""
+		print qsub + "\n"
+	end
+end
