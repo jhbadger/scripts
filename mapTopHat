@@ -12,8 +12,7 @@ opts = Trollop::options do
   opt :queue, "grid queue", :default=>"default", :type=>:string
 end
 
-makefile = ENV['HOME'] + "/lib/makefiles/bwa.makefile"
-bwa = `which bwa`.chomp
+makefile = ENV['HOME'] + "/lib/makefiles/tophat.makefile"
 
 if !File.exists?(makefile)
 	STDERR << makefile << " not found!\n"
@@ -30,7 +29,7 @@ while(!reads.empty?)
 		STDERR << r1 << " and " << r2 << " do not share a common library!\n"
 		exit(1)
 	else
-        cmd = "make -f #{makefile} GENOME=#{opts.reference} LIB=#{lib1} BWA=#{bwa}"
+        cmd = "make -f #{makefile} GENOME=#{opts.reference} LIB=#{lib1}"
         if (opts.project)
 			l = "memory=12G"
 			l = opts.queue + "," + l if opts.queue != "default"
