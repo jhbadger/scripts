@@ -35,7 +35,7 @@ else
 	header += ann_headers
 	STDERR << "Writing Spreadsheet...\n"
 	print header.to_csv
-	ann.keys.sort {|x, y| maxrpkms[y] <=> maxrpkms[x]}.each do |transcript|
+	maxrpkms.keys.sort {|x, y| maxrpkms[y] <=> maxrpkms[x]}.each do |transcript|
 		rcount = Hash.new
 		row = [transcript, maxrpkms[transcript]]
 		samples.each do |sample|
@@ -49,7 +49,7 @@ else
 		samples.each do |sample|
 			row.push(ranks[sample])
 		end
-		row += ann[transcript]
+		row += ann[transcript] if ann[transcript]
 		print row.to_csv
 	end
 end

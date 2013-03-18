@@ -59,10 +59,12 @@ end
 # return annotation info for organism
 def annFromOrg(db, org)
   STDERR << "Loading annotation from database...\n"
-  sql = "SELECT transcript, jgi,ncbi,annotation,swissprot,swissprot_annotation,"
-  sql += "kegg,kegg_def,gos_cluster,phytax_cluster,phytax,ko,ko_def,pfam,pfam_def,"
-  sql += "pfam2go,tfam,tfam_def,tfam2go,cog,cog_def,plant,animal FROM annotation "
-  sql += "WHERE org=?"
+  sql = "SELECT transcript, kegg_hit, kegg_desc, kegg_pathway, ko, ko_desc, "
+  sql += "ko_pathway, ec, uniprot, organelle, organelle_id, organelle_species, "
+  sql += "organelle_evalue, best_hit, best_hit_gos_core_cluster, best_hit_species, "
+  sql += "best_hit_taxon_id, best_hit_group, pfams, pfams_desc, tigrfams, "
+  sql += "tigrfams_desc, kog, kog_desc, kog_class, kog_group, transmembrane_domains "
+  sql += "FROM annotation WHERE org=?"
   ann = Hash.new
   db.execute(sql, org).each do |row|
     transcript = row.shift
@@ -73,9 +75,13 @@ end
 
 #return set of fields in annotation table
 def ann_headers
-  ["jgi","ncbi","annotation","swissprot","swissprot_annotation","kegg","kegg_def",
-    "gos_cluster","phytax_cluster","phytax","ko","ko_def","pfam","pfam_def",
-    "pfam2go","tfam","tfam_def","tfam2go","cog","cog_def","plant","animal"]
+  ["kegg hit", "kegg desc", "kegg pathway", 
+    "ko", "ko desc", "ko pathway", "ec", "uniprot", "organelle",
+    "organelle id", "organelle_species", "organelle evalue",
+    "best hit", "best hit gos core cluster", "best hit species",
+    "best hit taxon id", "best hit group", "pfams", "pfams desc",
+    "tigrfams", "tigrfams desc", "kog", "kog desc", "kog class",
+    "kog group", "transmembrane domains"]
 end
 
 
@@ -117,16 +123,16 @@ end
 # return length of genes for organism
 def gene_lengths(db, org)
   lengths = Hash.new
-  db.execute("SELECT transcript, sum(abs(1+start-stop)) FROM gtf WHERE org = ? GROUP BY transcript", org).each do |row|
+  db.execute("SELECT transcript, length FROM gen_length WHERE org = ?", org).each do |row|
     transcript, len = row
-    lengths[transcript] = len
+    lengths[transcript] = len.to_i
   end
   lengths
 end
 
 # compute gene-based rpkm from counts, total_mapped_reads, gene_exons_length
 def gene_rpkm(counts, total_mapped_reads, gene_length)
-  return sprintf("%.2f",(10e8*counts.to_f)/(total_mapped_reads*gene_length)).to_f
+  return sprintf("%.2f",(1e9*counts.to_f)/(total_mapped_reads*gene_length)).to_f
 end
 
 # compute array of gene-based rpkms (and maximums) from counts, total, gene lengths

@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :ann, "RNASeq Annotation table", :type=>:string, :required=>true
+  opt :kog, "KOG hits table", :type=>:string, :required=>true
+  opt :tmhmm, "TMHMM hits output", :type=>:string, :required=>true
+  opt :org, "Organism abbrevation", :type=>:string, :required=>true
+end
+
+kog = Hash.new
+File.new(opts.kog).each do |line|
+	next if line=~/^#/
+	fields = line.chomp.split("\t")
+	kog[fields.shift] = fields
+end
+
+tmhmm = Hash.new
+File.new(opts.tmhmm).each do |line|
+	if line =~ /Number of predicted TMHs/
+		fields = line.chomp.split(" ")
+		tmhmm[fields[1]] = fields.last
+	end
+end
+
+File.new(opts.ann).each do |line|
+	next if line=~/^orf_id/
+	fields = line.chomp.split("\t")
+	row  = [opts.org] + fields
+	if (kog[fields.first])
+		row += kog[fields.first]
+	else
+		row += [""]*5
+	end
+	if (tmhmm[fields.first])
+		row[27] = [tmhmm[fields.first]]
+	else
+		row[27] = ""
+	end
+	print row.join("\t")+"\n"
+end
