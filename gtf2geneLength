@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input gtf file", :required=>true, :type=>:string
+  opt :org, "Organism abbreivation", :required=>true, :type=>:string
+end
+
+tlen = Hash.new
+File.new(opts.input).each do |line|
+  fields = line.chomp.split("\t")
+  next if fields[2] != "exon"
+  s, e = fields[3].to_i, fields[4].to_i
+  name = fields.last.split(" ").last.tr(";\"","")
+  len = 1 + (e-s).abs
+  tlen[name] = 0 if !tlen[name]
+  tlen[name] += len
+end
+
+tlen.keys.sort.each do |key|
+  printf("%s\t%s\t%d\n", opts.org, key, tlen[key])
+end

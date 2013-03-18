@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 
+$VERBOSE=nil
+
 # routine to parse dc_show output
 def parseShow(output, server, user, pass)
   status = ""
