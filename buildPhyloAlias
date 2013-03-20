@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input taxomy file", :required=>true, :type=>:string
+end
+
+File.new(opts.input).each do |line|
+	name, taxonomy = line.chomp.split("\t")
+	taxonomy = taxonomy.split("; ")
+	sp = nil
+	phylum = nil
+	begin
+		sp = taxonomy.last.tr(" ","_").tr("\"'(){}","")
+		phylum = taxonomy[1].split(" ").first.tr("\"'","").capitalize
+	rescue
+		next
+	end
+	printf("%s\t%s__%s__%s\n", name, name, phylum, sp)
+end

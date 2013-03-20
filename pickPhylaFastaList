@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :number, "number per phyla", :type=>:integer, :default=>3
+end
+
+def pickSubSample(list, num)
+	if (list.size <= num)
+		list
+	else
+		sublist = []
+		while (sublist.size < num)
+			x = rand(list.size)
+			sublist.push(list[x]) if !sublist.include?(list[x])
+		end
+		sublist
+	end
+end
+
+phyla = Hash.new
+File.new(opts.input).each do |line|
+	next if line !~/^>/
+	line = line.tr(">","")
+	name, phylum = line.split("__")
+	if !phyla[phylum]
+		phyla[phylum] = []
+	else
+		phyla[phylum].push(line.chomp)
+	end
+end
+
+phyla.keys.each do |phylum|
+	pickSubSample(phyla[phylum], opts.number).each do |line|
+		print line + "\n"
+	end
+end
+
