@@ -2,6 +2,7 @@
 
 require 'rubygems'
 require 'trollop'
+require 'bio'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -10,13 +11,19 @@ opts = Trollop::options do
   opt :kog, "KOG hits table", :type=>:string, :required=>true
   opt :tmhmm, "TMHMM hits output", :type=>:string, :required=>true
   opt :org, "Organism abbrevation", :type=>:string, :required=>true
+  opt :experiment, "experiment (needed if counts provided)", :type=>:string
+  opt :contigs, "optional assembly contigs to generate gene lengths", :type=>:string
 end
 
 kog = Hash.new
 File.new(opts.kog).each do |line|
 	next if line=~/^#/
 	fields = line.chomp.split("\t")
-	kog[fields.shift] = fields
+	transcript = fields[0]
+	kog[transcript] = fields[2..5]
+	while kog[transcript].length < 4
+		kog[transcript].push("")
+	end
 end
 
 tmhmm = Hash.new
@@ -27,19 +34,55 @@ File.new(opts.tmhmm).each do |line|
 	end
 end
 
-File.new(opts.ann).each do |line|
-	next if line=~/^orf_id/
-	fields = line.chomp.split("\t")
-	row  = [opts.org] + fields
-	if (kog[fields.first])
-		row += kog[fields.first]
-	else
-		row += [""]*5
+if (opts.contigs)
+	lfile = File.new(opts.org + "_genlen.txt", "w")
+	Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.contigs)).each do |seq|
+		lfile.print [opts.org, seq.entry_id, seq.length].join("\t")+"\n"
 	end
-	if (tmhmm[fields.first])
-		row[27] = [tmhmm[fields.first]]
-	else
-		row[27] = ""
-	end
-	print row.join("\t")+"\n"
+	lfile.close
 end
+
+
+fheaders = nil
+sheaders = nil
+cfile = nil
+afile = File.new(opts.org + "_ann.txt", "w")
+File.new(opts.ann).each do |line|
+	fields = line.chomp.split("\t")
+	fields, counts = fields[0..21], fields[22..-1]
+	transcript = fields.first
+	if (transcript == "orf_id")
+		fheaders, sheaders = fields, counts
+		if sheaders.length > 2
+			if !opts.experiment
+				STDERR << "For counts data, you need to specify the experiment\n"
+				exit(1)
+			end
+			cfile = File.new(opts.experiment + "_counts.txt", "w")
+		end
+	else
+		row  = [opts.org] + fields
+		if (kog[transcript])
+			row += kog[transcript]
+		else
+			row += [""]*4
+		end
+		if (tmhmm[transcript])
+			row += [tmhmm[transcript]]
+		else
+			row += [""]
+		end
+		afile.print row.join("\t")+"\n"
+		if (cfile)
+			sheaders.each do |sample|
+				if sample !~/^norm_/
+					nrow = [opts.experiment , sample, transcript, counts.shift]
+					cfile.print nrow.join("\t")+"\n"
+				end
+			end
+		end
+	end
+end
+
+afile.close
+cfile.close if cfile

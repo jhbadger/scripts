@@ -1,0 +1,74 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :gff, "Input gtf/gff file\n", :required=>true, :type=>:string
+  opt :code, "Genetic code to use", :default=>11, :type=>:integer
+  opt :transcripts, "output transcripts, not proteins"
+end
+
+
+exons = Hash.new
+File.new(opts.gff).each do |line|
+	contig, source, feature, start, stop, score, strand, frame, attribute = line.chomp.split("\t")
+	if (attribute =~/transcript_id/)
+		ftarget = "exon"
+	else
+		ftarget = "CDS"
+	end
+
+	if feature == ftarget
+		pid, exon = nil, nil
+		exons[contig] = Hash.new if !exons[contig]
+		start, stop, frame = start.to_i, stop.to_i, frame.to_i
+		if attribute =~/proteinId ([0-9]*); exonNumber ([0-9]*)/ || attribute =~/transcript_id \"([^\"]*)\"/
+			pid = $1
+			exon = $2.to_i - 1
+			exons[contig][pid] = [] if !exons[contig][pid]
+		else
+			STDERR << "Cannot parse: " << line
+			exit(1)
+		end
+		if strand == "-"
+			start, stop = stop, start
+		end
+		exons[contig][pid].push([start, stop])
+	end
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+	if (exons[seq.entry_id])
+		exons[seq.entry_id].keys.sort.each do |pid|
+			nseq = ""
+			complement = false
+			exons[seq.entry_id][pid].each do |exon|
+				if (!exon.nil?)
+					start, stop = exon
+					if start <= stop
+        				subseq = seq.seq[start - 1 .. stop -1]
+      				else
+        				subseq = seq.seq[stop - 1 .. start - 1]
+        				complement = true
+      				end
+      				nseq += subseq
+      			end
+      		end
+      		nseq = Bio::Sequence::NA.new(nseq).complement.seq if complement
+      		if (opts.transcripts)
+      			print Bio::Sequence::NA.new(nseq).upcase.to_fasta(pid, 60)
+      		else
+      			pseq = Bio::Sequence::NA.new(nseq).translate(opts.gencode).seq
+      			print Bio::Sequence::AA.new(pseq).to_fasta(pid, 60)
+      			if (pseq.count("*") > 1)
+      				STDERR << "Possible problem with pid " << pid << "\n"
+      			end
+      		end
+		end
+	end
+end

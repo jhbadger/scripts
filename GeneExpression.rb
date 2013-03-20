@@ -96,30 +96,6 @@ def rankHash(standings)
   ranks
 end
 
-
-# load counts file into db
-def loadCounts(file, db, org)
-  experiment, sample = file.split("-")
-  STDERR << "Loading " << file << "...\n"
-  genes = Hash.new
-  db.execute("SELECT gene_id, transcript FROM gtf WHERE org = ?", org) do |row|
-    gene_id, transcript = row
-    genes[gene_id] = transcript
-  end
-  File.new(file).each do |line|
-    next if line=~/^#/
-    gene, chr, strand, start, stop, count, length, rpkm, expressed_exons, transcripts = line.chomp.split("\t")
-    if (genes[gene].nil?)
-      STDERR << "Error loading: #{$_}. No gene found\n"
-      exit(1)
-    else
-      db.execute("INSERT INTO counts VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", experiment, 
-          sample, genes[gene], chr, strand, start, stop, count, length, rpkm, 
-            expressed_exons, transcripts)
-    end
-  end
-end
-
 # return length of genes for organism
 def gene_lengths(db, org)
   lengths = Hash.new
@@ -131,8 +107,12 @@ def gene_lengths(db, org)
 end
 
 # compute gene-based rpkm from counts, total_mapped_reads, gene_exons_length
-def gene_rpkm(counts, total_mapped_reads, gene_length)
-  return sprintf("%.2f",(1e9*counts.to_f)/(total_mapped_reads*gene_length)).to_f
+def gene_rpkm(transcript, counts, total_mapped_reads, gene_length)
+  begin
+    sprintf("%.2f",(1e9*counts.to_f)/(total_mapped_reads*gene_length)).to_f
+  rescue
+    STDERR << "Problem with " << transcript << " counts " << counts << " total " << total_mapped_reads << " len " << gene_length << "\n"
+  end
 end
 
 # compute array of gene-based rpkms (and maximums) from counts, total, gene lengths
@@ -144,7 +124,7 @@ def rpkmsFromCounts(counts, totals, lengths)
     rpkms[sample] = Hash.new if !rpkms[sample]
     counts[sample].keys.each do |transcript|
       maxrpkms[transcript] = 0 if !maxrpkms[transcript]
-      rpkms[sample][transcript] = gene_rpkm(counts[sample][transcript].to_i, totals[sample], lengths[transcript])
+      rpkms[sample][transcript] = gene_rpkm(transcript, counts[sample][transcript].to_i, totals[sample], lengths[transcript])
       maxrpkms[transcript] = rpkms[sample][transcript] if rpkms[sample][transcript] > maxrpkms[transcript]
     end
   end

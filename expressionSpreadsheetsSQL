@@ -29,7 +29,8 @@ else
 	header = ["Transcript", "Max RPKM"]
 	["RPKM","Counts","Rank"].each do |label|
 		samples.each do |sample|
-			header.push(sample + " " + desc[sample] + " " + label)
+			sample = sample + " " + desc[sample] if desc[sample].to_s.length > 0
+			header.push(sample + " " + label)
 		end
 	end
 	header += ann_headers
