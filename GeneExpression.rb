@@ -59,11 +59,13 @@ end
 # return annotation info for organism
 def annFromOrg(db, org)
   STDERR << "Loading annotation from database...\n"
-  sql = "SELECT transcript, kegg_hit, kegg_desc, kegg_pathway, ko, ko_desc, "
-  sql += "ko_pathway, ec, uniprot, organelle, organelle_id, organelle_species, "
-  sql += "organelle_evalue, best_hit, best_hit_gos_core_cluster, best_hit_species, "
-  sql += "best_hit_taxon_id, best_hit_group, pfams, pfams_desc, tigrfams, "
-  sql += "tigrfams_desc, kog, kog_desc, kog_class, kog_group, transmembrane_domains "
+  sql = "SELECT transcript, contig_ssurna_taxonomy,contig_ssurna_evalue,"
+  sql += "kegg_hit,kegg_desc,kegg_pathway,ko,ko_desc,ko_pathway,ec,"
+  sql += "uniprot,kog_id,kog_desc,kog_class,kog_group,organelle,"
+  sql += "organelle_id,organelle_species,organelle_evalue,"
+  sql += "best_hit,best_hit_gos_core_cluster,best_hit_species,"
+  sql += "best_hit_taxon_id,best_hit_group,pfams,pfams_desc,"
+  sql += "tigrfams,tigrfams_desc,transmembrane_domains "
   sql += "FROM annotation WHERE org=?"
   ann = Hash.new
   db.execute(sql, org).each do |row|
@@ -75,13 +77,12 @@ end
 
 #return set of fields in annotation table
 def ann_headers
-  ["kegg hit", "kegg desc", "kegg pathway", 
-    "ko", "ko desc", "ko pathway", "ec", "uniprot", "organelle",
-    "organelle id", "organelle_species", "organelle evalue",
-    "best hit", "best hit gos core cluster", "best hit species",
-    "best hit taxon id", "best hit group", "pfams", "pfams desc",
-    "tigrfams", "tigrfams desc", "kog", "kog desc", "kog class",
-    "kog group", "transmembrane domains"]
+  ["contig_ssuRNA_taxonomy", "contig_ssuRNA_e-value", "kegg_hit", "kegg_desc", 
+    "kegg_pathway", "KO", "KO_desc", "KO_pathway", "EC", "uniprot", 
+    "KOG_id", "KOG_desc", "KOG_class", "KOG_group", "organelle", 
+    "organelle_id", "organelle_species", "organelle_e-value", "best_hit", 
+    "best_hit_GOS_core_cluster", "best_hit_species", "best_hit_taxon_id", 
+    "best_hit_group", "PFams", "PFams_desc", "TIGRFams", "TIGRFams_desc"]
 end
 
 

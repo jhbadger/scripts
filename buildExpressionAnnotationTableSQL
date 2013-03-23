@@ -8,23 +8,12 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :ann, "RNASeq Annotation table", :type=>:string, :required=>true
-  opt :kog, "KOG hits table", :type=>:string, :required=>true
   opt :tmhmm, "TMHMM hits output", :type=>:string, :required=>true
   opt :org, "Organism abbrevation", :type=>:string, :required=>true
   opt :experiment, "experiment (needed if counts provided)", :type=>:string
-  opt :contigs, "optional assembly contigs to generate gene lengths", :type=>:string
+  opt :contigs, "optional assembly cds to generate gene lengths", :type=>:string
 end
 
-kog = Hash.new
-File.new(opts.kog).each do |line|
-	next if line=~/^#/
-	fields = line.chomp.split("\t")
-	transcript = fields[0]
-	kog[transcript] = fields[2..5]
-	while kog[transcript].length < 4
-		kog[transcript].push("")
-	end
-end
 
 tmhmm = Hash.new
 File.new(opts.tmhmm).each do |line|
@@ -49,7 +38,7 @@ cfile = nil
 afile = File.new(opts.org + "_ann.txt", "w")
 File.new(opts.ann).each do |line|
 	fields = line.chomp.split("\t")
-	fields, counts = fields[0..21], fields[22..-1]
+	fields, counts = fields[0..27], fields[28..-1]
 	transcript = fields.first
 	if (transcript == "orf_id")
 		fheaders, sheaders = fields, counts
@@ -62,11 +51,6 @@ File.new(opts.ann).each do |line|
 		end
 	else
 		row  = [opts.org] + fields
-		if (kog[transcript])
-			row += kog[transcript]
-		else
-			row += [""]*4
-		end
 		if (tmhmm[transcript])
 			row += [tmhmm[transcript]]
 		else

@@ -1,0 +1,48 @@
+#!/usr/bin/env Rscript
+
+createDisp <- function (counts, group) {
+  dlist <- DGEList(counts = counts, group = factor(group))
+  keep <- rowSums(cpm(dlist)> 2) >= min(table(group))
+  dlist <- dlist[keep, ]
+  dlist$samples$lib.size <- colSums(dlist$counts)
+  norm <- calcNormFactors(dlist)
+  pdf(file="mdsplot.pdf")
+  plotMDS(norm, cex=0.5)
+  commonDisp <- estimateCommonDisp(norm)
+  tagwiseDisp <- estimateTagwiseDisp(commonDisp)
+  tagwiseDisp
+}
+
+findDE <- function(disp, group1, group2, n, p) {
+  et <- exactTest(disp, pair=c(group1,group2))
+  de <- topTags(et, n = n)
+  de[de$table$FDR < p, ]
+}
+
+library("edgeR")
+options <- commandArgs(trailingOnly = TRUE)
+if (length(options) != 2) {
+  print("Usage: runEdgeR expression.csv groups.csv")
+} else {
+  csv <- read.csv(options[1], row.names="Transcript")
+  counts <- subset(csv, select=grep("Counts", colnames(csv)))
+  gcsv <- read.csv(options[2], row.names="Sample")
+  rm(csv)
+  groups <- c()
+  for (i in 1:length(counts)) {
+    name <- as.character(strsplit(colnames(counts)[i], ".Counts")[1])
+    colnames(counts)[i] <- name
+    group <- gcsv[name,1]
+    groups <- c(groups, group)
+  }
+  disp <- createDisp(counts, groups)
+  for (i in 1:(max(groups) - 1)) {
+    group1 <- as.character(gcsv[gcsv$Group==i,]$Name[1])
+    for (j in (i+1):max(groups)) {
+      group2 <- as.character(gcsv[gcsv$Group==j,]$Name[1])
+      fname <- paste0(group1,"_vs_",group2,"_edgeR.txt")
+      de <- findDE(disp, i, j, length(row.names(counts)), 0.05)
+      write.table(de, file=fname, sep="\t")
+    }
+  }
+}
