@@ -1,79 +1,64 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'optparse'
-opt = OpenStruct.new
-
-opt.evalue = 1e-9
-opt.blast = "blastp"
-opt.server = "tmlsrv1.jcvi.org"
-opt.user = ENV["USER"]
-opt.password = nil
-opt.maxHits = 50
-opt.btab = false
 $VERBOSE = nil
 
+require 'rubygems'
+require 'trollop'
 
-ARGV.options {|opts|
-  opts.banner << " db fasta [fasta...]"
-  opts.on("-b ", "--blast ", String, 
-          "choose BLAST to use (default #{opt.blast})") {|t| opt.blast = t}
-  opts.on("-e", "--evalue ", Float, 
-          "set BLASTP evalue (default #{opt.evalue})") {|t| opt.evalue = t}
-  opts.on("-m ", "--maxHits ", Integer, 
-          "max number of BLAST hits (default #{opt.maxHits})") {|t| opt.maxHits = t}
-  opts.on("-p ", "--password ", String, 
-          "password (required!)") {|t| opt.password = t}
-  opts.on("-s ", "--server ", String, 
-          "server (#{opt.server})") {|t| opt.server = t}
-  opts.on("-u ", "--user ", String, 
-          "username (#{opt.user})") {|t| opt.user = t}
-  opts.on("-t", "--tab", "use btab format (#{opt.btab})") {|t| opt.btab = t}
- 
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 2)
-    STDERR.puts opts
-    exit(1)
-  end
-}
-
-if (opt.password.nil?)
-  STDERR.puts "A password is required!\n"
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file(s)", :required=>true, :type=>:strings
+  opt :database, "timelogic db to use", :required=>true, :type=>:string
+  opt :blast, "blast program to run", :default=>"blastp", :type=>:string
+  opt :evalue, "BLAST evalue", :default=>1e-9, :type=>:float
+  opt :server, "Timelogic server", :default=>"tmlsrv1.jcvi.org", :type=>:string
+  opt :user, "Timelogic user", :default=>ENV["USER"], :type=>:string
+  opt :password, "Timelogic password", :required=>true, :type=>:string
+  opt :maxHits, "Maximum blast hits", :default=>50, :type=>:integer
+  opt :format, "Blast format (full, btab, or m8)", :default=>"m8", :type=>:string
 end
-
 
 db = ARGV.shift
 
-if (opt.blast !~ /^blast[n|p|x]/ && opt.blast !~/tblastn/)
+if (opts.blast !~ /^blast[n|p|x]/ && opts.blast !~/tblastn/)
   STDERR.printf("Only blastn, blastp, blastx, and tblastn are valid grid BLAST programs\n")
   exit(1)
 end
 
-ARGV.each {|file|
-  bout = File.basename(file) + "_vs_" + File.basename(db)
-  bout += ".#{opt.blast}" if (!opt.btab)
-  bout += ".btab" if (opt.btab)
+opts.input.each do |file|
+  bout = File.basename(file) + "_vs_" + File.basename(opts.database)
+  if opts.format == "btab"
+     bout += ".btab"
+  elsif opts.format == "m8"
+    bout += ".m8"
+  else
+    bout += ".blast"
+  end 
   if (!File.exists?(file))
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
   STDERR << "Processing #{file}....\n"
-  cmd = "dc_run -parameters tera-#{opt.blast} -database #{db} -threshold significance=#{opt.evalue} "
-  cmd += "-max_alignments #{opt.maxHits} -max_scores #{opt.maxHits} -query #{file} "
-  cmd += "-user #{opt.user} -password #{opt.password} -server #{opt.server} "
-  if (opt.btab)
+  cmd = "dc_run -parameters tera-#{opts.blast} -database #{opts.database} "
+  cmd += "-threshold significance=#{opts.evalue} "
+  cmd += "-max_alignments #{opts.maxHits} -max_scores #{opts.maxHits} "
+  cmd += "-query #{file} -user #{opts.user} -password #{opts.password} "
+  cmd += "-server #{opts.server} "
+  if opts.format == "m8" || opts.format == "btab"
     cmd += "-output_format tab "
-    cmd += "-field querytext queryaccession querylength algorithm userid targetlocus "
-    cmd += "querystart queryend targetstart targetend alignmentlength matches score score targetdescription "
-    cmd += "queryframe queryframe queryframe significance significance "
-  end
-  cmd += "> #{bout}"
-  system(cmd)
-}
+    if opts.format == "btab" 
+       cmd += "-field querytext queryaccession querylength "
+       cmd += "algorithm userid targetlocus querystart queryend "
+       cmd += "targetstart targetend alignmentlength matches "
+       cmd += "score score targetdescription queryframe queryframe"
+       cmd += "queryframe significance significance"
+   elsif opts.format == "m8"
+      cmd += "-field querylocus targetlocus percentalignment "
+      cmd += "alignmentlength matches gaps querystart queryend "
+      cmd += "targetstart targetend significance score"
+   end
+ end
+ cmd += "> #{bout}"
+ system(cmd)
+end
