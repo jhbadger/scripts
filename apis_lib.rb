@@ -276,20 +276,47 @@ end
 
 # runs muscle to align sequences, returns alignment as row
 def align(pep, blastids, database, verbose)
-  STDERR << "Making alignment for " << pep.full_id << "...\n" if verbose
+  pid = pep.full_id
+  STDERR << "Making alignment for " << pid << "...\n" if verbose
   homologs = fetchSeqs(blastids, database)
-  hom = pep.full_id + ".hom"
-  afa = pep.full_id + ".afa"
+  hom = pid + ".hom"
   out = File.new(hom, "w")
-  out.print pep.to_s + homologs.join("\n")
+  out.print ">"+pid+"\n" +pep.seq + "\n" + homologs.join("\n")
   out.close
   begin
     afa = `muscle -in '#{hom}' -quiet`.gsub("\n","%%")
   rescue
-    STDERR << "Error #{$!} aligning " << pep.full_id << "...\n" if verbose
+    STDERR << "Error #{$!} aligning " << pid << "...\n" if verbose
   end
   File.unlink(hom)
   afa
+end
+
+# produces stock format needed for quicktree from afa text
+def afa2Stockholm(pid, afa)
+  stock = pid + ".stock"
+  stockf = File.new(stock, "w")
+  stockf.printf("# STOCKHOLM 1.0\n")
+  align = Hash.new
+  aSize = 0
+  nSize = 0
+  afa.split(">").each do |record|
+    if record.index("%%")
+      name, seq = record.split("%%", 2)
+      align[name] = seq.tr("%","")
+      aSize = align[name].length
+      nSize = name.length if (nSize < name.length)
+    end
+  end
+  0.step(aSize, 50) do |i|
+    stockf.printf("\n")
+    align.keys.sort.each do |key|
+      stockf.printf("%-#{nSize}s %s\n", key, align[key][i..i+49]) 
+    end
+  end
+  stockf.printf("//\n")
+  stockf.close
+  stock
 end
 
 # produces stock format needed for quicktree from fastaFormat
@@ -343,23 +370,22 @@ def stockholm2Fasta(alignFile)
 end
 
 # infers tree by desired method, populates db, returns tree
-def infer(db, afa, pep, method, verbose)
-  STDERR << "Making tree for " << pep << "...\n" if verbose
+def infer(pid, afa, method, verbose)
+  STDERR << "Making tree for " << pid << "...\n" if verbose
   tree = nil
   if (method == "nj")
     begin
-      stock = fasta2Stockholm(afa)
+      stock = afa2Stockholm(pid, afa)
       tree = NewickTree.new(`quicktree -boot 100 '#{stock}'`.tr("\n",""))
       tree.midpointRoot
     rescue
-      STDERR << "Error #{$!} inferring nj tree for " << pep << "...\n" if verbose
+      STDERR << "Error #{$!} inferring nj tree for " << pid << "...\n" if verbose
     end
   end
   begin
-    db.execute("REPLACE INTO trees VALUES(?,?)", pep, tree.to_s)
-    File.unlink(afa, stock)
+    File.unlink(stock)
   rescue
-    STDERR << "Error #{$!} writing tree for " << pep << "...\n" if verbose
+    STDERR << "Error #{$!} writing tree for " << pid << "...\n" if verbose
   end
   tree
 end
@@ -380,15 +406,14 @@ def createClassificationDB(fasta)
   db
 end
 
-# classifies tree and populates db
-def classify(db, pep, tree, ruleMaj, exclude, taxonomy, verbose)
-  STDERR << "Making classification for " << pep << "...\n" if verbose
-  classification = tree.createClassification(pep, exclude, taxonomy, ruleMaj)
+# classifies tree
+def classify(pid, tree, ruleMaj, exclude, taxonomy, verbose)
+  STDERR << "Making classification for " << pid << "...\n" if verbose
+  classification = tree.createClassification(pid, exclude, taxonomy, ruleMaj)
   begin
-    line = ([pep] + classification).collect{|x| "\"#{x}\""}.join(",")
-    db.execute("REPLACE INTO classification VALUES(#{line})")
+    classification.collect{|x| "\"#{x}\""}.join(",")
   rescue
-    STDERR << "Error #{$!} writing classification for " << pep << "...\n" if verbose
+    STDERR << "Error #{$!} writing classification for " << pid << "...\n" if verbose
   end
 end
 
