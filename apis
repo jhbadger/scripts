@@ -1,15 +1,14 @@
 #!/usr/bin/env ruby
 
-VER = "2.1a"
-DATE = "01/17/2013"
+VER = "2.3"
+DATE = "03/25/2013"
 
 require 'rubygems'
 begin
+  require 'bio'
   require 'trollop'
   require 'Newick'
-  require 'bio'
   require 'fpdf'
-  require 'sqlite3'
   require File.dirname($0)+"/apis_lib"
 rescue LoadError # gems not installed
   miss = $!.to_s.gsub(">","").split(" ").last
@@ -25,7 +24,7 @@ ARGV.push("--help") if ARGV.empty?
 
 opts = Trollop::options do
 	banner File.basename($0) << " " << VER << " " << DATE
-	opt :blast, "NCBI Blast tab file(s) with seguids", :required =>true, :type => :strings
+	opt :blast, "NCBI Blast tab file with seguids", :required =>true, :type => :string
 	opt :database, "Seguid-based fastacmd indexed protein database", :required => true, :type => :string
   opt :evalue, "maximum evalue for blast hit to be counted", :default=>1e-9, :type => :float
   opt :flatfile, "write flatfile to file specified summarizing results when done", :type => :string
@@ -39,54 +38,68 @@ opts = Trollop::options do
 	opt :verbose, "print verbose status messages to STDERR"
 end
 
+
 # main loop
 
-opts.input = asProt(opts.input, opts.verbose) if isDNA?(opts.input)
+if (isDNA?(opts.input))
+  input = asProt(input, opts.verbose)
+else
+  input = opts.input
+end
+
 
 taxonomy = loadTaxonomy(opts.taxonomy, opts.verbose)
-peps = loadPeps(opts.input, opts.verbose)
-blast = loadBlast(opts.input, opts.blast, opts.evalue, opts.maxhits, opts.verbose)
-alignment = createAlignmentDB(opts.input)
-trees = createTreesDB(opts.input)
-classification = createClassificationDB(opts.input)
+blastF = FlatFileDB.new(opts.blast)
 
-unprocessed = Hash.new
-peps.query("SELECT name FROM peptides WHERE processed = 0").each do |row|
-  unprocessed[row.first] = true
-end
-
-unprocessed.keys.sort.each do |pep|
-  blastids = blast.query("SELECT hit FROM blast WHERE name=?", pep).entries.flatten
+afas = File.new(File.basename(opts.input)+"_afa.txt", "w")
+trees = File.new(File.basename(opts.input)+"_tree.txt", "w")
+notrees = File.new(File.basename(opts.input)+"_notree.txt", "w")
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |pep|
+  pid = pep.full_id
+  blastids = getBlastHits(blastF, pep)
   if (blastids.size > 2) # 3 homologs + query is min tree
-    afa = align(alignment, pep, peps, blastids, opts.database, opts.verbose)
-    tree = infer(trees, afa, pep, opts.phylo, opts.verbose)
+    afa = align(pep, blastids, opts.database, opts.verbose)
+    afas.print pid + "\t" + afa + "\n"
+    tree = infer(afa, pid, opts.phylo, opts.verbose)
+    trees.print pid + "\t" + tree + "\n"
     classify(classification, pep, tree, opts.rulemaj, opts.exclude, taxonomy, opts.verbose) if tree
   end
-  peps.execute("UPDATE peptides SET processed = 1 WHERE name = ?", pep)
 end
-
-if (opts.flatfile)
-  STDERR << "Creating " << opts.flatfile << "...\n" if opts.verbose
-  out = File.new(opts.flatfile, "w")
-  trees.query("SELECT name, tree FROM trees ORDER BY name").each do |row|
-    name, tree = row
-    classy = classification.get_first_row("SELECT * FROM classification WHERE name=?", name)
-    out.print [classy + [tree]].join("\t") + "\n" if classy && tree
-  end
-  out.close
-end
-
-if (opts.trees)
-  STDERR << "Writing trees to " << opts.trees << "...\n" if opts.verbose
-  Dir.mkdir(opts.trees) if !File.exists?(opts.trees)
-  trees.query("SELECT name, tree FROM trees").each do |row|
-    name, tree = row
-    begin
-      NewickTree.new(tree).draw(opts.trees + "/" + name + ".pdf", boot="width", linker = :segLink)
-    rescue
-      STDERR << "Error #{$!} writing tree for #{name}...\n" if opts.verbose
-    end
-  end
-end
+afas.close
+trees.close
+notrees.close
 
 
+# Bio::FlatFile(Bio::FastaFormat, File.new(input)).each do |pep|
+#   #blastids = getBlastHits(blastF, pep)
+#   #p blastids
+#   next
+
+#   end
+# end
+# exit(1)
+
+
+# if (opts.flatfile)
+#   STDERR << "Creating " << opts.flatfile << "...\n" if opts.verbose
+#   out = File.new(opts.flatfile, "w")
+#   trees.query("SELECT name, tree FROM trees ORDER BY name").each do |row|
+#     name, tree = row
+#     classy = classification.get_first_row("SELECT * FROM classification WHERE name=?", name)
+#     out.print [classy + [tree]].join("\t") + "\n" if classy && tree
+#   end
+#   out.close
+# end
+
+# if (opts.trees)
+#   STDERR << "Writing trees to " << opts.trees << "...\n" if opts.verbose
+#   Dir.mkdir(opts.trees) if !File.exists?(opts.trees)
+#   trees.query("SELECT name, tree FROM trees").each do |row|
+#     name, tree = row
+#     begin
+#       NewickTree.new(tree).draw(opts.trees + "/" + name + ".pdf", boot="width", linker = :segLink)
+#     rescue
+#       STDERR << "Error #{$!} writing tree for #{name}...\n" if opts.verbose
+#     end
+#   end
+# end

@@ -243,57 +243,20 @@ def loadPeps(fasta, verbose)
 	db
 end
 
-# load BLAST output into sqlite db, returning db handle
-def loadBlast(fasta, blasts, ethresh, maxhits, verbose)
-  db = SQLite3::Database.new(File.basename(fasta) + "_blast.db")
-  begin
-    db.execute("CREATE TABLE blast (name, hit, evalue, score)")
-    db.execute("CREATE INDEX name_idx ON blast(name)")
-  rescue
-  end
-  if db.get_first_value("SELECT count(*) FROM blast") == 0
-    STDERR << "Loading blast results...\n" if verbose
-    counts = Hash.new
-    sortCmd = "sort -t $'\t' -k1 -k12 -r -n -u"
-    `cat #{blasts.join(" ")} | #{sortCmd}`.split("\n").each do |row|
-      if row !~ /^QUERY/
-        row = row.split("\t")
-        name, hit, evalue, score = row[0], row[1], row[10].to_f, row[11].to_f
-        counts[name] = 0 if !counts[name]
-        if evalue <= ethresh && counts[name] < maxhits
-          begin
-            db.execute("INSERT INTO blast VALUES(?,?,?,?)", name, hit, evalue, score)
-            counts[name] += 1
-          rescue
-            STDERR << "Error #{$!} loading blast for #{pep}...\n" if verbose
-          end
-        end
+def getBlastHits(blastIdx, pep)
+  pid = pep.full_id
+  matches = []
+  if f=blastIdx.seek(pep.full_id)
+    f.each do |line|
+      bid, match = line.chomp.split("\t")
+      if (bid != pid)
+        break
+      else
+        matches.push(match)
       end
     end
   end
-  db
-end
-
-# creates alignment db and returns handle to it
-def createAlignmentDB(fasta)
-  db = SQLite3::Database.new(File.basename(fasta) + "_alignment.db")
-  begin
-    db.execute("CREATE TABLE alignment (name, alignment)")
-    db.execute("CREATE UNIQUE INDEX name_idx ON alignment(name)")
-  rescue
-  end
-  db
-end
-
-# creates trees db and returns handle to it
-def createTreesDB(fasta)
-  db = SQLite3::Database.new(File.basename(fasta) + "_tree.db")
-  begin
-    db.execute("CREATE TABLE trees (name, tree)")
-    db.execute("CREATE UNIQUE INDEX name_idx ON trees(name)")
-  rescue
-  end
-  db
+  matches
 end
 
 # return seqs from fastacmd formatted blast database
@@ -311,22 +274,20 @@ def fetchSeqs(blastids, database)
   seqs
 end
 
-# runs muscle to align sequences, populates db returns aligment
-def align(db, pep, peps, blastids, database, verbose)
-  STDERR << "Making alignment for " << pep << "...\n" if verbose
-  seq = peps.get_first_value("SELECT seq FROM peptides WHERE name = ?", pep)
+# runs muscle to align sequences, returns alignment as row
+def align(pep, blastids, database, verbose)
+  STDERR << "Making alignment for " << pep.full_id << "...\n" if verbose
   homologs = fetchSeqs(blastids, database)
-  hom = pep + ".hom"
-  afa = pep + ".afa"
+  hom = pep.full_id + ".hom"
+  afa = pep.full_id + ".afa"
   out = File.new(hom, "w")
-  out.print ">" + pep + "\n" + seq  + "\n" + homologs.join("\n")
+  out.print pep.to_s + homologs.join("\n")
   out.close
   begin
-    system("muscle -in '#{hom}' -out '#{afa}' -quiet")
+    afa = `muscle -in '#{hom}' -quiet`.gsub("\n","%%")
   rescue
-    STDERR << "Error #{$!} aligning " << pep << "...\n" if verbose
+    STDERR << "Error #{$!} aligning " << pep.full_id << "...\n" if verbose
   end
-  db.execute("REPLACE INTO alignment VALUES(?,?)", pep, File.read(afa))
   File.unlink(hom)
   afa
 end
@@ -679,4 +640,52 @@ end
 # gets rid of a directory
 def cleanup(dir)
   system("rm -rf #{dir}") 
+end
+
+class FlatFileDB
+  def initialize(fileName, col = 0, sep = "\t", verbose = false)
+    @fileName = fileName
+    @file = File.new(@fileName)
+    @idxfile = fileName + ".idx"
+    @verbose = verbose
+    buildIndex(col, sep) if !File.exists?(@idxfile) || File.mtime(@idxfile) < File.mtime(@fileName)
+    readIndex(col, sep)
+  end
+  def buildIndex(col, sep)
+    begin
+      ifile = File.new(@idxfile, "w")
+    rescue
+      STDERR << "Permissions issue creating index file " << @idxfile << "\n" 
+      exit(1)
+    end
+    STDERR << "Building index for " << @fileName << "...\n" if @verbose
+    @idx = Hash.new
+    @file.rewind
+    oldfield = nil
+    pos = @file.tell
+    @file.each do |line| 
+      fields = line.chomp.split(sep)
+      ifield = fields[col]
+      ifile.printf("%s\t%d\n", ifield, pos) if ifield != oldfield
+      oldfield = ifield
+      pos = @file.tell
+    end
+    ifile.close
+  end
+  def readIndex(col, sep)
+    STDERR << "Loading index for " << @fileName << " into memory...\n" if @verbose
+    @idx = Hash.new
+    File.new(@idxfile).each do |line|
+      field, pos = line.chomp.split(sep)
+      @idx[field] = pos.to_i
+    end
+  end
+  def seek(key)
+    if (@idx[key])
+      @file.seek(@idx[key])
+      @file
+    else
+      nil
+    end
+  end
 end
