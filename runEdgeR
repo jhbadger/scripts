@@ -13,10 +13,12 @@ createDisp <- function (counts, group) {
   tagwiseDisp
 }
 
-findDE <- function(disp, group1, group2, n, p) {
+findDE <- function(disp, group1, group2, name, n) {
   et <- exactTest(disp, pair=c(group1,group2))
   de <- topTags(et, n = n)
-  de[de$table$FDR < p, ]
+  fdr <- data.frame(row.names=row.names(de), FDR=de$table$FDR)
+  names(fdr)[1] <- name
+  fdr
 }
 
 library("edgeR")
@@ -27,7 +29,6 @@ if (length(options) != 2) {
   csv <- read.csv(options[1], row.names="Transcript")
   counts <- subset(csv, select=grep("Counts", colnames(csv)))
   gcsv <- read.csv(options[2], row.names="Sample")
-  rm(csv)
   groups <- c()
   for (i in 1:length(counts)) {
     name <- as.character(strsplit(colnames(counts)[i], ".Counts")[1])
@@ -40,9 +41,13 @@ if (length(options) != 2) {
     group1 <- as.character(gcsv[gcsv$Group==i,]$Name[1])
     for (j in (i+1):max(groups)) {
       group2 <- as.character(gcsv[gcsv$Group==j,]$Name[1])
-      fname <- paste0(group1,"_vs_",group2,"_edgeR.txt")
-      de <- findDE(disp, i, j, length(row.names(counts)), 0.05)
-      write.table(de, file=fname, sep="\t")
+      name <- paste0(group1,"_vs_",group2)
+      de <- findDE(disp, i, j, name, length(row.names(counts)))
+      de_order <- match(rownames(csv), rownames(de))
+      cnames <- colnames(csv)
+      csv <- cbind(csv, de[de_order,])
+      colnames(csv) <- c(cnames, name)
     }
   }
+  write.csv(csv, file=paste0(options[1],"_edgeR.csv"), na = "")
 }
