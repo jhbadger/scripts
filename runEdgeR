@@ -39,14 +39,18 @@ if (length(options) != 2) {
   disp <- createDisp(counts, groups)
   for (i in 1:(max(groups) - 1)) {
     group1 <- as.character(gcsv[gcsv$Group==i,]$Name[1])
-    for (j in (i+1):max(groups)) {
-      group2 <- as.character(gcsv[gcsv$Group==j,]$Name[1])
-      name <- paste0(group1,"_vs_",group2)
-      de <- findDE(disp, i, j, name, length(row.names(counts)))
-      de_order <- match(rownames(csv), rownames(de))
-      cnames <- colnames(csv)
-      csv <- cbind(csv, de[de_order,])
-      colnames(csv) <- c(cnames, name)
+    if (group1 != "NULL") {
+      for (j in (i+1):max(groups)) {
+        group2 <- as.character(gcsv[gcsv$Group==j,]$Name[1])
+        if (group2 != "NULL") {
+          name <- paste0(group1,"_vs_",group2)
+          de <- findDE(disp, i, j, name, length(row.names(counts)))
+          de_order <- match(rownames(csv), rownames(de))
+          cnames <- colnames(csv)
+          csv <- cbind(csv, de[de_order,])
+          colnames(csv) <- c(cnames, name)
+        }
+      }
     }
   }
   write.csv(csv, file=paste0(options[1],"_edgeR.csv"), na = "")
