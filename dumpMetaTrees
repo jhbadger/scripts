@@ -4,7 +4,7 @@ require 'rubygems'
 require 'trollop'
 require 'Newick'
 require 'fpdf'
-require 'fastercsv'
+require 'fcsv'
 
 ARGV.push("--help") if ARGV.empty?
 

@@ -3,7 +3,7 @@
 
 require 'rubygems'
 require 'trollop'
-require 'fastercsv'
+require 'fcsv'
 require 'bio'
 require 'ZFile'
 require 'GOS'

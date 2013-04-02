@@ -4,7 +4,7 @@ require 'rubygems'
 require 'trollop'
 require 'sqlite3'
 require 'GeneExpression'
-require 'fastercsv'
+require 'fcsv'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do

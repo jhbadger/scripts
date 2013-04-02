@@ -3,7 +3,7 @@
 require 'rubygems'
 require 'trollop'
 require 'bio'
-require 'fastercsv'
+require 'fcsv'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
