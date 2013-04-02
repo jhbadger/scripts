@@ -3,6 +3,7 @@
 require 'rubygems'
 require 'trollop'
 require 'bio'
+require 'fcsv'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -26,7 +27,7 @@ end
 if (opts.contigs)
 	lfile = File.new(opts.org + "_genlen.txt", "w")
 	Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.contigs)).each do |seq|
-		lfile.print [opts.org, seq.entry_id, seq.length].join("\t")+"\n"
+		lfile.print [opts.org, seq.entry_id, seq.length].to_csv(:col_sep=>"\t")
 	end
 	lfile.close
 end
@@ -35,6 +36,8 @@ end
 fheaders = nil
 sheaders = nil
 cfile = nil
+sfile = nil
+printed = Hash.new
 afile = File.new(opts.org + "_ann.txt", "w")
 File.new(opts.ann).each do |line|
 	fields = line.chomp.split("\t")
@@ -48,6 +51,7 @@ File.new(opts.ann).each do |line|
 				exit(1)
 			end
 			cfile = File.new(opts.experiment + "_counts.txt", "w")
+			sfile = File.new(opts.experiment + "_sample_desc.txt","w")
 		end
 	else
 		row  = [opts.org] + fields
@@ -56,12 +60,18 @@ File.new(opts.ann).each do |line|
 		else
 			row += [""]
 		end
-		afile.print row.join("\t")+"\n"
+		afile.print row.to_csv(:col_sep=>"\t")
 		if (cfile)
 			sheaders.each do |sample|
 				if sample !~/^norm_/
+					sample = sample.split("-PE").first
 					nrow = [opts.experiment , sample, transcript, counts.shift]
-					cfile.print nrow.join("\t")+"\n"
+					srow = [opts.experiment, sample, sample, opts.org]
+					cfile.print nrow.to_csv(:col_sep=>"\t")
+					if (!printed[sample])
+						sfile.print srow.to_csv(:col_sep=>"\t")
+						printed[sample] = true
+					end
 				end
 			end
 		end
@@ -70,3 +80,4 @@ end
 
 afile.close
 cfile.close if cfile
+sfile.close if sfile
