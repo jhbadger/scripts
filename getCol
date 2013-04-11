@@ -22,7 +22,7 @@ else
 end
 
 if (opts.csv)
-  iter=FasterCSV.new(inFile)
+  iter=CSV.new(inFile)
 else
   iter = inFile
 end

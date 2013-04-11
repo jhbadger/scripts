@@ -22,7 +22,7 @@ def segLink(entry)
 end
 
 Dir.mkdir("tree") if !File.exists?("tree")
-FasterCSV.foreach(opts.csv, :col_sep=>opts.sep, :headers=>opts.headers) do |row|
+CSV.foreach(opts.csv, :col_sep=>opts.sep, :headers=>opts.headers) do |row|
 	if opts.headers
 		name, tree = row["Seq Name"], row["Tree"]
 	else

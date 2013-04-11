@@ -82,7 +82,8 @@ def ann_headers
     "KOG_id", "KOG_desc", "KOG_class", "KOG_group", "organelle", 
     "organelle_id", "organelle_species", "organelle_e-value", "best_hit", 
     "best_hit_GOS_core_cluster", "best_hit_species", "best_hit_taxon_id", 
-    "best_hit_group", "PFams", "PFams_desc", "TIGRFams", "TIGRFams_desc"]
+    "best_hit_group", "PFams", "PFams_desc", "TIGRFams", "TIGRFams_desc", 
+    "transmembrane_domains"]
 end
 
 
@@ -90,6 +91,9 @@ end
 def rankHash(standings)
   ranks = Hash.new
   rank = 1
+  standings.keys.each do |key|
+    standings[key] = 0 if !standings[key]
+  end
   standings.keys.sort{|x,y| standings[y]<=>standings[x]}.each do |key|
     ranks[key] = rank
     rank += 1

@@ -78,7 +78,7 @@ treeCount = `wc -l #{opts.spreadsheet}`.split(" ").first.to_i
 
 print ["Id", "Tree", "Target", "Bootstrap", "Annotation"].to_csv
 count = 0
-FasterCSV.foreach(opts.spreadsheet, :headers=>true) do |row|
+CSV.foreach(opts.spreadsheet, :headers=>true) do |row|
   seq_name, ann, tree = row["Seq Name"], row["Annotation"], row["Tree"]
   count += 1
   next if tree.nil?
