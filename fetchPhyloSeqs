@@ -1,0 +1,101 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'mysql'
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "ids to retrieve data for", :type => :strings, :required=> true
+  opt :file, "id(s) are files, not record ids"
+  opt :contig, "use contig as search id"
+  opt :database, "protein database", :default=>"phylodb", :type=>:string
+  opt :everything, "return for all contigs"
+  opt :species, "use species as search id"
+  opt :name, "use (exact) sequence name as search id"
+  opt :form, "use contig form as search id"
+  opt :host, "database host", :default=>"mysql-lan-pro", :type=>:string
+  opt :taxonomy, "use taxonomy as search id"
+  opt :molecule, "return full DNA molecules"
+  opt :rrna, "return rRNAs, not proteins"
+  opt :transcripts, "return transcripts, not proteins"
+end
+
+if opts.file
+  ids = []
+  opts.input.each do |file|
+    File.new(file).each do |line|
+      ids.push(line.split(" ").first)
+    end
+  end
+else
+  ids = opts.input
+end
+
+db = Mysql.new(opts.host, "access", "access", opts.database)
+
+# quotes single quotes, etc. for SQL usage
+class String
+  # quotes single quotes, etc. for SQL usage
+  def quote
+    return self.gsub(/\\/, '\&\&').gsub(/'/, "''")
+  end
+  # formats string as fasta record
+  def to_fasta(header, len = 60)
+    return ">#{header}\n#{self.gsub("*","").gsub(Regexp.new(".{1,#{len}}"), "\\0\n")}"
+  end
+end
+
+inList = "("
+ids.each do |id|
+  if (opts.species)
+    query = "SELECT name FROM contigs WHERE species LIKE '%#{id.quote}%'"
+  elsif (opts.taxonomy)
+    query = "SELECT name FROM contigs WHERE taxonomy LIKE '%#{id.quote}%'"
+  elsif (opts.form)
+    query = "SELECT name FROM contigs WHERE form LIKE '%#{id.quote}%'"
+  elsif (opts.contig)
+    query = "SELECT name FROM contigs WHERE name LIKE '%#{id.quote}%'"
+  end
+  if (!opts.name)
+    db.query(query).each do |row|
+      inList += "'" + row[0].quote + "',"
+    end
+  else
+    inList += "'" + id.quote + "',"
+  end
+end
+inList.chop!
+inList += ")"
+
+if (opts.transcripts)
+  query = "SELECT proteins.name, transcripts.seq, annotation, species FROM proteins "
+  query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
+  query += "LEFT JOIN transcripts on transcripts.name = proteins.name "
+  query += "WHERE proteins.contig_name IN #{inList}"
+elsif (opts.rna)
+  query = "SELECT rrnas.name, rrnas.seq, annotation, species FROM rrnas "
+  query += "LEFT JOIN contigs on contigs.name = rrnas.contig_name "
+  query += "WHERE rrnas.contig_name IN #{inList}"
+elsif (opts.molecule)
+  query = "SELECT name, seq, form, species FROM contigs "
+  query += "WHERE name IN #{inList}"
+elsif (opts.name)
+  query = "SELECT proteins.name, proteins.seq, annotation, species FROM proteins "
+  query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
+  query += "WHERE proteins.name IN #{inList}"
+else
+  query = "SELECT proteins.name, proteins.seq, annotation, species FROM proteins "
+  query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
+  query += "WHERE proteins.contig_name IN #{inList}"
+end
+
+db.query(query).each do |row|
+  seq_name, seq, ann, species = row
+  print seq.to_fasta(seq_name + " " + ann + " " + "{" + species + "}")
+end
+
+
+
+

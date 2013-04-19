@@ -2,29 +2,15 @@
 
 $VERBOSE = false
 
-require 'ostruct'
-require 'optparse'
 require 'rubygems'
 require 'bio'
-opt = OpenStruct.new
+require 'trollop'
 
-opt.evalue = 0.1
-
-ARGV.options do |opts|
-  opts.banner << " pep pep [..pep]"
-  opts.on("-e ", "--evalue ", Float, 
-          "evalue cutoff (default #{opt.evalue})") {|t| opt.evalue = t}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 2)
-    STDERR.puts opts
-    exit(1)
-  end
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :peptides, "Input fasta files", :required=>true, :type=>:strings
+  opt :evalue, "evalue cutoff", :default=>0.1, :type:=>:float
 end
 
 def merge(clusters, pvalue, genome)
@@ -54,11 +40,11 @@ end
 plen = Hash.new
 score = Hash.new
 
-outName = ARGV[0].to_s + ".mcl"
+outName =opts.peptides.first + ".mcl"
 out = File.new(outName, "w")
 
 STDERR.printf("Loading Genomes...\n")
-ARGV.each do |pep|
+opts.peptides.each do |pep|
   Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each do |seq|
     key = seq.definition.split(" ").first + "_%_" + pep
     score[key] = Hash.new
@@ -70,14 +56,17 @@ end
 
 
 STDERR.printf("Loading Pairwise Clusters...\n")
-ARGV.each do |pep1|
-  ARGV.each do |pep2|
+opts.peptides.each do |pep1|
+  opts.peptides.each do |pep2|
     next if pep1 == pep2
     vs = pep1 + "_vs_" + pep2
     rvs = pep2 + "_vs_" + pep1
     if (!File.exists?(vs + ".recip"))
+      
       if (File.exists?("#{vs}.blastp.btab"))
-        system("bestRecipBtab #{vs}.blastp.btab #{rvs}.blastp.btab #{opt.evalue} > #{vs}.recip")
+          format = "btab"
+      elsif File.exists?("#{vs}.blastp.m8")
+        system("bestRecipBtab -b btab -f #{vs}.blastp.btab -r #{rvs}.blastp.btab -e #{opts.evalue} > #{vs}.recip")
       else
         STDERR.printf("Can't find any blast for #{vs}!\n")
         exit(1)
