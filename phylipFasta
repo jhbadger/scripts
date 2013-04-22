@@ -38,8 +38,10 @@ if (opts.algorithm != "pars" && opts.algorithm != "nj" && opts.algorithm != "ml"
 end
 
 if (opts.project)
-  cmd = cmdLine($0, opts, [:project])
-  qsystem(cmd, opts.project)
+  cmd = cmdLine($0, opts, [:project, :input])
+  opts.input.each do |input|
+    qsystem(cmd + " --input #{input}", opts.project)
+  end
   exit(0)
 end
 

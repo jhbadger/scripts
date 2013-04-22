@@ -7,6 +7,7 @@ require 'apis_lib'
 require 'Newick'
 require 'fpdf'
 
+$VERBOSE = nil
 quicktree = `which quicktree`.chomp
 
 if quicktree == ""
@@ -28,8 +29,10 @@ opts = Trollop::options do
 end
 
 if (opts.project)
-  cmd = cmdLine($0, opts, [:project])
-  qsystem(cmd, opts.project)
+  cmd = cmdLine($0, opts, [:project, :input])
+  opts.input.each do |input|
+    qsystem(cmd + " --input #{input}", opts.project)
+  end
   exit(0)
 end
 
