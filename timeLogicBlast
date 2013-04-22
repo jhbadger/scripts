@@ -51,7 +51,7 @@ opts.input.each do |file|
        cmd += "-field querytext queryaccession querylength "
        cmd += "algorithm userid targetlocus querystart queryend "
        cmd += "targetstart targetend alignmentlength matches "
-       cmd += "score score targetdescription queryframe queryframe"
+       cmd += "score score targetdescription queryframe queryframe "
        cmd += "queryframe significance significance"
    elsif opts.format == "m8"
       cmd += "-field querylocus targetlocus percentalignment "

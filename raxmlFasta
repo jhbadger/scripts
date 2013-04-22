@@ -7,6 +7,7 @@ require 'apis_lib'
 require 'Newick'
 require 'fpdf'
 
+$VERBOSE = nil
 raxml = `which raxmlHPC`.chomp
 
 if raxml == ""

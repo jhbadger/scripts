@@ -33,7 +33,7 @@ else
   ids = opts.input
 end
 
-db = Mysql.new(opts.host, "access", "access", opts.database)
+db = Mysql::Mysql.new(opts.host, "access", "access", opts.database)
 
 # quotes single quotes, etc. for SQL usage
 class String
