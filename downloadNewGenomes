@@ -6,7 +6,6 @@ require 'net/http'
 require 'net/ftp'
 require 'trollop'
 
-
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
@@ -15,6 +14,7 @@ end
 
 contigs = Hash.new
 File.new(opts.input).each do |line|
+  name, rest = line.chomp.split(" ")
   contigs[name] = true
 end
 
