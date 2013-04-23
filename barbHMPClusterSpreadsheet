@@ -52,7 +52,7 @@ print ["Name", "Cluster Size", "Members", "Example"].to_csv
 names = Hash.new
 clusters.keys.sort {|x, y| clusters[y].size <=> clusters[x].size}.each do |key|
 	species = classify(clusters[key], sp)
-	cname = species += "_1"
+	cname = species + "_001"
 	while(names[cname])
 		cname.succ!
 	end

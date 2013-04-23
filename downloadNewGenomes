@@ -1,39 +1,22 @@
 #!/usr/bin/env ruby
 
+require 'rubygems'
 require 'uri'
 require 'net/http'
 require 'net/ftp'
-require 'rubygems'
-require 'dm-core'
-require 'optparse'
-require 'ostruct'
+require 'trollop'
 
-opt = OpenStruct.new
-opt.host = "mysql://access:access@mysql-lan-pro"
 
-o = OptionParser.new
-o.banner << " database"
-o.on("-h ", "--host ", String, "database host (#{opt.host})") {|t| opt.host = t}
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
-end
-if (ARGV.size != 1)
-  STDERR << o
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Existing list of genomic contigs (NC_***, etc.)", :required=>true, :type=>:string
 end
 
-DataMapper.setup(:default, opt.host + "/" + ARGV.first)
-
-STDERR.printf("Listing existing contigs...\n")
 contigs = Hash.new
-repository(:default).adapter.select("select name from contigs").each do |name|
+File.new(opts.input).each do |line|
   contigs[name] = true
 end
-
 
 ftp = Net::FTP.new("ftp.ncbi.nlm.nih.gov")
 ftp.login
@@ -44,11 +27,8 @@ STDERR.printf("Processing ftp list...\n")
 files.each do |file|
   if (file =~/.gbk/)
     if (!contigs[File.basename(file, ".gbk")])
-      next if file =~/NC_004463.gbk/ # weird Bradyrhizobium
       STDERR.printf("Downloading %s\n", file)
       ftp.gettextfile(file)
     end
   end
 end 
-
-db.close
