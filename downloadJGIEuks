@@ -1,9 +1,9 @@
 #!/usr/bin/env ruby
 
+require 'rubygems'
 require 'uri'
 require 'net/http'
 require 'net/ftp'
-require 'MySQL'
 
 def getVersion(ftp)
   version = nil
