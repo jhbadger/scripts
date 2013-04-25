@@ -70,30 +70,34 @@ inList.chop!
 inList += ")"
 
 if (opts.transcripts)
-  query = "SELECT proteins.name, transcripts.seq, annotation, species FROM proteins "
+  query = "SELECT proteins.name, transcripts.seq, annotation, species, contigs.taxon_id FROM proteins "
   query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
   query += "LEFT JOIN transcripts on transcripts.name = proteins.name "
   query += "WHERE proteins.contig_name IN #{inList}"
 elsif (opts.rna)
-  query = "SELECT rrnas.name, rrnas.seq, annotation, species FROM rrnas "
+  query = "SELECT rrnas.name, rrnas.seq, annotation, species, contigs.taxon_id FROM rrnas "
   query += "LEFT JOIN contigs on contigs.name = rrnas.contig_name "
   query += "WHERE rrnas.contig_name IN #{inList}"
 elsif (opts.molecule)
-  query = "SELECT name, seq, form, species FROM contigs "
+  query = "SELECT name, seq, form, species, taxon_id FROM contigs "
   query += "WHERE name IN #{inList}"
 elsif (opts.name)
-  query = "SELECT proteins.name, proteins.seq, annotation, species FROM proteins "
+  query = "SELECT proteins.name, proteins.seq, annotation, species, contigs.taxon_id FROM proteins "
   query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
   query += "WHERE proteins.name IN #{inList}"
 else
-  query = "SELECT proteins.name, proteins.seq, annotation, species FROM proteins "
+  query = "SELECT proteins.name, proteins.seq, annotation, species, contigs.taxon_id FROM proteins "
   query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
   query += "WHERE proteins.contig_name IN #{inList}"
 end
 
 db.query(query).each do |row|
-  seq_name, seq, ann, species = row
-  print seq.to_fasta(seq_name + " " + ann + " " + "{" + species + "}")
+  seq_name, seq, ann, species, taxon_id = row
+  begin
+    print seq.to_fasta(seq_name + " " + ann + " {" + species + "}" + " <<" + taxon_id + ">>")
+  rescue
+    STDERR << "Empty sequence for " << seq_name << " {" << species << "}\n"
+  end
 end
 
 
