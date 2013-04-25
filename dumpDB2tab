@@ -43,14 +43,14 @@ if opts.tables
 else
   tables = []
   db.query("SHOW TABLES").each do |table|
-    tables.push(table)
+    tables.push(table.first)
   end
 end
 
 tables.each do |table|
   out = File.new(table + ".txt", "w")
   query = "SELECT * FROM #{table}"
-  query += " WHERE " + opt.where if (opt.where)
+  query += " WHERE " + opts.where if (opts.where)
   db.query(query).each do |row|
     out.print row.join("\t") + "\n"
   end

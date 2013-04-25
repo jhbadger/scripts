@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input csv files with genomeqc locations", :required=>true, :type=>:string
+  opt :database, "NR or NT", :default=>"NR", :type=>:string
+end
+
+Trollop::die :NT_or_NR unless opts.database == "NR" || opts.database == "NT"
+
+libs = []
+hits = Hash.new
+tot = Hash.new
+CSV.foreach(opts.input) do |row|
+  lib, dir = row[1], row[5]
+  if !lib.nil?
+    libs.push(lib)
+    csv = Dir.glob(dir + "/*.GenomeQC.csv")
+    if !csv.empty?
+      inHits = false
+      CSV.foreach(csv.first) do |row|
+        if inHits
+          if row.length > 3 && row[0] !~/Alignment|Percent/
+            org, num = row
+            num = num.to_i
+            tot[org] = 0 if !tot[org]
+            hits[org] = Hash.new if !hits[org]
+            hits[org][lib] = num
+            tot[org] += num
+          end
+        end
+        inHits = true if row[0]=~/^#{opts.database} BLAST/
+        inHits = false if row.empty?
+      end
+   else
+     STDERR << "I can't find CSV.out for " << lib << "\n"
+     exit(1)
+   end
+ end
+end
+
+print (["Organism"] + libs).to_csv
+tot.keys.sort {|x,y| tot[y] <=> tot[x]}.each do |org|
+  row = [org]
+  libs.each do |lib|
+    row.push(hits[org][lib])
+  end
+  print row.to_csv
+end
