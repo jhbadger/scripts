@@ -1,11 +1,10 @@
 #!/usr/bin/env ruby
 
-#Encoding.default_external="ASCII-8BIT"
-
 require 'rubygems'
 require 'trollop'
 require 'bio'
 require 'ZFile'
+require 'digest/sha1'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -13,6 +12,7 @@ opts = Trollop::options do
   opt :input, "genbank file(s) to process", :type=>:strings, :required=>true
   opt :prefix, "prefix for merged file", :type=>:string, :default=>"all"
   opt :separate, "separate files for each accession"
+  opt :phylodb, "output tab files for uploading to phylodb"
 end
 
 # classify type of molecule given definition string
@@ -27,6 +27,13 @@ def classifyMolecule(definition)
     return "Chromosome " + $1
   else
     return "Chromosome"
+  end
+end
+
+class String
+  def seguid
+    final = self.upcase.scan(/[A-Z]/).join
+    [Digest::SHA1.digest(final)].pack("m").chomp("=\n")
   end
 end
 
@@ -49,7 +56,7 @@ end
 
 pep, cds, rna, trna, ent, con = nil
 
-if (!opts.separate)
+if !opts.separate
   pep = File.new(opts.prefix + ".pep", "w")
   cds = File.new(opts.prefix + ".cds", "w")
   rna = File.new(opts.prefix + ".rRNA", "w")
@@ -57,6 +64,13 @@ if (!opts.separate)
   ent = File.new(opts.prefix + ".ent", "w")
   att = File.new(opts.prefix + ".att", "w")
   con = File.new(opts.prefix + ".con", "w")
+end
+
+if opts.phylodb
+  contigsTbl = File.new("contigs.txt", "w")
+  protTbl = File.new("proteins.txt", "w")
+  rrnaTbl = File.new("rrnas.txt", "w")
+  cdsTbl = File.new("transcripts.txt", "w")
 end
 
 org = ""
@@ -80,7 +94,7 @@ opts.input.each do |gb|
     trnas = 0
     rrnas = 0
     strain = ""
-    taxonid = ""
+    taxon_id = ""
     gene_location = nil
     gene_strand = nil
     product = ""
@@ -90,7 +104,7 @@ opts.input.each do |gb|
       pep = File.new(acc + ".pep", "w")
       cds = File.new(acc + ".cds", "w")
       rna = File.new(acc + ".rRNA", "w")
-      trna = File.newopt(acc + ".tRNA", "w")
+      trna = File.new(acc + ".tRNA", "w")
       ent = File.new(acc + ".ent", "w")
       att = File.new(acc + ".att", "w")
       con = File.new(acc + ".con", "w")
@@ -145,6 +159,11 @@ opts.input.each do |gb|
         header = key + " " + product.to_s + " {" + organism + "}"
         pep.print Bio::Sequence::AA.new(translation).to_fasta(header, 60)
         cds.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
+        if opts.phylodb
+          protTbl.print [key, key.split("-").last, product.to_s, translation, 
+            taxon_id.to_s, "0", translation.seguid].join("\t") + "\n"
+          cdsTbl.print [key, key.split("-").last, seq.upcase, "0"].join("\t") + "\n"
+        end
         if (gene_location)
           location = gene_location
           strand = gene_strand
@@ -173,7 +192,13 @@ opts.input.each do |gb|
 	      seq = getSequence(dna, feature.locations)
 	      if (product =~/rRNA|ribosomal/i || locus =~/rRNA/i)
 	        out = rna
+          if product =~/([0-9]* S)/
+            product = $1
+          end
 	        rrnas += 1
+          if opts.phylodb
+            rrnaTbl.print [key, key.split("-").last, product, seq.upcase].join("\t") + "\n"
+          end
         else
           out = trna
           trnas += 1
@@ -187,13 +212,18 @@ opts.input.each do |gb|
     end
     taxonomy = genome.taxonomy.chop
     att.print acc + "\t" + genome.seq.length.to_s + "\t"
-    att.print organism + "\t" + strain + "\t" + taxonid + "\t"
+    att.print organism + "\t" + strain + "\t" + taxon_id + "\t"
     att.print taxonomy.gsub(",", "") + "\t" + classifyMolecule(genome.definition) + "\t"
     att.print proteins.to_s + "\t" + rrnas.to_s + "\t" + trnas.to_s + "\t"
     gc =  (dna.count("g") + dna.count("c")) / (1.0 * dna.length)  
     att.print sprintf("%5.2f%%\n", gc * 100)
     header = acc + " " + genome.definition
     con.print Bio::Sequence::AA.new(dna).to_fasta(header, 60)
+    if opts.phylodb
+      contigsTbl.print [acc, organism, strain.to_s, taxon_id,
+        taxonomy, "", "", classifyMolecule(genome.definition),
+        dna.upcase, Date.today.to_s, "0", ""].join("\t") + "\n"
+    end
     if(opts.separate)
       att.close
       pep.close
@@ -206,7 +236,7 @@ opts.input.each do |gb|
   end
 end
 
-if(!opts.separate)
+if !opts.separate
   att.close
   pep.close
   cds.close
@@ -216,3 +246,10 @@ if(!opts.separate)
   con.close
 end
 
+
+if opts.phylodb
+  contigsTbl.close
+  protTbl.close
+  rrnaTbl.close
+  cdsTbl.close
+end

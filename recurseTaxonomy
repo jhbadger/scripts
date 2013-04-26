@@ -7,19 +7,20 @@ require 'mysql'
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :input, "tax num file", :type=>:string, :required=>true
-  opt :usedTaxa, "use usedTaxa.tab rather than phylodb mysql for info"
+  opt :input, "tax num(s)", :type=>:strings, :required=>true
+  opt :file, "input is file, not tax nums themselves"
+  opt :taxonomy, "use taxonomy text file from phylodb not db", :type=>:string
   opt :nodes, "use NCBI nodes.dmp", :type=>:string
   opt :names, "use NCBI names.dmp (with nodes.dmp)", :type=>:string
   opt :only, "only use official (kpcofgs) ranks"
   opt :verbose, "verbose messaging"
 end
 
-if (!opts.usedTaxa && !opts.nodes)
+if (!opts.taxonomy && !opts.nodes)
   db = Mysql.new("mysql-lan-pro", "access", "access", "phylodb")
-elsif (opts.usedTaxa)
+elsif (opts.taxonomy)
   tax = Hash.new
-  File.new(opts.usedTaxa).each do |line|
+  File.new(opts.taxonomy).each do |line|
     current, name, parent, rank = line.chomp.split("\t")
     tax[current.to_i] = [name, parent.to_i, rank]
   end
@@ -57,7 +58,6 @@ def recurseTaxonomy(db, current, official, verbose)
   end
 end
 
-
 if (opts.file)
   ids = []
   File.new(opts.input).each do |line|
@@ -67,8 +67,6 @@ else
   ids = opts.input
 end
 
-File.new(opts.input).each do |line|
-  name, taxid = line.chomp.split(" ")
-  taxid = name if !taxid
-  print name + "\t " + recurseTaxonomy(db, taxid.to_i, opts.only, opts.verbose).join("; ") + "\n"
+opts.input.each do |id|
+  print id + "\t " + recurseTaxonomy(db, id.to_i, opts.only, opts.verbose).join("; ") + "\n"
 end
