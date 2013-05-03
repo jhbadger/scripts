@@ -47,6 +47,20 @@ class String
   end
 end
 
+def flag_string(flag_num)
+  flag_num = flag_num.to_i
+  if flag_num == 1 || flag_num == 2
+    "kegg"
+  elsif flag_num == 5
+    "chloro"
+  elsif flag_num == 6
+    "mito"
+  else
+    "rest"
+  end
+end
+
+
 inList = "("
 ids.each do |id|
   if (opts.species)
@@ -70,33 +84,35 @@ inList.chop!
 inList += ")"
 
 if (opts.transcripts)
-  query = "SELECT proteins.name, transcripts.seq, annotation, species, contigs.taxon_id FROM proteins "
-  query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
-  query += "LEFT JOIN transcripts on transcripts.name = proteins.name "
-  query += "WHERE proteins.contig_name IN #{inList}"
+  query = "SELECT p.seguid, p.name, t.seq, annotation, species, c.taxon_id, p.protein_flag FROM proteins AS p "
+  query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
+  query += "LEFT JOIN transcripts AS t on t.name = p.name "
+  query += "WHERE p.contig_name IN #{inList}"
 elsif (opts.rna)
-  query = "SELECT rrnas.name, rrnas.seq, annotation, species, contigs.taxon_id FROM rrnas "
-  query += "LEFT JOIN contigs on contigs.name = rrnas.contig_name "
-  query += "WHERE rrnas.contig_name IN #{inList}"
+  query = "SELECT r.name, r.name, r.seq, annotation, species, c.taxon_id FROM rrnas AS r "
+  query += "LEFT JOIN contigs AS c on c.name = r.contig_name "
+  query += "WHERE r.contig_name IN #{inList}"
 elsif (opts.molecule)
-  query = "SELECT name, seq, form, species, taxon_id FROM contigs "
+  query = "SELECT name, name, seq, form, species, taxon_id, contig_flag FROM contigs AS c "
   query += "WHERE name IN #{inList}"
 elsif (opts.name)
-  query = "SELECT proteins.name, proteins.seq, annotation, species, contigs.taxon_id FROM proteins "
-  query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
-  query += "WHERE proteins.name IN #{inList}"
+  query = "SELECT p.seguid, p.name, p.seq, annotation, species, c.taxon_id, p.protein_flag FROM proteins AS p "
+  query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
+  query += "WHERE p.name IN #{inList}"
 else
-  query = "SELECT proteins.name, proteins.seq, annotation, species, contigs.taxon_id FROM proteins "
-  query += "LEFT JOIN contigs on contigs.name = proteins.contig_name "
-  query += "WHERE proteins.contig_name IN #{inList}"
+  query = "SELECT p.seguid, p.name, p.seq, annotation, species, c.taxon_id, p.protein_flag FROM proteins AS p "
+  query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
+  query += "WHERE p.contig_name IN #{inList}"
 end
 
 db.query(query).each do |row|
-  seq_name, seq, ann, species, taxon_id = row
+  seguid, seq_name, seq, ann, species, taxon_id, flag = row
+  header = seguid + " " + seq_name + " <<" + ann.to_s + ">> {" + species + "} " + taxon_id.to_s
+  header += " " + flag_string(flag) if flag
   begin
-    print seq.to_fasta(seq_name + " " + ann + " {" + species + "}" + " <<" + taxon_id + ">>")
+    print seq.to_fasta(header, 60)
   rescue
-    STDERR << "Empty sequence for " << seq_name << " {" << species << "}\n"
+    STDERR << "No sequence for " << seq_name << ". Skipping...\n"
   end
 end
 
