@@ -1,0 +1,86 @@
+#!/usr/bin/env ruby
+
+require 'ostruct'
+require 'optparse'
+require 'rubygems'
+require 'bio'
+opt = OpenStruct.new
+
+opt.top = false
+ARGV.options do |opts|
+  opts.banner << " blast-file [...blast-file...]"
+  opts.on("-t", "--top","only show top hit") {opt.top = true}    
+  begin
+    opts.parse!
+  rescue
+    STDERR.puts $!.message
+    STDERR.puts opts
+    exit(1)
+  end
+end
+
+ARGV.push(STDIN) if ARGV.empty?
+
+ARGV.each do |blast|
+  if (blast == STDIN)
+    out = STDOUT
+  else
+    out = File.new(blast + ".m8plus", "w")
+  end
+  Bio::Blast::Default::Report.open(blast, "r").each do |query|
+    fields = [""]*13
+    fields[0] = query.query_def.split(" ").first
+    begin
+      query.each do |hit|
+        hsp = hit.hsps.first
+        fields[1] = hit.definition.split(" ").first
+        fields[2] = ((hit.identity / hitLen.to_f)*1000).to_i/10.0
+	fields[3] = (hit.target_start - hit.target_end).abs + 1
+	fields[4] = 0
+	fields[5] = hsp.gaps 
+	fields[6] = hit.query_start
+        fields[7] = hit.query_end
+        fields[8] = hit.target_start
+        fields[9] = hit.target_end
+        fields[10] = hit.evalue
+	fields[11] = hit.score
+        fields[12] = hit.definition
+        out.print fields.join("\t")+"\n"
+        break if opt.top
+      end
+    rescue
+      STDERR.printf("Skipping query %s...\n", fields[0]) if (out != STDOUT)
+    end
+  end
+  out.close
+end
+
+# This is a BioRuby remake. The original BTAB program is described here:
+# Dubnick M. (1992) Btab--a Blast output parser. Comput Appl Biosci 8(6):601-2
+# The parsed BLAST output is presented as single line HSP descriptions, with tab-delimited 
+# fields in the following order:
+#
+# [0]      Query Sequence Name
+# [2]      Query Sequence Length
+# [3]      Search Method  --  Blast family application name
+# [4]      Database Name
+# [5]      Subject Sequence Name  --  Database entry name
+# [6],[7]   Query Left End, Query Right End  --  The endpoints of the part
+#                of the query sequence which Blast aligns with the subject sequence.
+# [8],[9]  Subject Left End, Subject Right End  --  The endpoints of the part 
+#                of the subject sequence which Blast aligns with the query sequence.
+# [10]     Percent Identity  --  The fraction of residues which are absolute
+#             matches between the query and subject sequence, expressed in
+#             percent.  
+# [12]    HSP score    
+# [13]    Bits score
+# [15]    Description  --  A freeform text field which contains the biological
+#         description field from the database for the subject sequence.
+# [16]    Query Frame (1, 2, 3, -1, -2, -3)
+# [17]    Query Strand  --  Plus, Minus or null
+# [18]    DB sequence length
+# [19]    Expect -- expected value
+# [20]    P-Value  --  Poisson ratio
+#
+# ** Note ** Intervening field positions which are not described are not currently supported.
+# These remain to support compatibility with other existing btab implementations.
