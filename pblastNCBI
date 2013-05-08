@@ -12,7 +12,7 @@ opts = Trollop::options do
   opt :blast, "blast program", :default=>"blastp", :type => :string
   opt :database, "BLAST database to use", :required => true, :type => :string
   opt :evalue, "BLAST evalue", :default => 1e-9, :type => :float
-  opt :format, "BLAST output format (ncbi, m8, btab)", :default=>"ncbi"
+  opt :format, "BLAST output format (ncbi, m8, m8plus, btab)", :default=>"ncbi"
   opt :input, "FASTA input file(s) to blast", :required => true, :type => :strings
   opt :maxhits, "max number of BLAST hits", :default => 50, :type => :integer
   opt :project, "JCVI project number", :required => true, :type => :string
@@ -24,15 +24,15 @@ if (File.basename(opts.database) == opts.database)
   opts.database = Dir.pwd + "/" + opts.database
 end
 
-if (opts.blast !~ /^blast[n|p|x]/ && opts.blast !~/tblastn/ && opts.blast !~ /tblastx/)
-  STDERR.printf("Only blastn, blastp, blastx, tblastn, and tblastx are valid grid BLAST programs\n")
-  exit(1)
-end
+Trollop::die :choose_blastn_blastp_blastx_tblastn_tblastx unless opts.blast =~ /^blast[n|p|x]|tblastn|tblastx/ 
+
+Trollop::die :choose_ncbi_m8_m8plus_btab unless opts.format=~/ncbi|m8|m8plus|btab/
 
 blast = "blastall -p #{opts.blast} -d #{opts.database} -b#{opts.maxhits}"
 blast += " -m8 " if opts.format == "m8"
 blast += " -v#{opts.maxhits} -e#{opts.evalue} -i "
-blast = [blast, "badgerBtab"] if (opts.format == "btab")
+blast = [blast, "badgerBtab"] if opts.format == "btab"
+blast = [blast, "badgerM8plus"] if opts.format == "m8plus"
 
 opts.input.each do |file|
   if (!File.exists?(file))
@@ -53,8 +53,7 @@ opts.input.each do |file|
   out.close
   grid.submit(sync = true)
   grid.cleanup
-  bout = File.basename(file) + "_vs_" + File.basename(opts.database) + ".#{opts.blast}"
-  bout += ".btab" if (opts.format == "btab")
+  bout = File.basename(file) + "_vs_" + File.basename(opts.database) + "." + opts.blast + "." + opts.format
   berr = File.basename(file) + "_vs_" + File.basename(opts.database) + ".err"
   File.rename("blastall.out", bout)
   File.rename("blastall.err", berr)

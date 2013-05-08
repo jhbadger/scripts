@@ -12,6 +12,7 @@ opts = Trollop::options do
   opt :input, "genbank file(s) to process", :type=>:strings, :required=>true
   opt :prefix, "prefix for merged file", :type=>:string, :default=>"all"
   opt :separate, "separate files for each accession"
+  opt :flag, "phylodb category flag", :type=>:integer, :default=> 0
   opt :phylodb, "output tab files for uploading to phylodb"
 end
 
@@ -161,8 +162,8 @@ opts.input.each do |gb|
         cds.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
         if opts.phylodb
           protTbl.print [key, key.split("-").last, product.to_s, translation, 
-            taxon_id.to_s, "0", translation.seguid].join("\t") + "\n"
-          cdsTbl.print [key, key.split("-").last, seq.upcase, "0"].join("\t") + "\n"
+            taxon_id.to_s, opts.flag.to_s, translation.seguid].join("\t") + "\n"
+          cdsTbl.print [key, key.split("-").last, seq.upcase, opts.flag.to_s].join("\t") + "\n"
         end
         if (gene_location)
           location = gene_location
@@ -222,7 +223,7 @@ opts.input.each do |gb|
     if opts.phylodb
       contigsTbl.print [acc, organism, strain.to_s, taxon_id,
         taxonomy, "", "", classifyMolecule(genome.definition),
-        dna.upcase, Date.today.to_s, "0", ""].join("\t") + "\n"
+        dna.upcase, Date.today.to_s, opts.flag.to_s, ""].join("\t") + "\n"
     end
     if(opts.separate)
       att.close
