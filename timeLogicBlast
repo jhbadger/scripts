@@ -16,15 +16,14 @@ opts = Trollop::options do
   opt :user, "Timelogic user", :default=>ENV["USER"], :type=>:string
   opt :password, "Timelogic password", :required=>true, :type=>:string
   opt :maxHits, "Maximum blast hits", :default=>50, :type=>:integer
-  opt :format, "Blast format (full, btab, or m8)", :default=>"m8", :type=>:string
+  opt :format, "Blast format (full, btab, m8, or m8plus)", :default=>"m8plus", :type=>:string
 end
 
 db = ARGV.shift
 
-if (opts.blast !~ /^blast[n|p|x]/ && opts.blast !~/tblastn/)
-  STDERR.printf("Only blastn, blastp, blastx, and tblastn are valid grid BLAST programs\n")
-  exit(1)
-end
+Trollop::die :unknown_blast unless opts.blast =~ /^blast[n|p|x]/ || opts.blast =~/tblastn/
+
+Trollop::die :unknown_format unless opts.format =~ /btab|m8|m8plus|ncbi/
 
 opts.input.each do |file|
   bout = File.basename(file) + "_vs_" + File.basename(opts.database)
@@ -32,6 +31,8 @@ opts.input.each do |file|
      bout += ".btab"
   elsif opts.format == "m8"
     bout += ".m8"
+  elsif (opts.format == "m8plus")
+    bout += ".m8plus"
   else
     bout += ".blast"
   end 
@@ -45,7 +46,7 @@ opts.input.each do |file|
   cmd += "-max_alignments #{opts.maxHits} -max_scores #{opts.maxHits} "
   cmd += "-query #{file} -user #{opts.user} -password #{opts.password} "
   cmd += "-server #{opts.server} "
-  if opts.format == "m8" || opts.format == "btab"
+  if opts.format == "m8" || opts.format == "m8plus" || opts.format == "btab"
     cmd += "-output_format tab "
     if opts.format == "btab" 
        cmd += "-field querytext queryaccession querylength "
@@ -57,6 +58,10 @@ opts.input.each do |file|
       cmd += "-field querylocus targetlocus percentalignment "
       cmd += "alignmentlength matches gaps querystart queryend "
       cmd += "targetstart targetend significance score"
+   elsif opts.format == "m8plus"
+      cmd += "-field querylocus targetlocus percentalignment "
+      cmd += "alignmentlength matches gaps querystart queryend "
+      cmd += "targetstart targetend significance score targetdescription"
    end
  end
  cmd += "> #{bout}"

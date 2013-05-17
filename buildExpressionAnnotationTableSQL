@@ -45,7 +45,7 @@ File.new(opts.ann).each do |line|
 	transcript = fields.first
 	if (transcript == "orf_id")
 		fheaders, sheaders = fields, counts
-		if sheaders.length > 2
+		if sheaders && sheaders.length > 2
 			if !opts.experiment
 				STDERR << "For counts data, you need to specify the experiment\n"
 				exit(1)
@@ -60,6 +60,9 @@ File.new(opts.ann).each do |line|
 		else
 			row += [""]
 		end
+                while (row.size < 30)
+                  row += [""]
+                end
 		afile.print row.to_csv(:col_sep=>"\t")
 		if (cfile)
 			sheaders.each do |sample|
