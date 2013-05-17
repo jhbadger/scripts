@@ -29,7 +29,7 @@ else
 	header = ["Transcript", "Max RPKM"]
 	["RPKM","Counts","Rank"].each do |label|
 		samples.each do |sample|
-			sample = sample + " " + desc[sample] if desc[sample].to_s.length > 0
+			sample = sample + " " + desc[sample] if desc[sample].to_s.length > 0 && desc[sample] != sample
 			header.push(sample + " " + label)
 		end
 	end
