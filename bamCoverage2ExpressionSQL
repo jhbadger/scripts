@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'trollop'
+
+# CREATE TABLE counts (experiment, sample, transcript, count integer);
+# CREATE TABLE sample_desc(experiment, sample, desc, org);
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :org, "Organism abbrevation", :type=>:string, :required=>true
+  opt :experiment, "experiment", :type=>:string, :required=>true
+  opt :input, "coverage files from bedtools", :type=>:strings, :required=> true
+end
+
+samp = File.new("sample_desc.txt", "w")
+counts = File.new("counts.txt", "w")
+
+opts.input.each do |cov|
+  sample = File.basename(cov).split("-").first.downcase
+  samp.printf("%s\t%s\t%s\t%s\n", opts.experiment, sample, 
+  			  	  sample, opts.org)
+  cnts = Hash.new
+  File.new(cov).each do |line|
+    fields = line.chomp.split("\t")
+    tfield = fields.grep(/transcript_id/)
+    if (tfield)
+      if tfield.first =~/transcript_id \"([^\"]*)\"/
+        tid = $1
+	cnts[tid] = 0 if ! cnts[tid]
+	cnts[tid] += fields[-3].to_i
+      end
+    end
+  end
+  cnts.keys.each do |tid|
+    counts.printf("%s\t%s\t%s\t%d\n",opts.experiment, sample, tid, cnts[tid])
+  end
+end
+samp.close
+counts.close
