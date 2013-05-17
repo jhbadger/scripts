@@ -29,7 +29,7 @@ opts.input.each do |cov|
       if tfield.first =~/transcript_id \"([^\"]*)\"/
         tid = $1
 	cnts[tid] = 0 if ! cnts[tid]
-	cnts[tid] += fields[-3].to_i
+	cnts[tid] += fields[-4].to_i
       end
     end
   end

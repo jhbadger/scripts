@@ -113,11 +113,11 @@ end
 
 # compute gene-based rpkm from counts, total_mapped_reads, gene_exons_length
 def gene_rpkm(transcript, counts, total_mapped_reads, gene_length)
-  begin
-    sprintf("%.2f",(1e9*counts.to_f)/(total_mapped_reads*gene_length)).to_f
-  rescue
-    STDERR << "Problem with " << transcript << " counts " << counts << " total " << total_mapped_reads << " len " << gene_length << "\n"
-  end
+    if counts && gene_length
+      sprintf("%.2f",(1e9*counts.to_f)/(total_mapped_reads*gene_length)).to_f
+    else
+      0.0
+    end
 end
 
 # compute array of gene-based rpkms (and maximums) from counts, total, gene lengths
