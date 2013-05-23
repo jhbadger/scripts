@@ -14,6 +14,7 @@ opts = Trollop::options do
   opt :separate, "separate files for each accession"
   opt :flag, "phylodb category flag", :type=>:integer, :default=> 0
   opt :phylodb, "output tab files for uploading to phylodb"
+  opt :seguid, "print seqguid in header"
 end
 
 # classify type of molecule given definition string
@@ -37,6 +38,20 @@ class String
     [Digest::SHA1.digest(final)].pack("m").chomp("=\n")
   end
 end
+
+def flag_string(flag_num)
+  flag_num = flag_num.to_i
+  if flag_num == 1 || flag_num == 2
+    "kegg"
+  elsif flag_num == 5
+    "chloro"
+  elsif flag_num == 6
+    "mito"
+  else
+    "rest"
+  end
+end
+
 
 # return sequence from genbank range
 def getSequence(seq, locations)
@@ -157,7 +172,14 @@ opts.input.each do |gb|
           translation = Bio::Sequence::NA.new(seq).translate.seq
         end
         key = cds_name + "-" + acc
-        header = key + " " + product.to_s + " {" + organism + "}"
+	if (opts.seguid)
+	   header = translation.seguid + " "
+	else
+	   header= ""
+        end
+	header += key + " <<" + product.to_s + ">> {" + organism + "}"
+	header += " " + taxon_id.to_s if taxon_id
+  	header += " " + flag_string(opts.flag) if opts.flag
         pep.print Bio::Sequence::AA.new(translation).to_fasta(header, 60)
         cds.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
         if opts.phylodb

@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input (ids or file)", :required=>true, :type=>:strings
+  opt :database, "ncbi database (nucleotide, protein, or sra)", :default=>"nucleotide", :type=>:string
+  opt :format, "sequence format (gb, gp or fasta)", :default=>"gb", :type=>:string
+end
+
+
+if File.exists?(opts.input.first)
+	ids = []
+	File.new(opts.input.first).each do |line|
+		ids.push(line.chomp.split(" ").first)
+	end
+else
+	ids = opts.input
+end
+
+Bio::NCBI.default_email = ENV["USER"] + "@jcvi.org"
+ncbi = Bio::NCBI::REST.new
+seqs = ncbi.efetch(ids = ids, {"db"=>opts.database, "rettype"=>opts.format})
+seqs.gsub!("\n\n", "\n")
+
+print seqs
