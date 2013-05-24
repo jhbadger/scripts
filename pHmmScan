@@ -5,6 +5,8 @@ require 'trollop'
 require 'bio'
 require 'SunGrid'
 
+$VERBOSE=nil
+
 ARGV.push("-h") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
