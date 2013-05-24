@@ -8,7 +8,7 @@ require 'SunGrid'
 ARGV.push("-h") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :command, "hmm search program", :default=>"hmmscan", :type => :string
+  opt :command, "hmm search program", :default=>"hmm3scan", :type => :string
   opt :database, "HMM database to use", 
       :default=>"/usr/local/db/HMM3_LIB/ALL_LIB.HMM", :type => :string
   opt :input, "FASTA input file(s)", :required => true, :type => :strings
