@@ -54,6 +54,7 @@ opts.input.each do |file|
     File.new(tbl).each do |line|
       out.print line
     end
+    File.unlink(tbl)
   end
   out.close
   out = File.new(outName + ".dom", "w")
@@ -61,6 +62,7 @@ opts.input.each do |file|
     File.new(dom).each do |line|
       out.print line
     end
+    File.unlink(dom)
   end
   out.close
   grid.cleanup

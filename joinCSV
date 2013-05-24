@@ -1,54 +1,34 @@
 #!/usr/bin/env ruby
 
-require 'optparse'
-require 'ostruct'
+require 'rubygems'
+require 'trollop'
 require 'csv'
 
-opt = OpenStruct.new
-o = OptionParser.new
-opt.merge = []
-
-o.banner << " csv1 csv2"
-o.on("-m ", "--merge ", "merge given rows") {|t| opt.merge = t.split(",")}
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "csv files", :required=>true, :type=>:strings
 end
-
-if (ARGV.size != 2)
-  STDERR << o
-  exit(1)
-end
-
-csv1, csv2 = ARGV
 
 lines = Hash.new
 headers = nil
-CSV.foreach(csv1, :headers => true) do |line|
+CSV.foreach(opts.input[0], :headers => true) do |line|
   headers = line.headers if !headers
   rowName = line[headers.first]
-  lines[rowName] = line
+  lines[rowName] = line.fields if rowName
 end
 
 lines2 = Hash.new
 headers2 = nil
-CSV.foreach(csv2, :headers => true) do |line|
+CSV.foreach(opts.input[1], :headers => true) do |line|
   headers2 = line.headers if !headers2
   rowName = line[headers2.first]
-  lines2[rowName] = line
-  lines[rowName] = Hash.new if (!lines[rowName])
-  lines[rowName][headers2.first] = lines2[rowName][headers2.first]
-  opt.merge.each do |col|
-    lines[rowName][col] = lines2[rowName][col] if lines[rowName][col].to_s.length < lines2[rowName][col].to_s.length
+  if lines[rowName]
+    lines[rowName] += line.fields
   end
 end
 
 print (headers + headers2).to_csv
-(lines.keys + lines2.keys).sort.uniq.each do |key|
-  lines[key] = Hash.new if (!lines[key])
-  lines2[key] = Hash.new if (!lines2[key])
-  print (headers.collect{|x| lines[key][x]} + headers2.collect{|x| lines2[key][x]}).to_csv
+lines.keys.each do |key|
+  print lines[key].to_csv
 end
