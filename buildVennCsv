@@ -1,17 +1,10 @@
 #!/usr/bin/env ruby
 
-$VERBOSE = false
+$VERBOSE = nil
 
 require 'rubygems'
 require 'bio'
 require 'trollop'
-
-ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
-  banner File.basename($0)
-  opt :peptides, "Input fasta files", :required=>true, :type=>:strings
-  opt :evalue, "evalue cutoff", :default=>0.1, :type:=>:float
-end
 
 def merge(clusters, pvalue, genome)
   clusters.each do |c1|
@@ -36,58 +29,6 @@ def merge(clusters, pvalue, genome)
   end
 end
 
-
-plen = Hash.new
-score = Hash.new
-
-outName =opts.peptides.first + ".mcl"
-out = File.new(outName, "w")
-
-STDERR.printf("Loading Genomes...\n")
-opts.peptides.each do |pep|
-  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each do |seq|
-    key = seq.definition.split(" ").first + "_%_" + pep
-    score[key] = Hash.new
-    score[key][key] = 10
-    plen[key] = seq.length
-    out.printf("%s\t%s\t%8.3f\n",key,key,score[key][key])
-  end
-end
-
-
-STDERR.printf("Loading Pairwise Clusters...\n")
-opts.peptides.each do |pep1|
-  opts.peptides.each do |pep2|
-    next if pep1 == pep2
-    vs = pep1 + "_vs_" + pep2
-    rvs = pep2 + "_vs_" + pep1
-    if (!File.exists?(vs + ".recip"))
-      
-      if (File.exists?("#{vs}.blastp.btab"))
-          format = "btab"
-      elsif File.exists?("#{vs}.blastp.m8")
-        system("bestRecipBtab -b btab -f #{vs}.blastp.btab -r #{rvs}.blastp.btab -e #{opts.evalue} > #{vs}.recip")
-      else
-        STDERR.printf("Can't find any blast for #{vs}!\n")
-        exit(1)
-      end
-    end
-    File.new(vs + ".recip").each do |line|
-      x, y, p1, p2, orth = line.chomp.split("\t")
-      x = x + "_%_" + pep1
-      y = y + "_%_" + pep2
-      if (orth == "yes")
-        score[x][y] = -Math.log(p1.to_f + 1e-300)
-        score[x][y] = 200 if score[x][y] > 200
-        score[y][x] = -Math.log(p2.to_f + 1e-300)
-        score[y][x] = 200 if score[y][x] > 200
-        out.printf("%s\t%s\t%8.3f\n",x,y,score[x][y])
-      end
-    end
-  end
-end
-out.close
-
 def averageScore(scoreHash)
   tot = 0
   scoreHash.values.each do |value|
@@ -95,12 +36,6 @@ def averageScore(scoreHash)
   end
   return tot / scoreHash.keys.size
 end
-
-printf("Representative")
-ARGV.each do |g|
-  printf(",%s", File.basename(g, ".pep"))
-end
-printf("\n")
 
 def processmcl(out, score, plen, genomes, reps, globalSeen)
   bad = []
@@ -149,12 +84,75 @@ def processmcl(out, score, plen, genomes, reps, globalSeen)
   return bad
 end
 
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :peptides, "Input fasta files", :required=>true, :type=>:strings
+  opt :evalue, "evalue cutoff", :default=>0.1, :type=>:float
+end
+
+plen = Hash.new
+score = Hash.new
+
+outName =opts.peptides.first + ".mcl"
+out = File.new(outName, "w")
+
+STDERR.printf("Loading Genomes...\n")
+opts.peptides.each do |pep|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each do |seq|
+    key = seq.definition.split(" ").first + "_%_" + pep
+    score[key] = Hash.new
+    score[key][key] = 10
+    plen[key] = seq.length
+    out.printf("%s\t%s\t%8.3f\n",key,key,score[key][key])
+  end
+end
+
+STDERR.printf("Loading Pairwise Clusters...\n")
+opts.peptides.each do |pep1|
+  opts.peptides.each do |pep2|
+    next if pep1 == pep2
+    vs = pep1 + "_vs_" + pep2
+    rvs = pep2 + "_vs_" + pep1
+    if (!File.exists?(vs + ".recip"))
+      b1 = Dir.glob("#{vs}.blastp.*").first
+      b2 = Dir.glob("#{rvs}.blastp.*").first
+      if File.exists?(b1) && File.exists?(b2)
+        system("bestRecip -i #{b1} #{b2} -e #{opts.evalue} > #{vs}.recip")
+      else
+        STDERR.printf("Can't find any blast for #{vs}!\n")
+        exit(1)
+      end
+    end
+
+    File.new(vs + ".recip").each do |line|
+      x, y, p1, p2, orth = line.chomp.split("\t")
+      x = x + "_%_" + pep1
+      y = y + "_%_" + pep2
+      if (orth == "yes")
+        score[x][y] = -Math.log(p1.to_f + 1e-300)
+        score[x][y] = 200 if score[x][y] > 200
+        score[y][x] = -Math.log(p2.to_f + 1e-300)
+        score[y][x] = 200 if score[y][x] > 200
+        out.printf("%s\t%s\t%8.3f\n",x,y,score[x][y])
+      end
+    end
+  end
+end
+out.close
+
+printf("Representative")
+opts.peptides.each do |g|
+  printf(",%s", File.basename(g, ".pep"))
+end
+printf("\n")
+
 reps = Hash.new
 
 globalSeen = Hash.new
 
-bad = processmcl(outName, score, plen, ARGV, reps, globalSeen)
-outName = ARGV[0].to_s + ".mcl"
+bad = processmcl(outName, score, plen, opts.peptides, reps, globalSeen)
+outName = opts.peptides.first.to_s + ".mcl"
 out = File.new(outName, "w")
 bad.each do |x|
   out.printf("%s\t%s\t%8.3f\n",x,x,score[x][x])
@@ -163,12 +161,12 @@ bad.each do |x|
   end
 end
 out.close
-processmcl(outName, score, plen, ARGV, reps, globalSeen)
+processmcl(outName, score, plen, opts.peptides, reps, globalSeen)
 File.unlink(outName)
 
 STDERR.printf("Writing Pangenome.fa...\n")
 out = File.new("Pangenome.fa", "w")
-ARGV.each do |pep|
+opts.peptides.each do |pep|
   Bio::FlatFile.new(Bio::FastaFormat, File.new(pep)).each do |seq|
     out.print seq if reps[seq.entry_id]
   end
