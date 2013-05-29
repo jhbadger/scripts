@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'csv'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :ann, "csv with annotation", :required=>true, :type=>:string
+  opt :venn, "venn.csv", :required=>true, :type=>:string
+end
+
+anns = Hash.new
+CSV.foreach(opts.ann, :headers=>true) do |row|
+  pann = row["PFams_desc"].to_s.split("||")
+  orf = row["Transcript"]
+  pann = pann.find_all{|x| x !~/^PF|^_GAP/}.join("||")
+  anns[orf] = pann if pann.length > 0
+end
+
+CSV.foreach(opts.venn) do |row|
+  0.upto(row.size).each do |i|
+    if row[i]=~/^a[0-9]/
+      name = row[i].gsub("a","")
+      if anns[name]
+        row[i] = row[i] + " " + anns[name]
+      end
+    end
+  end
+  print row.to_csv if row.length > 0
+end
