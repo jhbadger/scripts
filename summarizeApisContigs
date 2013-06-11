@@ -1,55 +1,70 @@
 #!/usr/bin/env ruby
 
+require 'rubygems'
+require 'ostruct'
+require 'trollop'
+require 'yajl'
+require 'ZFile'
+require 'apis_lib'
 require 'csv'
 
-if (ARGV.size != 1)
-  STDERR << "Usage: " << File.basename($0) << " csv-file\n"
-  exit(1)
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+        banner File.basename($0)
+        opt :input, "read from file rather than STDIN", :type => :string
 end
 
-csv = ARGV.first
 
 assignment = Hash.new
-CSV.foreach(csv, :headers => true) do |row|
-  name, tax = row["Seq Name"], row["Relaxed Classification"]
-  if (name =~/(NODE_|contig[0-9]*|ctg[0-9]*)_/)  
+JsonStreamer.new(ZFile.new(opts.input)).each do |row|
+  name, tax = row["name"], row["relaxed_consensus"]
+  if (name =~/(NODE_|contig[0-9]*|ctg[0-9]*|scf[0-9]*)/)  
     contig = $1
-    assignment[contig] = [] if assignment[contig].nil?
-    tax = tax.to_s.split("; ")
-    0.upto(6) do |i|
-      assignment[contig][i] = Hash.new if !assignment[contig][i]
-      tax[i] = "Mixed" if !tax[i]
-      assignment[contig][i][tax[i]] = [] if !assignment[contig][i][tax[i]]
-      assignment[contig][i][tax[i]].push(name)
+    tax = [tax["kingdom"], tax["phylum"], tax["class"], tax["order"], tax["family"], tax["genus"], tax["species"]]
+    if (tax.first != "NO_TREE")
+      assignment[contig] = [] if assignment[contig].nil?
+      0.upto(6) do |i|
+        assignment[contig][i] = Hash.new if !assignment[contig][i]
+        tax[i] = "Mixed" if !tax[i]
+        assignment[contig][i][tax[i]] = [] if !assignment[contig][i][tax[i]]
+        assignment[contig][i][tax[i]].push(name)
+      end
     end
   end
 end
-print ["Contig", "Orfs", "List", "Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"].to_csv
+
+def scoreContig(assignmentLevel)
+  orfs = assignmentLevel.values.flatten
+  best = nil
+  bestSize = 0
+  assignmentLevel.keys.each do |key|
+    if assignmentLevel[key].length > bestSize && key != "Mixed"
+      best = key
+      bestSize = assignmentLevel[key].length
+    end
+  end
+  return [best, (bestSize*100/orfs.size)/100.0] 
+end
+
+headers = ["Contig", "Orfs"]
+["Species", "Genus", "Family", "Order", "Class", "Phylum", "Kingdom"].each do |rank|
+  headers.push(rank)
+  headers.push(rank + " Score")
+end
+
+print headers.to_csv
 
 rows = Hash.new
 orfs = Hash.new
 assignment.keys.sort.each do |contig|
-  row = [contig]
+  orfs = assignment[contig].collect{|x| x.values}.flatten.sort.uniq
+  row = [contig, orfs.size]
   0.upto(6) do |i|
-    sizes = assignment[contig][i].values.collect{|x| x.size}
-    tot = sizes.reduce(:+)
-    row[1] = tot
-    row[2] = [] if !row[2]
-    row[2].push(assignment[contig][i].values)
-    tx = ""
-    assignment[contig][i].keys.sort {|x, y| assignment[contig][i][y] <=> assignment[contig][i][x]}.each do |taxon|
-      next if taxon == "Mixed"
-      percent = ((assignment[contig][i][taxon].size*100)/tot)
-      tx += taxon + " " + percent.to_s + "% " if percent > 5
-    end
-    row.push(tx)
+    value, score = scoreContig(assignment[contig][6 - i])
+    row.push(value)
+    row.push(score)
   end
-  row[2] = row[2].flatten.sort.uniq.join(" ")
-  rows[contig] = row
-  orfs[contig] = row[1]
   print row.to_csv
 end
 
-rows.keys.sort {|x, y| orfs[y] <=> orfs[x]}.each do |key|
-  print rows[key].to_csv
-end

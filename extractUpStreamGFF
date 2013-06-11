@@ -1,50 +1,52 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'optparse'
-require 'FastaDB'
-opt = OpenStruct.new
+require 'rubygems'
+require 'bio'
+require 'trollop'
 
-opt.upLen = 800
-ARGV.options {|opts|
-  opts.banner << " fasta gff-file"
-  opts.on("-l ", "--length ", Integer, 
-          "upstream length (default #{opt.upLen})") {|t| opt.upLen = t}    
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "fasta file", :required=>true, :type=>:string
+  opt :gff, "gff file", :type=>:string, :required=>true
+  opt :upstream, "upstream length", :type=>:integer, :default=>1000
+  opt :transcripts, "file with transcript ids to check", :type=>:string, :required=>true
+end
+
+transcripts = Hash.new
+File.new(opts.transcripts).each do |line|
+  transcripts[line.chomp] = true
+end
+
+startEx = Hash.new
+strandEx = Hash.new
+contigEx = Hash.new
+File.new(opts.gff).each do |line|
+  contig, method, feature, start, stop, gc, strand, score, att = line.chomp.split("\t")
+  if att =~/transcript_id \"([^"]*)\"/
+    transcript = $1
+  else
+    transcript = nil
   end
-  if (ARGV.size != 2)
-    STDERR.puts opts
-    exit(1)
+  if (feature =~ /exon/ && transcripts[transcript])
+    strandEx[transcript] = strand
+    contigEx[transcript] = contig
+    if !startEx[transcript] || (strand == "+" && start.to_i < startEx[transcript]) ||
+      (strand == "-" && start.to_i > startEx[transcript])
+      startEx[transcript] = start.to_i
+    end
   end
-}
+end
 
-fasta, gff = ARGV
-
-firstEx = Hash.new
-File.new(gff).each {|line|
-  contig, method, feature, start, stop, gc, strand = line.split(" ")
-  next if (feature !~ /initial-exon|single-exon/)
-  firstEx[contig] = [] if (firstEx[contig].nil?)
-  firstEx[contig].push([start.to_i, stop.to_i, feature, strand])
-}
-
-FastaDB.new(fasta).each {|seq|
-  if (firstEx[seq.name])
-    firstEx[seq.name].each {|exon|
-      start, stop, feature, strand = exon
-      if (strand == "+")
-        next if (start - opt.upLen < 1)
-        upSeq = seq.naseq.seq[start - (1 + opt.upLen), opt.upLen].upcase
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  contigEx.keys.each do |key|
+    if contigEx[key] == seq.entry_id
+      if strandEx[key] == "+"
+        subseq = seq.naseq.subseq(startEx[key] - 1000, startEx[key] - 1)
       else
-        next if (stop + opt.upLen > seq.length)
-        upSeq = seq.naseq[stop + 1, opt.upLen].complement.upcase
+        subseq = seq.naseq.subseq(startEx[key] + 1, startEx[key] + 1000).complement
       end
-      print Sequence.new(upSeq).to_fasta(seq.name + "_" + start.to_s, 60)
-    }
+      print subseq.to_fasta(key + "_upstream", 60)
+    end
   end
-}
+end
