@@ -10,12 +10,16 @@ opts = Trollop::options do
   opt :input, "fasta file", :required=>true, :type=>:string
   opt :gff, "gff file", :type=>:string, :required=>true
   opt :upstream, "upstream length", :type=>:integer, :default=>1000
-  opt :transcripts, "file with transcript ids to check", :type=>:string, :required=>true
+  opt :transcripts, "file with transcript ids to check", :type=>:string
+  opt :linelength, "length of fasta lines", :type=>:integer, :default=>60
+  opt :verse, "report regions *not* in transcripts file"
 end
 
 transcripts = Hash.new
-File.new(opts.transcripts).each do |line|
-  transcripts[line.chomp] = true
+if opts.transcript
+  File.new(opts.transcripts).each do |line|
+    transcripts[line.chomp] = true
+  end
 end
 
 startEx = Hash.new
@@ -28,12 +32,17 @@ File.new(opts.gff).each do |line|
   else
     transcript = nil
   end
-  if (feature =~ /exon/ && transcripts[transcript])
+  if feature =~ /exon/ && (transcripts[transcript] != opts.verse)
     strandEx[transcript] = strand
     contigEx[transcript] = contig
-    if !startEx[transcript] || (strand == "+" && start.to_i < startEx[transcript]) ||
-      (strand == "-" && start.to_i > startEx[transcript])
-      startEx[transcript] = start.to_i
+    if (strand == "+")
+      if startEx[transcript].nil? || start.to_i < startEx[transcript]
+        startEx[transcript] = start.to_i
+      end
+    else
+      if startEx[transcript].nil? || stop.to_i > startEx[transcript]
+        startEx[transcript] = stop.to_i
+      end
     end
   end
 end
@@ -42,11 +51,17 @@ Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
   contigEx.keys.each do |key|
     if contigEx[key] == seq.entry_id
       if strandEx[key] == "+"
-        subseq = seq.naseq.subseq(startEx[key] - 1000, startEx[key] - 1)
+        upStart = startEx[key] - 1000
+        upStop = startEx[key] - 1
       else
-        subseq = seq.naseq.subseq(startEx[key] + 1, startEx[key] + 1000).complement
+        upStart = startEx[key] + 1
+        upStop = startEx[key] + 1000
       end
-      print subseq.to_fasta(key + "_upstream", 60)
+      if (upStart > 0 && upStop > 0)
+        subseq = seq.naseq.subseq(upStart, upStop)
+        subseq = subseq.complement if strandEx[key] == "-"
+        print subseq.to_fasta(key + "_upstream ("+seq.entry_id+" "+upStart.to_s + " " + upStop.to_s+" "+ strandEx[key]+")", opts.linelength)
+      end
     end
   end
 end
