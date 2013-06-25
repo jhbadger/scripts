@@ -1,56 +1,35 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require'bio'
-include Bio
+require 'bio'
+require 'trollop'
 
-verbose = false
-onlyPlus = false
-printMatch = false
-realARGV = []
-
-ARGV.each {|arg|
-  if (arg == "+")
-    onlyPlus = true
-  elsif (arg == "-v")
-    verbose = true
-  elsif (arg == "-m")
-    printMatch = true
-  else
-    realARGV.push(arg)
-  end
-}
-
-
-if (realARGV.size != 2)
-  STDERR.printf("usage %s [+] [-v] [-m] pattern file\n", $0)
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "fasta file", :required=>true, :type=>:string
+  opt :pattern, "pattern to match", :required=>true, :type=>:string
+  opt :verse, "show sequences not matching motif"
 end
 
-pat, file = realARGV
-pat = pat.upcase.gsub("N",".")
+pat = opts.pattern.tr("NnX",".").upcase
+pat.gsub!("V","[G|A|C]")
+pat.gsub!("B","[G|T|C]")
+pat.gsub!("H","[A|T|C]")
+pat.gsub!("D","[G|A|T]")
+pat.gsub!("K","[G|T]")
+pat.gsub!("S","[G|C]")
+pat.gsub!("W","[A|T]")
+pat.gsub!("M","[A|C]")
+pat.gsub!("Y","[C|T]")
+pat.gsub!("R","[A|G]")
 
-FlatFile.new(FastaFormat, File.new(file)).each {|seq|
-  name, rest = seq.definition.split(" ") if (!verbose)
-  name, rest = seq.definition.split("{") if (verbose)
-  pos = -1
-  while (!pos.nil?)
-    pos = seq.seq.index(/(#{pat})/i, pos + 1)
-    if (!printMatch)
-      printf("%s\t%d\n", name, seq.length - pos) if (!pos.nil?)
-    else
-      printf("%s\t%d\t%s\n", name, seq.length - pos, $1) if (!pos.nil?)
-    end
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  s = seq.seq.upcase
+  found = s.index(/(#{pat})/)
+  if !found && opts.verse
+    printf("%s\n", seq.entry_id)
+  elsif found && !opts.verse
+    printf("%s\t%s\t%d\n", seq.entry_id, $1, found+1)
   end
-  next if (onlyPlus)
-  comp = Sequence::NA.new(seq.seq).complement
-  pos = -1
-  while (!pos.nil?)
-    pos = comp.index(/(#{pat})/i, pos + 1)
-    if (!printMatch)
-      printf("%s\t-%d\n", name, seq.length - pos) if (!pos.nil?)
-    else
-      printf("%s\t-%d\t%s\n", name, seq.length - pos, $1) if (!pos.nil?)
-    end
-  end
-}
+end
