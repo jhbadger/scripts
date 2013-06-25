@@ -61,7 +61,7 @@ opts.input.each do |fasta|
   else
     boot = "-b -4"
   end
-  system("cd #{tmpdir};#{phyml} --no_memory_check -d #{data} -m #{model} -i #{tname}.phy")
+  system("cd #{tmpdir};#{phyml} --no_memory_check -d #{data} -m #{model} #{boot} -i #{tname}.phy")
   tree = NewickTree.fromFile("#{tmpdir}/#{name}.phy_phyml_tree.txt")
   tree.unAlias(aliHash)
   if (opts.outgroup)
