@@ -127,7 +127,7 @@ opts.input.each do |fasta|
     outNode = tree.findNode(opts.outgroup)
     if (outNode.nil?)
       STDERR.printf("taxon #{opts.outgroup} not found in tree!\n")
-    elsf (!opts.unrooted)
+    elsif (!opts.unrooted)
       tree = tree.reroot(outNode)
     end
   else
