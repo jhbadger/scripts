@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "csv input file", :required=>true, :type=>:string
+  opt :bed, "Pt BED file", :type=>:string, :required=>true
+end
+
+genes = Hash.new
+File.new(opts.bed).each do |line|
+  contig, start, stop, transcript = line.chomp.split("\t")
+  transcript = "Spike1" if contig == "Spike1"
+  transcript = "Spike8" if contig == "Spike8"
+  genes[transcript] = 0
+end
+
+headers = nil
+newrows = Hash.new
+CSV.foreach(opts.input, :headers => true) do |row|
+  if (!headers)
+    headers = row.headers
+    print headers.to_csv
+  end 
+  row = row.to_hash
+  name = row["orf id"]
+  name = "Spike1" if name =~/Spike1/ || name == "9000000"
+  name = "Spike8" if name =~/Spike8/ || name == "9000001"
+  if name =~/Phatrdraft([0-9]*)/
+    name = $1 + "_bd"
+  elsif name =~/Phatr([0-9]*)/
+    name = $1
+  end
+  if genes[name]
+    if genes[name] == 0
+      genes[name] = 1
+    else
+      STDERR << "Error: duplicate " << name << "\n"
+      exit(1)
+    end
+  else
+    STDERR << "I don't understand gene " << row["orf id"] << "\n"
+  end
+  row["orf id"] = name
+  values = []
+  headers.each do |col|
+    values.push(row[col])
+  end
+  newrows[name] = values
+end
+
+genes.keys.each do |key|
+  if newrows[key]
+    print newrows[key].to_csv
+  else
+    print [key].to_csv
+  end
+end
