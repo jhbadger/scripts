@@ -12,10 +12,34 @@ opts = Trollop::options do
   opt :ann, "Input annotation file", :required=>true, :type=>:string
 end
 
+contigs = Hash.new
+strands = Hash.new
+exons = Hash.new
+seen = Hash.new
+
+File.new(opts.gtf).each do |line|
+	contig, source, type, start, stop, d, frame, d, feature = line.chomp.split("\t")
+	next if contig =~/Spike/
+	start = start.to_i
+  stop = stop.to_i
+  if feature =~/transcript_id \"([^\"]*)\"/
+  	name = $1
+  else
+  	name = nil
+  end
+  contigs[name] = contig
+  seen[contig] = true
+  strands[name] = frame
+  start, stop = stop, start if frame == "-"
+  if type == "exon"
+  	exons[name] = [] if !exons[name]
+  	exons[name].push([start, stop])
+  end
+end
 
 elements = File.new(File.basename(opts.input, ".fa") + "_genetic_elements.dat", "w")
 Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
-	next if seq.entry_id =~/Spike/
+	next if seq.entry_id =~/Spike/ || !seen[seq.entry_id]
 	fname = seq.entry_id + ".fna"
 	if seq.entry_id =~/mito/
 		circular = "Y"
@@ -35,28 +59,6 @@ Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
 end
 elements.close
 
-contigs = Hash.new
-strands = Hash.new
-exons = Hash.new
-
-File.new(opts.gtf).each do |line|
-	contig, source, type, start, stop, d, frame, d, feature = line.chomp.split("\t")
-	next if contig =~/Spike/
-	start = start.to_i
-  stop = stop.to_i
-  if feature =~/transcript_id \"([^\"]*)\"/
-  	name = $1
-  else
-  	name = nil
-  end
-  contigs[name] = contig
-  strands[name] = frame
-  start, stop = stop, start if frame == "-"
-  if type == "exon"
-  	exons[name] = [] if !exons[name]
-  	exons[name].push([start, stop])
-  end
-end
 
 functions = Hash.new
 ec = Hash.new
