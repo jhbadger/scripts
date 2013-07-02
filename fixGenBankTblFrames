@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :tbl, "input tbl file", :required=>true, :type=>:string
+end
+
+seqs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  seqs[seq.entry_id] = Bio::Sequence::NA.new(seq.seq)
+end
+
+def getProt(dna, start, stop)
+  if (start < stop)
+    tran = dna.subseq(start, stop)
+  else
+    tran = dna.subseq(stop, start).complement
+  end
+  tran.translate.chomp("*")
+end
+
+contig = nil
+needfix = false
+start =  nil
+stop = nil
+feature = nil
+File.new(opts.tbl).each do |line|
+  if line=~/^>Feature ([^\n]*)/
+    contig = $1
+  elsif line =~/([0-9]+)\t([0-9]+)\t(gene|CDS)/
+    start, stop, feature = $1, $2, $3
+    start = start.to_i
+    stop = stop.to_i
+    prot = getProt(seqs[contig], start, stop)
+    while prot.index("*")
+       needfix = true
+       if (start < stop)
+         start += 1
+  	 prot = getProt(seqs[contig], start, stop)
+       else
+	start -= 1
+	prot = getProt(seqs[contig], start, stop)
+       end
+    end
+  end
+  if needfix
+     if (start < stop)
+      line = "<" + start.to_s + "\t" + stop.to_s + "\t" + feature + "\n"
+     else
+       line = ">" + start.to_s + "\t" + stop.to_s + "\t" + feature + "\n"
+     end
+     needfix = false
+  end
+  print line
+end

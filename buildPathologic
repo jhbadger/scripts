@@ -35,8 +35,6 @@ Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
 end
 elements.close
 
-starts = Hash.new
-stops = Hash.new
 contigs = Hash.new
 strands = Hash.new
 exons = Hash.new
@@ -55,18 +53,6 @@ File.new(opts.gtf).each do |line|
   strands[name] = frame
   start, stop = stop, start if frame == "-"
   if type == "exon"
-  	if frame == "+" && (!starts[name] || starts[name] > start)
-  		starts[name] = start
-  	end
-  	if frame == "+" && (!stops[name] || stops[name] < stop)
-  		stops[name] = stop
-  	end
-  	if frame == "-" && (!starts[name] || starts[name] < start)
-  		starts[name] = start
-  	end
-  	if frame == "-" && (!stops[name] || starts[name] > stop)
-  		stops[name] = stop
-  	end
   	exons[name] = [] if !exons[name]
   	exons[name].push([start, stop])
   end
@@ -79,48 +65,46 @@ File.new(opts.ann).each do |line|
 	org, name = fields.shift, fields.shift
 	func = fields[3].split(/; |\|\| /).last
 	if func.index("[EC:")
-		func, ecnum = func.split("[EC:")
+		func, ecnum = func.split("[EC:", 2)
 		ecnum.gsub!("]","")
-		ec[name] = ecnum
+		ec[name] = ecnum.split(" ").find_all {|x| x.index("-").nil?}
 		func = "ORF" if (func =~/hypothetical/)
 		functions[name] = func.rstrip.lstrip
 	end
 end
 
-
-
 def calcIntrons(exons, strand)
 	introns = ""
 	if strand == "+"
+		addit = 1
 		exons.sort!{|x,y| x[0] <=> y[0]}
-		0.upto(exons.size - 2) do |i|
-			istart = exons[i][1]+1
-			iend = exons[i+1][0]-1
-			introns += "INTRON\t" + istart.to_s + "-" + iend.to_s + "\n"
-		end
 	else
+		addit = -1
 		exons.sort!{|x, y| y[0] <=> x[0]}
-		0.upto(exons.size - 2) do |i|
-			istart = exons[i][1]-1
-			iend = exons[i+1][0]+1
-			introns += "INTRON\t" + istart.to_s + "-" + iend.to_s + "\n"
-		end
 	end
-	introns
+	0.upto(exons.size - 2) do |i|
+		istart = exons[i][1]+addit
+		iend = exons[i+1][0]-addit
+		introns += "INTRON\t" + istart.to_s + "-" + iend.to_s + "\n"
+	end
+	[exons.first[0], exons.last[1], introns]
 end
 
 contigs.values.uniq.sort.each do |contig|
 	pf = File.new(contig + ".pf", "w")
-	starts.keys.sort.each do |name|
+	contigs.keys.sort.each do |name|
 		if contigs[name] == contig
-			pf.printf("ID\t%s\nNAME\t%s\nSTARTBASE\t%s\nENDBASE\t%s\n",
-				name, name, starts[name].to_s, stops[name].to_s)
-			if exons[name].size > 1
-				pf.print calcIntrons(exons[name], strands[name])
-			end
+			start, stop, introns = calcIntrons(exons[name], strands[name])
+			pf.printf("ID\t%s\nNAME\t%s\nSTARTBASE\t%s\nENDBASE\t%s\nPRODUCT-TYPE\t\P\n",
+				name, name, start.to_s, stop.to_s)
+			pf.print introns if exons[name].size > 1
 			functions[name] = "ORF" if !functions[name]
 			pf.printf("FUNCTION\t%s\n", functions[name])
-			pf.printf("EC\t%s\n", ec[name]) if ec[name]
+			if ec[name]
+				ec[name].each do |num|
+					pf.printf("EC\t%s\n", num)
+				end
+			end
 			pf.printf("//\n")
 		end
 	end
