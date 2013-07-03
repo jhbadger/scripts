@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input peptide alignment", :required=>true, :type=>:string
+  opt :dna, "Unaligned DNA file", :required=>true, :type=>:string
+end
+
+pep = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  pep[seq.entry_id] = seq.seq
+end
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.dna)).each do |seq|
+  if (!pep[seq.entry_id])
+    raise "No #{seq.entry_id} in #{pepAlign}\n"
+  end
+  dseq = ""
+  j = 0
+  pep[seq.entry_id].length.times do |i|
+    c = pep[seq.entry_id][i].chr
+    if (c == "-")
+      dseq += "---"
+    else
+      dseq += seq.seq[j..j+2]
+      j += 3
+    end
+  end
+  print Bio::Sequence::NA.new(dseq).to_fasta(seq.definition, 60)
+end
