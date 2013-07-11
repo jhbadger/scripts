@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'mysql'
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :file, "file of ids", :type=>:string, :required=>true
+  opt :verbose, "print verbose output"
+end
+
+servers = ["mysql-lan-pro", "mysql-lan-dev", "mysql-lan-dtw", "mysql-dmz-dtw", "mysql-dmz-pro"]
+
+classed = Hash.new
+File.new(opts.file).each do |line|
+  classed[line.chomp.split(" ").first] = false
+end
+
+servers.each do |server|
+  db = Mysql.new(server, "access", "access")
+  dbs = []
+  db.query("SHOW DATABASES").each do |query|
+    dbs.push(query.first) if query.first =~/_apis/
+  end
+  dbs.each do |dbname|
+    STDERR << "Searching #{dbname} ON #{server}...\n" if opts.verbose
+    classed.keys.each do |id|
+      if !classed[id]
+        found = false
+        begin
+          db.query("SELECT kingdom, phylum, class, ord, family, genus, species FROM #{dbname}.classification WHERE seq_name = '#{id}'").each do |row|
+            print id + "\t" + server + "\t" + dbname + "\t" + row.join("; ")
+            classed[id] = true
+          end
+        rescue
+        end
+      end
+    end
+  end
+  db.close
+end
+
