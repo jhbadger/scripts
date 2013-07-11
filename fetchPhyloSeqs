@@ -18,7 +18,7 @@ opts = Trollop::options do
   opt :host, "database host", :default=>"mysql-lan-pro", :type=>:string
   opt :taxonomy, "use taxonomy as search id"
   opt :molecule, "return full DNA molecules"
-  opt :rrna, "return rRNAs, not proteins"
+  opt :rna, "return rRNAs, not proteins"
   opt :transcripts, "return transcripts, not proteins"
 end
 
@@ -84,29 +84,30 @@ inList.chop!
 inList += ")"
 
 if (opts.transcripts)
-  query = "SELECT p.seguid, p.name, t.seq, annotation, species, c.taxon_id, p.protein_flag FROM proteins AS p "
+  query = "SELECT p.seguid, p.name, t.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
   query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
   query += "LEFT JOIN transcripts AS t on t.name = p.name "
   query += "WHERE p.contig_name IN #{inList}"
 elsif (opts.rna)
-  query = "SELECT r.name, r.name, r.seq, annotation, species, c.taxon_id FROM rrnas AS r "
+  query = "SELECT r.name, r.name, r.seq, annotation, species, strain, c.taxon_id FROM rrnas AS r "
   query += "LEFT JOIN contigs AS c on c.name = r.contig_name "
   query += "WHERE r.contig_name IN #{inList}"
 elsif (opts.molecule)
-  query = "SELECT name, name, seq, form, species, taxon_id, contig_flag FROM contigs AS c "
+  query = "SELECT name, name, seq, form, species, strain, taxon_id, contig_flag FROM contigs AS c "
   query += "WHERE name IN #{inList}"
 elsif (opts.name)
-  query = "SELECT p.seguid, p.name, p.seq, annotation, species, c.taxon_id, p.protein_flag FROM proteins AS p "
+  query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
   query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
   query += "WHERE p.name IN #{inList}"
 else
-  query = "SELECT p.seguid, p.name, p.seq, annotation, species, c.taxon_id, p.protein_flag FROM proteins AS p "
+  query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
   query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
   query += "WHERE p.contig_name IN #{inList}"
 end
 
 db.query(query).each do |row|
-  seguid, seq_name, seq, ann, species, taxon_id, flag = row
+  seguid, seq_name, seq, ann, species, strain, taxon_id, flag = row
+  species += " " + strain if strain.to_s != ""
   header = seguid + " " + seq_name + " <<" + ann.to_s + ">> {" + species + "} " + taxon_id.to_s
   header += " " + flag_string(flag) if flag
   begin
