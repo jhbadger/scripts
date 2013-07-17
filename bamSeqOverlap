@@ -1,0 +1,91 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :files, "bam file(s)", :type=>:strings, :required=>true
+  opt :beds, "bed file(s)", :type=>:strings, :required=>true
+end
+
+ranges = Hash.new
+opts.beds.each do |bed|
+  bname = File.basename(bed, ".bed")
+  ranges[bname] = Hash.new
+  File.new(bed).each do |line|
+    chrom, start, stop, name, score, strand = line.chomp.split("\t")
+    ranges[bname][chrom] = [] if !ranges[chrom]
+    ranges[bname][chrom].push([start.to_i, stop.to_i, strand, name])
+  end
+end
+
+outputs = Hash.new
+counts = Hash.new
+
+opts.files.each do |bam|
+  counts[bam] = Hash.new
+  ranges.keys.each do |bed|
+    outputs[bed] = File.new(File.basename(bam, ".bam") + "_" + bed + ".fa", "w")
+    counts[bam][bed] = 0
+  end
+  unclassified = File.new(File.basename(bam, ".bam") + "_unclassified.fa", "w")
+  counts[bam]["unclassified"] = 0
+  STDERR << "Processing " << bam << "...\n"
+  `samtools view #{bam}`.split("\n").each do |line|
+    name, flag, chrom, pos, mapq, cigar, rnext, pnext, tlen, seq, qual = line.chomp.split("\t")
+    printed = false
+    if flag.to_i & 16 == 0
+      mstrand = "+"
+    else
+      mstrand = "-"
+    end
+    pos = pos.to_i
+    ranges.keys.each do |bed|
+      if ranges[bed][chrom]
+        ranges[bed][chrom].each do |feature|
+          start, stop, strand, fname = feature
+          if pos >= start && pos <= stop
+            if strand == mstrand
+              matched = "forward"
+            else
+              matched = "reverse"
+            end
+            if !printed
+              outputs[bed].printf(">%s %s %d %s %s\n%s\n", name, chrom, pos, matched, fname, seq)
+              counts[bam][bed] += 1
+              printed = true
+            end
+          end
+        end
+      end
+    end
+    if !printed
+      unclassified.printf(">%s %s %d\n%s\n", name, chrom, pos, seq)
+      counts[bam]["unclassified"] += 1
+      printed = true
+    end
+  end
+  ranges.keys.each do |bed|
+    outputs[bed].close
+  end
+  unclassified.close
+end
+csv = File.new("counts.csv", "w")
+csv.print ([""]+counts.keys.collect{|x|File.basename(x,".bam")}).to_csv
+(ranges.keys + ["unclassified"]).each do |key|
+  row = [key]
+  counts.keys.each do |bam|
+    sum = counts[bam].values.reduce(:+)
+    row.push((100000*counts[bam][key]/sum)/1000.0)
+  end
+  csv.print row.to_csv
+end
+row = ["reads"]
+counts.keys.each do |bam|
+  row.push(counts[bam].values.reduce(:+))
+end
+csv.print row.to_csv
+csv.close
