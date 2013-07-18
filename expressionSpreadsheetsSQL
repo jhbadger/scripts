@@ -40,10 +40,10 @@ else
 		rcount = Hash.new
 		row = [transcript, maxrpkms[transcript]]
 		samples.each do |sample|
-			row.push(rpkms[sample][transcript])
+			row.push(rpkms[sample][transcript].to_f)
 		end
 		samples.each do |sample|
-			row.push(counts[sample][transcript])
+			row.push(counts[sample][transcript].to_i)
 			rcount[sample] = counts[sample][transcript]
 		end
 		ranks = rankHash(rcount)
