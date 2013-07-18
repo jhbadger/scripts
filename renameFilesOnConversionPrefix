@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby 
+
+require 'rubygems' 
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input conversion file", :required=>true, :type=>:string
+  opt :files, "files to rename", :required=>true, :type=>:strings
+end
+
+conversion = Hash.new
+File.new(opts.input).each do |line|
+  from, to = line.chomp.split("\t")
+  conversion[from] = to
+end
+
+opts.files.each do |file|
+  conversion.keys.each do |key|
+    if file =~/#{key}/
+      File.rename(file, file.gsub(key, conversion[key]))
+      break
+    end
+  end
+end

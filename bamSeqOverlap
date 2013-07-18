@@ -27,12 +27,15 @@ counts = Hash.new
 
 opts.files.each do |bam|
   counts[bam] = Hash.new
+  hits = Hash.new
   ranges.keys.each do |bed|
     outputs[bed] = File.new(File.basename(bam, ".bam") + "_" + bed + ".fa", "w")
     counts[bam][bed] = 0
+    hits[bed] = Hash.new
   end
-  unclassified = File.new(File.basename(bam, ".bam") + "_unclassified.fa", "w")
+  outputs["unclassified"] = File.new(File.basename(bam, ".bam") + "_unclassified.fa", "w")
   counts[bam]["unclassified"] = 0
+  hits["unclassified"] = Hash.new
   STDERR << "Processing " << bam << "...\n"
   `samtools view #{bam}`.split("\n").each do |line|
     name, flag, chrom, pos, mapq, cigar, rnext, pnext, tlen, seq, qual = line.chomp.split("\t")
@@ -54,7 +57,10 @@ opts.files.each do |bam|
               matched = "reverse"
             end
             if !printed
-              outputs[bed].printf(">%s %s %d %s %s\n%s\n", name, chrom, pos, matched, fname, seq)
+              loc = chrom + " " + pos.to_s + " " + matched + " " + fname
+              hits[bed][loc] = 0 if !hits[bed][loc]
+              hits[bed][loc] += 1
+              outputs[bed].printf(">%s %s\n%s\n", name, loc, seq)
               counts[bam][bed] += 1
               printed = true
             end
@@ -63,15 +69,23 @@ opts.files.each do |bam|
       end
     end
     if !printed
-      unclassified.printf(">%s %s %d\n%s\n", name, chrom, pos, seq)
-      counts[bam]["unclassified"] += 1
+      bed = "unclassified"
+      loc = chrom + " " + pos.to_s + " " + mstrand
+      hits[bed][loc] = 0 if !hits[bed][loc]
+      hits[bed][loc] += 1
+      outputs[bed].printf(">%s %s\n%s\n", name, loc, seq)
+      counts[bam][bed] += 1
       printed = true
     end
   end
-  ranges.keys.each do |bed|
+  (ranges.keys + ["unclassified"]).each do |bed|
     outputs[bed].close
+    out = File.new(File.basename(bam, ".bam") + "_hits_" + bed + ".txt", "w")
+    hits[bed].keys.each do |name|
+      out.printf("%s %d\n", name, hits[bed][name])
+    end
+    out.close
   end
-  unclassified.close
 end
 csv = File.new("counts.csv", "w")
 csv.print ([""]+counts.keys.collect{|x|File.basename(x,".bam")}).to_csv
