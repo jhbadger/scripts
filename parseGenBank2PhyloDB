@@ -87,6 +87,7 @@ if opts.phylodb
   protTbl = File.new("proteins.txt", "w")
   rrnaTbl = File.new("rrnas.txt", "w")
   cdsTbl = File.new("transcripts.txt", "w")
+  geneorderTbl = File.new("geneorders.txt", "w")
 end
 
 org = ""
@@ -198,6 +199,9 @@ opts.input.each do |gb|
         ent.print key + "\t" + cds_name + "\t" + location[0].to_s +
 	        "\t" + location[1].to_s + "\t" + strand.to_s + "\t" + 
 	        product.to_s + "\n"
+        if opts.phylodb
+          geneorderTbl.print [key, key.split("-").last, location[0].to_s, location[1].to_s, strand.to_s].join("\t") + "\n"
+        end
         proteins += 1
         product = ""
       elsif feature.feature == "rRNA" || feature.feature == "tRNA" || feature.feature == "misc_RNA"
@@ -275,4 +279,5 @@ if opts.phylodb
   protTbl.close
   rrnaTbl.close
   cdsTbl.close
+  geneorderTbl.close
 end

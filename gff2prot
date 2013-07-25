@@ -64,7 +64,7 @@ Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
       		if (opts.transcripts)
       			print Bio::Sequence::NA.new(nseq).upcase.to_fasta(pid, 60)
       		else
-      			pseq = Bio::Sequence::NA.new(nseq).translate(opts.gencode).seq
+      			pseq = Bio::Sequence::NA.new(nseq).translate(opts.gencode).seq.chomp("*")
       			print Bio::Sequence::AA.new(pseq).to_fasta(pid, 60)
       			if (pseq.count("*") > 1)
       				STDERR << "Possible problem with pid " << pid << " (" << strandl << ")\n"
