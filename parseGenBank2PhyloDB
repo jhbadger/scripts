@@ -133,6 +133,21 @@ opts.input.each do |gb|
     # process each CDS, rRNA. tRNA
     genome.features.each do |feature|
       product = feature["product"].first if (product == "" && feature["product"])
+      if feature["gene"].to_a.first == "16S"
+        product = "16S rRNA"
+      end 
+      if feature["gene"].to_a.first == "23S"
+        product = "23S rRNA"
+      end
+      if feature["gene"].to_a.first == "5S"
+        product = "5S rRNA"
+      end
+      if feature["gene"].to_a.first == "18S"
+        product = "18S rRNA"
+      end
+      if feature["gene"].to_a.first == "28S"
+        product = "28S rRNA"
+      end
       if feature.feature == "source" # contains taxon_id info
         feature.qualifiers.each do |qual|
           if (qual.value =~/taxon:([0-9]+)/)
