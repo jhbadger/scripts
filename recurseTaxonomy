@@ -10,14 +10,14 @@ opts = Trollop::options do
   opt :input, "tax num(s)", :type=>:strings, :required=>true
   opt :file, "input is file, not tax nums themselves"
   opt :taxonomy, "use taxonomy text file from phylodb not db", :type=>:string
+  opt :host, "phylodb database host", :type=>:string, :default=>"mysql-lan-pro"
   opt :nodes, "use NCBI nodes.dmp", :type=>:string
   opt :names, "use NCBI names.dmp (with nodes.dmp)", :type=>:string
-  opt :only, "only use official (kpcofgs) ranks"
   opt :verbose, "verbose messaging"
 end
 
 if (!opts.taxonomy && !opts.nodes)
-  db = Mysql.new("mysql-lan-pro", "access", "access", "phylodb")
+  db = Mysql.new(opts.host, "access", "access", "phylodb")
 elsif (opts.taxonomy)
   tax = Hash.new
   File.new(opts.taxonomy).each do |line|
@@ -39,22 +39,17 @@ elsif (opts.nodes)
   db = tax
 end
 
-def recurseTaxonomy(db, current, official, verbose)
+def recurseTaxonomy(db, current, verbose)
   if (db.class == Hash)
     name, parent, rank = db[current]
   else
     name, parent, rank = db.query("SELECT name, parent_id, rank FROM taxonomy WHERE taxon_id=#{current}").fetch_row
   end
-  if (name.nil? || parent.to_i == 1)
-    []
+  if (parent.to_i == 1)
+    [name]
   else
-    ranks = ["kingdom", "phylum", "class", "order", "family", "genus", "species", "no rank"]
-    name = name + " (" + current.to_s + ")" if verbose
-    if (!official || (ranks.include?(rank.downcase)))
-      recurseTaxonomy(db, parent, official, verbose).to_a + [name]
-    else
-      recurseTaxonomy(db, parent, official, verbose).to_a
-    end
+    print [current, name, parent, rank].join("\t") + "\n" if verbose
+    recurseTaxonomy(db, parent, verbose).to_a + [name]
   end
 end
 
@@ -68,5 +63,5 @@ else
 end
 
 opts.input.each do |id|
-  print id + "\t " + recurseTaxonomy(db, id.to_i, opts.only, opts.verbose).join("; ") + "\n"
+  print id + "\t " + recurseTaxonomy(db, id.to_i, opts.verbose).join("; ") + "\n"
 end
