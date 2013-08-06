@@ -26,7 +26,7 @@ opts = Trollop::options do
 	opt :output, "output to file (default: stdout)", :type=>:string
 	opt :tbl, "Use HMM3 tbl format for HMMs, not htab"
 	opt :btab, "use btab format rather than NCBI m8 for blast"
-	opt :verbose, "print status of pipeline to STDERR"
+	opt :verbose, "print status of pipeline to STDERR, include score info"
 end
 
 
@@ -141,7 +141,7 @@ allNames.sort.each do |name|
 	score += 1 if cogBlast[name]
 	score += 1 if tcBlast[name]
 	score += 1 if pfam[name]
-	
+	score += 1 if tPredHel[name] > 2
 	if score >= opts.score
 		if fp_cog[cogBlast[name]]
 			STDERR << "Removing " << name << " as a false positive hitting " << cogBlast[name] << "...\n" if opts.verbose
@@ -164,14 +164,15 @@ allNames.sort.each do |name|
 		end
 
 		if (opts.full)
-			out.print [name, name.split("|").first, family, subfamily, substrate,
+			row = [name, name.split("|").first, family, subfamily, substrate,
 				tc, pfam[name], pfamSig[name].to_s, cogBlast[name], 
 				cogBlastSig[name].to_s, tLength[name], "PredHel=" + tPredHel[name].to_i.to_s, 
-				"Topology="+tTopology[name].to_s].join("\t") + "\n"
+				"Topology="+tTopology[name].to_s, score]
 		else
 			family = family + " (" + subfamily + ")" if subfamily != "" && subfamily != family
-			out.print [name, family, substrate].join("\t") + "\n"
+			row = [name, family, substrate, score]
 		end
+		out.print row.join("\t") + "\n"
 	end
 end
 out.close if out != STDOUT

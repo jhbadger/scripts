@@ -13,6 +13,8 @@ opts = Trollop::options do
   opt :host, "phylodb database host", :type=>:string, :default=>"mysql-lan-pro"
   opt :nodes, "use NCBI nodes.dmp", :type=>:string
   opt :names, "use NCBI names.dmp (with nodes.dmp)", :type=>:string
+  opt :minlen, "only report taxonomies with fewer than n nodes", :type=>:integer
+  opt :maxlen, "only report taxonomies with more than n nodes", :type=>:integer
   opt :verbose, "verbose messaging"
 end
 
@@ -45,23 +47,24 @@ def recurseTaxonomy(db, current, verbose)
   else
     name, parent, rank = db.query("SELECT name, parent_id, rank FROM taxonomy WHERE taxon_id=#{current}").fetch_row
   end
-  if (parent.to_i == 1)
+  if (rank == "superkingdom" || current == 1 || name.nil?)
     [name]
   else
-    print [current, name, parent, rank].join("\t") + "\n" if verbose
+    print [current, name, parent, rank, 1].join("\t") + "\n" if verbose
     recurseTaxonomy(db, parent, verbose).to_a + [name]
   end
 end
 
 if (opts.file)
   ids = []
-  File.new(opts.input).each do |line|
+  File.new(opts.input.first).each do |line|
     ids.push(line.chomp.to_i)
   end
 else
   ids = opts.input
 end
 
-opts.input.each do |id|
-  print id + "\t " + recurseTaxonomy(db, id.to_i, opts.verbose).join("; ") + "\n"
+ids.each do |id|
+  tax = recurseTaxonomy(db, id.to_i, opts.verbose)
+  print [id,tax.join("; ")].join("\t") + "\n"
 end
