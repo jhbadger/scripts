@@ -142,11 +142,9 @@ allNames.sort.each do |name|
 	score += 1 if tcBlast[name]
 	score += 1 if pfam[name]
 	score += 1 if tPredHel[name] > 2
+	score -= 2 if fp_cog[cogBlast[name]]
+	
 	if score >= opts.score
-		if fp_cog[cogBlast[name]]
-			STDERR << "Removing " << name << " as a false positive hitting " << cogBlast[name] << "...\n" if opts.verbose
-			next
-		end
 		if (cog_info[cogBlast[name]])
 			cog = cog_info[cogBlast[name]]
 			tc, family, subfamily, substrate = cog["tc"], cog["family"], 
