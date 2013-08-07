@@ -17,10 +17,10 @@ ARGV.push("-h") if ARGV.empty?
 
 opts = Trollop::options do
 	banner File.basename($0) << " version 2.3 08/06/2013"
-	opt :blast, "blast tab file(s) with seguids", :required =>true, :type => :strings
+	opt :blast, "blast m8 tab file(s) with seguids", :required =>true, :type => :strings
 	opt :database, "transporter database file", :required => true, :type => :string
 	opt :full, "full (traditional qinghu) output" 
-	opt :pfam, "PFAM/TIGRFAM file(s) with seguids", :required=> true, :type => :strings
+	opt :pfam, "PFAM/TIGRFAM htab file(s) with seguids", :required=> true, :type => :strings
 	opt :tmhmm, "TMHMM output for file", :type => :string, :required => true
 	opt :score, "score threshold to report", :type => :integer, :default => 2
 	opt :output, "output to file (default: stdout)", :type=>:string
