@@ -16,7 +16,7 @@ end
 ARGV.push("-h") if ARGV.empty?
 
 opts = Trollop::options do
-	banner File.basename($0) << " version 2.2 01/09/2013"
+	banner File.basename($0) << " version 2.3 08/06/2013"
 	opt :blast, "blast tab file(s) with seguids", :required =>true, :type => :strings
 	opt :database, "transporter database file", :required => true, :type => :string
 	opt :full, "full (traditional qinghu) output" 
