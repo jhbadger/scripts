@@ -41,19 +41,20 @@ elsif (opts.nodes)
   db = tax
 end
 
-def recurseTaxonomy(db, current, verbose)
-  if (db.class == Hash)
+def recurseTaxonomy(db, current, verbose, count = 0)
+  if db.class == Hash # not using db
     name, parent, rank = db[current]
   else
-    name, parent, rank = db.query("SELECT name, parent_id, rank FROM taxonomy WHERE taxon_id=#{current}").fetch_row
+    name, parent, rank = db.query("SELECT name, parent_id FROM taxonomy WHERE taxon_id=#{current}").fetch_row
   end
-  if (rank == "superkingdom" || current == 1 || name.nil?)
+  if (current == 1 || name.nil? || name == "Bacteria" || name == "Eukaryota" || name == "Viruses" || name == "Archaea" || count > 20)
     [name]
   else
     print [current, name, parent, rank, 1].join("\t") + "\n" if verbose
-    recurseTaxonomy(db, parent, verbose).to_a + [name]
+    recurseTaxonomy(db, parent, verbose, count + 1).to_a + [name]
   end
 end
+
 
 if (opts.file)
   ids = []
@@ -66,5 +67,5 @@ end
 
 ids.each do |id|
   tax = recurseTaxonomy(db, id.to_i, opts.verbose)
-  print [id,tax.join("; ")].join("\t") + "\n"
+  print [id,tax.join(";")].join("\t") + "\n"
 end

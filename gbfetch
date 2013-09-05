@@ -22,6 +22,18 @@ else
 	ids = opts.input
 end
 
+ids.each do |id|
+	if id.index(":")
+		ids.delete(id)
+		s, e = id.split(":")
+		cur = s
+		while (cur <= e)
+			ids.push(cur.dup)
+			cur.succ!
+		end
+	end
+end
+
 Bio::NCBI.default_email = ENV["USER"] + "@jcvi.org"
 ncbi = Bio::NCBI::REST.new
 seqs = ncbi.efetch(ids = ids, {"db"=>opts.database, "rettype"=>opts.format})

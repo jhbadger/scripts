@@ -7,22 +7,25 @@ require 'csv'
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :input, "csv files", :required=>true, :type=>:strings
+  opt :acsv, "first csv file", :required=>true, :type=>:string
+  opt :bcsv, "second csv file", :required=>true, :type=>:string
+  opt :c1, "column in file 1", :required=>true, :type=>:string
+  opt :c2, "column in file 2", :required=>true, :type=>:string
 end
 
 lines = Hash.new
 headers = nil
-CSV.foreach(opts.input[0], :headers => true) do |line|
+CSV.foreach(opts.acsv, :headers => true) do |line|
   headers = line.headers if !headers
-  rowName = line[headers.first]
+  rowName = line[opts.c1]
   lines[rowName] = line.fields if rowName
 end
 
 lines2 = Hash.new
 headers2 = nil
-CSV.foreach(opts.input[1], :headers => true) do |line|
+CSV.foreach(opts.bcsv, :headers => true) do |line|
   headers2 = line.headers if !headers2
-  rowName = line[headers2.first]
+  rowName = line[opts.c2]
   if lines[rowName]
     lines[rowName] += line.fields
   end
