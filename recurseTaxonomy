@@ -47,7 +47,7 @@ def recurseTaxonomy(db, current, verbose, count = 0)
   else
     name, parent, rank = db.query("SELECT name, parent_id FROM taxonomy WHERE taxon_id=#{current}").fetch_row
   end
-  if (current == 1 || name.nil? || name == "Bacteria" || name == "Eukaryota" || name == "Viruses" || name == "Archaea" || count > 20)
+  if (current == 1 || name.nil? || name == "Bacteria" || name == "Eukaryota" || name == "Viruses" || name == "Archaea" || count > 50)
     [name]
   else
     print [current, name, parent, rank, 1].join("\t") + "\n" if verbose

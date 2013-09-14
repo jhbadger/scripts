@@ -14,27 +14,8 @@ opts = Trollop::options do
   opt :host, "database host", :required=>true, :type=>:string
   opt :user, "user", :default=>ENV["USER"], :type=>:string
   opt :password, "password", :required=>true, :type=>:string
-  opt :project, "JCVI project number to run on grid", :type=>:string
   opt :where, "optional where conditional string to filter", :type=>:string
 end
-
-# generate command line from trollop opts, minus unwanted options as array of symbols
-def cmdLine(prog, opts, exclude)
-    cmd = prog
-    keys = opts.keys - exclude - [:help]
-    keys.each do |key|
-      k = key.to_s
-      cmd += " --#{key} #{opts[key]}" if !k.index("_given") && opts[key]
-    end
-    cmd
-end
-
-if (opts.project)
-  cmd = cmdLine($0, opts, [:project])
-  system("qsub -P #{opts.project} -cwd #{cmd}")
-  exit(0)
-end
-
 
 db = Mysql::new(opts.host, opts.user, opts.password, opts.database)
 

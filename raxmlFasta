@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 
+$:.unshift File.dirname(File.expand_path($0))
+
 require 'rubygems'
 require 'trollop'
 require 'bio'

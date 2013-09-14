@@ -141,7 +141,7 @@ allNames.sort.each do |name|
 	score += 1 if cogBlast[name]
 	score += 1 if tcBlast[name]
 	score += 1 if pfam[name]
-	score += 1 if tPredHel[name] > 2
+	score += 1 if tPredHel[name].to_i > 2
 	score -= 2 if fp_cog[cogBlast[name]]
 	
 	if score >= opts.score

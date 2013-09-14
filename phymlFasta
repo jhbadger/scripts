@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 
+$:.unshift File.dirname(File.expand_path($0))
+
 require 'rubygems'
 require 'trollop'
 require 'bio'
@@ -59,7 +61,7 @@ opts.input.each do |fasta|
   if (opts.bootstrap > 0)
     boot = "-b #{opts.bootstrap}"
   else
-    boot = "-b -4"
+    boot = "-b -1"
   end
   system("cd #{tmpdir};#{phyml} --no_memory_check -d #{data} -m #{model} #{boot} -i #{tname}.phy")
   tree = NewickTree.fromFile("#{tmpdir}/#{name}.phy_phyml_tree.txt")
