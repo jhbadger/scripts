@@ -13,6 +13,7 @@ opts = Trollop::options do
   opt :database, "protein database", :default=>"phylodb", :type=>:string
   opt :everything, "return for all contigs"
   opt :species, "use species as search id"
+  opt :seguid, "use seguid as search id"
   opt :name, "use (exact) sequence name as search id"
   opt :form, "use contig form as search id"
   opt :host, "database host", :default=>"mysql-lan-pro", :type=>:string
@@ -63,22 +64,7 @@ end
 
 inList = "("
 ids.each do |id|
-  if (opts.species)
-    query = "SELECT name FROM contigs WHERE species LIKE '%#{id.quote}%'"
-  elsif (opts.taxonomy)
-    query = "SELECT name FROM contigs WHERE taxonomy LIKE '%#{id.quote}%'"
-  elsif (opts.form)
-    query = "SELECT name FROM contigs WHERE form LIKE '%#{id.quote}%'"
-  elsif (opts.contig)
-    query = "SELECT name FROM contigs WHERE name LIKE '%#{id.quote}%'"
-  end
-  if (!opts.name)
-    db.query(query).each do |row|
-      inList += "'" + row[0].quote + "',"
-    end
-  else
-    inList += "'" + id.quote + "',"
-  end
+  inList += "'" + id.quote + "',"
 end
 inList.chop!
 inList += ")"
@@ -99,6 +85,10 @@ elsif (opts.name)
   query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
   query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
   query += "WHERE p.name IN #{inList}"
+elsif opts.seguid
+  query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
+  query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
+  query += "WHERE p.seguid IN #{inList}"
 else
   query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
   query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
