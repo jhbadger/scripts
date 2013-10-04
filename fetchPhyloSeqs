@@ -15,9 +15,7 @@ opts = Trollop::options do
   opt :species, "use species as search id"
   opt :seguid, "use seguid as search id"
   opt :name, "use (exact) sequence name as search id"
-  opt :form, "use contig form as search id"
   opt :host, "database host", :default=>"mysql-lan-pro", :type=>:string
-  opt :taxonomy, "use taxonomy as search id"
   opt :molecule, "return full DNA molecules"
   opt :rna, "return rRNAs, not proteins"
   opt :transcripts, "return transcripts, not proteins"
@@ -69,30 +67,31 @@ end
 inList.chop!
 inList += ")"
 
-if (opts.transcripts)
+if opts.transcripts
   query = "SELECT p.seguid, p.name, t.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
   query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
   query += "LEFT JOIN transcripts AS t on t.name = p.name "
-  query += "WHERE p.contig_name IN #{inList}"
-elsif (opts.rna)
+elsif opts.rna
   query = "SELECT r.name, r.name, r.seq, annotation, species, strain, c.taxon_id FROM rrnas AS r "
   query += "LEFT JOIN contigs AS c on c.name = r.contig_name "
-  query += "WHERE r.contig_name IN #{inList}"
-elsif (opts.molecule)
+elsif opts.molecule
   query = "SELECT name, name, seq, form, species, strain, taxon_id, contig_flag FROM contigs AS c "
-  query += "WHERE name IN #{inList}"
-elsif (opts.name)
-  query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
-  query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
-  query += "WHERE p.name IN #{inList}"
 elsif opts.seguid
   query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
   query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
-  query += "WHERE p.seguid IN #{inList}"
 else
   query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
   query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
-  query += "WHERE p.contig_name IN #{inList}"
+end
+
+if opts.species
+  query += "WHERE species IN #{inList}"
+elsif opts.seguid
+  query += "WHERE seguid IN #{inList}"
+elsif opts.contig
+  query += "WHERE c.name IN #{inList}"
+else
+  query += "WHERE p.name IN #{inList}"
 end
 
 db.query(query).each do |row|
