@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby 
+
+require 'bio'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :sqn, "sqn file", :required=>true, :type=>:string
+  opt :genetic_code, "genetic code", :default=>11
+end
+
+cds = Hash.new
+features = Hash.new
+acc, start, stop, feat, gene = nil
+
+
+File.new(opts.sqn).each do |line|
+  if line =~/>Feature (.*)\n/
+    acc = $1
+    cds[acc] = Hash.new if !cds[acc]
+    features[acc] = Hash.new if !features[acc]
+  elsif line =~/([0-9]+)\t([0-9]+)\t(.*)\n/
+    start, stop, feat = $1.to_i + 1, $2.to_i + 1, $3
+    gene, product = nil if feat == "gene"
+  elsif line =~/gene\t(.*)\n/
+    gene = $1
+  elsif line =~/product\t(.*)\n/
+    product = $1
+    product += " " + gene if gene
+    features[acc][product] = feat
+    cds[acc][product] = [start, stop]
+  end
+end
+
+seqs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  seqs[seq.definition.split(" ").first] = Bio::Sequence::NA.new(seq.seq)
+end
+
+name = File.basename(opts.input).split(".").first
+
+rRNA = File.new(name + ".rRNA", "w")
+fcds = File.new(name + ".cds", "w")
+tRNA = File.new(name + ".tRNA", "w")
+peps = File.new(name + ".pep", "w")
+
+features.keys.each do |acc|
+  features[acc].keys.each do |product|
+    start, stop = cds[acc][product]
+    if start < stop
+      subseq = seqs[acc].subseq(start, stop)
+    else
+      subseq = seqs[acc].subseq(stop, start).reverse_complement
+    end
+    nuc = subseq.upcase.to_fasta(product, 60)
+    prot = subseq.translate(1, opts.genetic_code).to_fasta(product, 60)
+    if features[acc][product] == "rRNA"
+      rRNA.print nuc
+    elsif features[acc][product] == "CDS"
+      fcds.print nuc
+      peps.print prot
+    elsif features[acc][product] == "tRNA"
+      tRNA.print nuc
+    end
+  end
+end
+
+rRNA.close
+tRNA.close
+fcds.close
+peps.close

@@ -9,25 +9,32 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :acsv, "first csv file", :required=>true, :type=>:string
   opt :bcsv, "second csv file", :required=>true, :type=>:string
-  opt :c1, "column in file 1", :required=>true, :type=>:string
-  opt :c2, "column in file 2", :required=>true, :type=>:string
+  opt :c1, "column in file 1", :required=>true, :type=>:integer
+  opt :c2, "column in file 2", :required=>true, :type=>:integer
+  opt :outer, "Do an outer join"
 end
 
 lines = Hash.new
 headers = nil
+asize = 0
 CSV.foreach(opts.acsv, :headers => true) do |line|
   headers = line.headers if !headers
-  rowName = line[opts.c1]
+  rowName = line.fields[opts.c1]
+  rowName = line.fields[opts.c1 + 1] if !rowName
   lines[rowName] = line.fields if rowName
+  asize = line.fields.size if asize == 0
 end
+
 
 lines2 = Hash.new
 headers2 = nil
 CSV.foreach(opts.bcsv, :headers => true) do |line|
   headers2 = line.headers if !headers2
-  rowName = line[opts.c2]
+  rowName = line.fields[opts.c2]
   if lines[rowName]
     lines[rowName] += line.fields
+  elsif opts.outer
+    lines[rowName] = [nil]*asize + line.fields
   end
 end
 

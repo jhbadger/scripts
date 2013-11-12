@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :directories, "directories with Amphora Alignments", :required=>true, :type=>:strings
+end
+
+files = Hash.new
+opts.directories.each do |dir|
+  Dir.glob(dir + "/*.aln").each do |aln|
+    name = File.basename(aln, ".aln")
+    files[name] = Hash.new if !files[name]
+    files[name][dir] = aln
+  end
+end
+
+files.keys.each do |key|
+  files.delete(key) if files[key].keys.size < opts.directories.size
+end
+
+alignments = Hash.new
+files.keys.each do |key|
+  alignments[key] = Hash.new if !alignments[key]
+  files[key].keys.each do |aln|
+    File.new(aln).each do |line|
+      name, rest = line.chomp.split(" ", 2)
+      name = name.split("-").last
+      
+    end
+  end
+end
