@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby 
+
+require 'bio'    
+require 'trollop'
+require 'ZFile'
+
+$VERBOSE=nil
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :plant, "use plant model"
+end
+
+targetp = "targetp -c "
+targetp += "-P " if opts.plant
+
+def runTargetP(file, targetp, realNames)
+	results = `#{targetp} #{file} 2>/dev/null`.split("\n")
+	results.each do |line|
+		if line =~/(seq[0-9]+)/
+			print line.sub($1, realNames[$1]) + "\n"
+		end
+	end
+	File.unlink(file)
+end
+
+
+binSize = 100
+count = 0
+out = nil
+name = "seq0001"
+realNames = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+	if count == 0
+		out = File.new("seq.txt", "w")
+		name = "seq0001"
+		realNames = Hash.new
+	end
+	out.print Bio::Sequence::AA.new(seq.seq).to_fasta(name, 60)
+	realNames[name] = seq.definition.split(" ").first
+	name.succ!
+	count += 1
+	if count % binSize == 0
+		out.close
+		runTargetP("seq.txt", targetp, realNames)
+		count = 0
+	end
+end
+
+if realNames.keys.size > 0
+	out.close
+	runTargetP("seq.txt", targetp, realNames)
+end
