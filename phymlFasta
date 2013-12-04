@@ -28,6 +28,7 @@ opts = Trollop::options do
   opt :outgroup, "use specified taxon as outgroup", :type=>:string
   opt :unrooted, "leave tree unrooted"
   opt :project, "run on grid with project number specified", :type=>:string
+  opt :tmpdir, "temporary directory", :default=>tmpdir = ENV["HOME"] + "/.tmp"
 end
 
 if (opts.project)
@@ -40,9 +41,8 @@ end
 
 opts.input.each do |fasta|
   name = File.basename(fasta).split(".").first
-  tmpdir = ENV["HOME"] + "/.tmp"
-  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
-  tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+  Dir.mkdir(opts.tmpdir) if !File.exists?(opts.tmpdir)
+  tmpdir = opts.tmpdir + "/" + name + "_" + Time.now.to_f.to_s
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
   tname = tmpdir + "/" + name
   dna = isDNA?(fasta)

@@ -20,7 +20,8 @@ def runTargetP(file, targetp, realNames)
 	results = `#{targetp} #{file} 2>/dev/null`.split("\n")
 	results.each do |line|
 		if line =~/(seq[0-9]+)/
-			print line.sub($1, realNames[$1]) + "\n"
+			name, len, ctp, mtp, sp, other, loc, rc, tplen = line.chomp.split(" ")
+			print [realNames[name], loc, rc, ctp, mtp, sp, other, tplen].join(" ")+"\n"
 		end
 	end
 	File.unlink(file)

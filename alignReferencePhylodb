@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby 
+
+$VERBOSE = nil
+require 'trollop'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :hmm, "hmm database", :required=>true, :type=>:string
+  opt :filter, "filter alignment, rejecting seqs less than 0.5 average"
+  opt :tree, "make tree from alignment"
+  opt :tmpdir, "temporary directory", :default=>tmpdir = ENV["HOME"] + "/.tmp"
+end
+
+def hmmAlign(input, hmm)
+	hname = File.basename(input, ".pep").split("_").last
+	oname = File.basename(input).sub(".pep", ".afa")
+	out = File.new(oname, "w")
+	system("hmmfetch #{hmm} #{hname} > #{hname}.hmm")
+	`hmmalign --trim #{hname}.hmm #{input} | esl-reformat afa -`.split("\n").each do |line|
+		if line =~/\{([^\}]+)\}/
+			sname = $1.split("||").first.gsub(" ","_").tr(",():.","")
+			out.print ">" + sname + "\n"
+		else
+			out.print line + "\n"
+		end
+	end
+	out.close
+	File.unlink(hname + ".hmm")
+end
+
+hmmAlign(opts.input, opts.hmm)
+
+if opts.filter
+	oname = File.basename(opts.input).sub(".pep", ".afa")
+	reject = File.new("rejected_" + opts.input, "w")
+	keep = File.new("keep_" + opts.input, "w")
+	seqs = []
+	lengths = []
+	Bio::FlatFile.new(Bio::FastaFormat, File.new(oname)).each do |seq|
+		lengths.push(seq.seq.count("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"))
+	end
+	Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+		seqs.push(seq)
+	end
+	avg = lengths.reduce(:+)/lengths.length
+	0.upto(lengths.length - 1) do |i|
+		if lengths[i] < 0.5*avg
+			reject.print seqs[i]
+		else
+			keep.print seqs[i]
+		end
+	end
+	keep.close
+	reject.close
+	hmmAlign("keep_" + opts.input, opts.hmm)
+	File.unlink(oname)
+	File.rename("keep_" + opts.input.sub(".pep",".afa"), oname)
+end
+
+
+if opts.tree
+	system("phymlFasta -i #{oname} -u -t #{opts.tmpdir}")
+end
