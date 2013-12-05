@@ -1,6 +1,5 @@
 #!/usr/bin/env ruby 
 
-require 'rubygems'
 require 'bio'    
 require 'trollop'
 
@@ -9,26 +8,36 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "Input peptide alignment", :required=>true, :type=>:string
   opt :dna, "Unaligned DNA file", :required=>true, :type=>:string
+  opt :phylip, "output in PHYLIP format (needed for PAML/codeml)"
 end
 
 pep = Hash.new
 Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
   pep[seq.entry_id] = seq.seq
 end
+printHeader = opts.phylip
 Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.dna)).each do |seq|
-  if (!pep[seq.entry_id])
+  if !pep[seq.entry_id]
     raise "No #{seq.entry_id} in #{pepAlign}\n"
   end
   dseq = ""
   j = 0
   pep[seq.entry_id].length.times do |i|
     c = pep[seq.entry_id][i].chr
-    if (c == "-")
+    if c == "-"
       dseq += "---"
     else
       dseq += seq.seq[j..j+2]
       j += 3
     end
   end
-  print Bio::Sequence::NA.new(dseq).to_fasta(seq.definition, 60)
+  if printHeader
+    print " " + pep.keys.size.to_s + " " + dseq.length.to_s + "\n"
+    printHeader = false
+  end
+  if opts.phylip
+    print seq.definition.split(" ").first + "  " + dseq + "\n"
+  else
+    print Bio::Sequence::NA.new(dseq).to_fasta(seq.definition, 60)
+  end
 end
