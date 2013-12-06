@@ -17,6 +17,7 @@ selectionctl = name + "_selection.ctl"
 nullctl = name + "_null.ctl"
 selectionmlc = name + "_selection.mlc"
 nullmlc = name + "_null.mlc"
+tmpdir = name + ".tmp"
 ctl = DATA.read
 ctl.sub!("PHYLIP", phy)
 ctl.sub!("TREE", opts.tree)
@@ -39,14 +40,19 @@ out.close
 
 if !File.exists?(nullmlc)
 	STDERR << "Running codeml on #{name} with null model...\n"
-	system("codeml #{nullctl}")
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+	system("cd #{tmpdir};cp ../#{nullctl} .;cp ../#{phy} .;cp ../#{opts.tree} .;codeml #{nullctl}")
+  File.link("#{tmpdir}/#{nullmlc}", nullmlc)
+  system("rm -rf #{tmpdir}")
 else
 	STDERR << "Skipping codeml on #{name} with null model as output exists...\n"
 end
-
 if !File.exists?(selectionmlc)
 	STDERR << "Running codeml on #{name} with branch & sites model...\n"
-	system("codeml #{selectionctl}")
+  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+  system("cd #{tmpdir};cp ../#{selectionctl} .;cp ../#{phy} .;cp ../#{opts.tree} .;codeml #{selectionctl}")
+  File.link("#{tmpdir}/#{selectionmlc}", selectionmlc)
+  system("rm -rf #{tmpdir}")
 else
 	STDERR << "Skipping codeml on #{name} with branch & sites model as output exists...\n"
 end
