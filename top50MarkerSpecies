@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby 
+
+$VERBOSE=nil
+
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input blast file(s)", :required=>true, :type=>:strings
+  opt :organism, "phylodb organism taxonomy file", :type=>:string, :required=>true
+  opt :phylodb, "phylodb fasta file", :type=>:string, :required=>true
+end
+
+
+taxonomy = Hash.new
+
+File.new(opts.organism).each do |line|
+  num, tax = line.chomp.split("\t")
+  taxonomy[num.to_i] = tax
+end
+
+opts.input.each do |file|
+  hits = Hash.new
+  sphits = Hash.new
+  ZFile.new(file).each do |line|
+    fields = line.chomp.split("\t")
+    hits[fields[1]] = true
+  end
+  `fastacmd -d #{opts.phylodb} -s "#{hits.keys.join(" ")}"`.split("\n").each do |line|
+    if line =~/^>/
+      nums = line.split(" ")[-2].split("||").collect{|x| x.to_i}
+      name = line.split(">")[1].gsub("lcl|","").split(" ").first
+      nums.each do |num|
+        sphits[num] = Hash.new if !sphits[num]
+        sphits[num][name] = true
+      end
+    end
+  end
+  sphits.keys.sort{|x,y| sphits[y].keys.size <=> sphits[x].keys.size}.each do |num|
+    p [num, sphits[num].keys.size]
+  end
+end
