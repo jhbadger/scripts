@@ -4,41 +4,104 @@ $VERBOSE=nil
 
 require 'trollop'
 require 'ZFile'
+require 'sqlite3'
+require 'axlsx'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :input, "Input blast file(s)", :required=>true, :type=>:strings
-  opt :organism, "phylodb organism taxonomy file", :type=>:string, :required=>true
-  opt :phylodb, "phylodb fasta file", :type=>:string, :required=>true
+  opt :db, "sqlite database to use (or be created)", :required=>true, :type=>:string
+  opt :input, "Input blast file(s)", :type=>:strings
+  opt :organism, "phylodb organism taxonomy file", :type=>:string
+  opt :phylodb, "phylodb fasta file", :type=>:string
+  opt :maxhits, "max hits per protein", :default=>10
 end
 
+db = SQLite3::Database.new(opts.db)
+db.type_translation = true
+db.results_as_hash = true
 
-taxonomy = Hash.new
-
-File.new(opts.organism).each do |line|
-  num, tax = line.chomp.split("\t")
-  taxonomy[num.to_i] = tax
-end
-
-opts.input.each do |file|
-  hits = Hash.new
-  sphits = Hash.new
-  ZFile.new(file).each do |line|
-    fields = line.chomp.split("\t")
-    hits[fields[1]] = true
+if opts.organism
+  begin
+    db.query("DROP TABLE organism")
+  rescue
   end
-  `fastacmd -d #{opts.phylodb} -s "#{hits.keys.join(" ")}"`.split("\n").each do |line|
-    if line =~/^>/
-      nums = line.split(" ")[-2].split("||").collect{|x| x.to_i}
-      name = line.split(">")[1].gsub("lcl|","").split(" ").first
-      nums.each do |num|
-        sphits[num] = Hash.new if !sphits[num]
-        sphits[num][name] = true
+  STDERR << "Loading Organism table...\n"
+  db.query("CREATE TABLE organism(taxon_id int, taxonomy varchar(255), PRIMARY KEY(taxon_id ASC))")
+  db.query("BEGIN TRANSACTION")
+  ZFile.new(opts.organism).each do |line|
+    num, tax = line.chomp.split("\t")
+    db.execute("INSERT INTO organism VALUES(?,?)", num, tax)
+  end
+  db.query("END TRANSACTION")
+end
+
+
+if opts.input
+  begin
+    db.query("DROP TABLE seguid_link")
+    db.query("DROP TABLE blast")
+  rescue
+  end
+  db.query("CREATE TABLE seguid_link(seguid varchar(255),taxon_id int, PRIMARY KEY(seguid))")
+  db.query("CREATE INDEX seg_taxon ON seguid_link(taxon_id)")
+  db.query("CREATE TABLE blast(environ varchar(255), marker varchar(255), query varchar(255), match varchar(255), evalue numeric)")
+  db.query("CREATE INDEX blast_query ON blast(query)")
+  db.query("CREATE INDEX blast_environ ON blast(environ)")
+  db.query("CREATE INDEX blast_marker ON blast(marker)")
+  db.query("CREATE INDEX blast_evalue ON blast(evalue)")
+  opts.input.each do |file|
+    STDERR << "Loading " << file << "...\n"
+    db.query("BEGIN TRANSACTION")
+    environ, marker = File.basename(file, ".m8").split("_")
+    hits = Hash.new
+    oldquery = ""
+    count = 0
+    ZFile.new(file).each do |line|
+      query,match,d0,d1,d2,d3,d4,d5,d6,d7,evalue = line.chomp.split("\t")
+      if query != oldquery
+        count = 0
+      end
+      count += 1
+      if count <= opts.maxhits
+        hits[match] = true
+        evalue = evalue.to_f
+        db.query("INSERT INTO blast VALUES(?,?,?,?,?)", environ, marker, query, match, evalue)
+      end
+      oldquery = query
+    end
+    db.query("END TRANSACTION")
+    db.query("BEGIN TRANSACTION")
+    `fastacmd -d #{opts.phylodb} -s "#{hits.keys.join(" ")}"`.split("\n").each do |line|
+      if line =~/^>/
+        nums = line.split(" ")[-2].split("||").collect{|x| x.to_i}
+        name = line.split(">")[1].gsub("lcl|","").split(" ").first
+        begin
+          db.query("INSERT INTO seguid_link VALUES(?,?)", name, nums.first)
+        rescue
+        end        
+      end
+    end
+    db.query("END TRANSACTION")
+  end
+end
+
+environs = db.execute("SELECT DISTINCT environ FROM blast").collect{|x| x.values.first}
+markers = db.execute("SELECT DISTINCT marker FROM blast").collect{|x| x.values.first}
+
+environs.each do |environ|
+  p = Axlsx::Package.new
+  wb = p.workbook
+  markers.each do |marker|
+    wb.add_worksheet(:name=>marker) do |sheet|
+      sheet.add_row(["Count", "Taxon_Id", "Taxonomy"])
+      db.query("SELECT COUNT(seguid_link.taxon_id) AS count,seguid_link.taxon_id, taxonomy " +
+          "FROM blast,seguid_link,organism where marker=? and environ=? and " +
+          "seguid_link.seguid=blast.match AND seguid_link.taxon_id=organism.taxon_id " +
+          "GROUP BY seguid_link.taxon_id ORDER BY count DESC LIMIT 100", marker, environ).each do |row|
+        sheet.add_row([row["count"], row["taxon_id"], row["taxonomy"]])
       end
     end
   end
-  sphits.keys.sort{|x,y| sphits[y].keys.size <=> sphits[x].keys.size}.each do |num|
-    p [num, sphits[num].keys.size]
-  end
+  p.serialize(environ + ".xlsx")
 end
