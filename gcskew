@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby 
+
+require 'bio'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :window, "window size to use", :default=>50
+end
+
+def winskew(seq)
+  g = seq.upcase.count("G").to_f + 0.01
+  c = seq.upcase.count("C").to_f + 0.01
+  (g-c)/(g+c)
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  gmin = 1000000
+  gmax = -1000000
+  mnpos = 0
+  maxpos = 0
+  pos = 0
+  tot = 0
+  while (pos < seq.length)
+    window = seq.seq[pos..pos+opts.window - 1]
+    pos += opts.window / 2
+    wskew = winskew(window)*opts.window/seq.length
+    tot += wskew
+    printf("%d\t%8.3e\n", pos, tot)
+    if tot < gmin
+      gmin = tot
+      mnpos = pos
+    end
+    if tot > gmax
+      gmax = tot
+      mxpos = pos
+    end
+  end
+  STDERR << "Likely replication of origin for " << seq.entry_id << ": " << mnpos << "\n"
+end

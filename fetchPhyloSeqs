@@ -19,6 +19,8 @@ opts = Trollop::options do
   opt :molecule, "return full DNA molecules"
   opt :rna, "return rRNAs, not proteins"
   opt :transcripts, "return transcripts, not proteins"
+  opt :taxonid, "use taxon id as search"
+  opt :taxonomy, "use taxonomy string as search"
 end
 
 if opts.file
@@ -59,6 +61,20 @@ def flag_string(flag_num)
   end
 end
 
+if opts.taxonomy
+  newids = []
+  db.query("SELECT DISTINCT taxon_id, taxonomy FROM contigs").each do |row|
+    tid, tax = row
+    ids.each do |id|
+      if tax.index(opts.taxonomy)
+        newids.push(tid)
+      end
+    end
+  end
+  ids = newids.uniq
+end
+
+
 
 inList = "("
 ids.each do |id|
@@ -66,6 +82,7 @@ ids.each do |id|
 end
 inList.chop!
 inList += ")"
+
 
 if opts.transcripts
   query = "SELECT p.seguid, p.name, t.seq, annotation, species, strain, c.taxon_id, p.protein_flag FROM proteins AS p "
@@ -90,6 +107,8 @@ elsif opts.seguid
   query += "WHERE seguid IN #{inList}"
 elsif opts.contig
   query += "WHERE c.name IN #{inList}"
+elsif opts.taxonid || opts.taxonomy
+  query += "WHERE c.taxon_id IN #{inList}"
 else
   query += "WHERE p.name IN #{inList}"
 end

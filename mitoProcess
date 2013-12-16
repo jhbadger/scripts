@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file(s)", :required=>true, :type=>:strings
+  opt :hmm, "HMM database", :required=>true, :type=>:string
+  opt :legend, "file linking gene names to HMM name", :required=>true, :type=>:string
+end
+
+markers = Hash.new
+
+File.new(opts.legend).each do |line|
+	gene, hmm = line.chomp.split("\t")
+	markers[hmm] = gene
+end
+
+
+opts.input.each do |pep|
+	name = nil
+	matches = Hash.new
+	`hmmscan -E 0.01 #{opts.hmm} #{pep}`.split("\n").each do |line|
+		if line =~/^Query:/
+			name = line.split(" ")[1]
+		elsif line =~/^>>/
+			hmm = line.split[1]
+			matches[name] = markers[hmm] if !matches[name]
+		end
+	end	
+	p matches
+	exit(1)
+end

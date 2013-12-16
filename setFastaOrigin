@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby 
+
+require 'bio'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :pos, "start position", :required=>true, :type=>:integer
+end
+
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+ newseq = seq.seq[opts.pos - 1..seq.length] + seq.seq[0..opts.pos - 2]
+ print Bio::Sequence::NA.new(newseq).to_fasta(seq.entry_id + " reorigined at " + opts.pos.to_s, 60)
+end
