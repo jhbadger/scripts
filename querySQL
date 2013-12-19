@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'mysql'
+require 'sqlite3'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :host, "db host (for mysql)", :default=>"mysql-lan-pro", :type=>:string
+  opt :user, "user (for mysql)", :default=>"jbadger", :type=>:string
+  opt :password, "password (for mysql)", :default=>"plankton", :type=>:string
+  opt :db, "database (or file for sqlite3)", :required=>:true, :type=>:string
+  opt :sql, "SQL query", :required=>:true, :type=>:string
+end
+
+if File.exists?(opts.db)
+	db = SQLite3::Database.new(opts.db)
+else
+	db = Mysql::new(opts.host, opts.user, opts.password, opts.db)
+end
+
+db.query(opts.sql).each do |row|
+	print row.to_a.join("\t") + "\n"
+end
+
+db.close

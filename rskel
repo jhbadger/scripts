@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "name of script to create", :required=>true, :type=>:string
+end
+
+
+if !File.exists?(opts.input)
+  script = DATA.read
+  out = File.new(opts.input, "w")
+  out.print script
+  out.close
+  system("chmod a+x #{opts.input}")
+else
+  STDERR << opts.input << " already exists. Not overwriting.\n"
+end
+
+__END__
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end

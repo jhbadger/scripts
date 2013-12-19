@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'simple_xlsx_reader'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :sheet, "sheet number to use", :default=>0
+  opt :separator, "separator for output", :default=>"\t"
+end
+
+doc = SimpleXlsxReader.open(opts.input)
+sheet = doc.sheets[opts.sheet]
+sheet.rows.each do |row|
+	print row.to_csv(:col_sep=>opts.separator)
+end
