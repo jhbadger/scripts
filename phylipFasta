@@ -1,22 +1,31 @@
 #!/usr/bin/env ruby
 
-$:.unshift File.dirname(File.expand_path($0))
-
-require 'rubygems'
-require 'trollop'
-require 'bio'
-require 'apis_lib'
-require 'Newick'
-require 'fpdf'
-
 $VERBOSE = nil
-dnapars = `which dnapars`.chomp
 
-if dnapars == ""
-  STDERR << "I can't find phylip programs (e.g. dnapars) on your path!\n"
-  exit(1)
+def required_gems(array)
+  array.each do |item|
+    begin
+      require item
+    rescue LoadError
+      item = "newick-ruby" if item=="Newick"
+      STDERR << "Gem #{item} missing. You need to gem install #{item}\n"
+      exit(1)
+    end
+  end
 end
 
+def required_programs(array)
+  array.each do |item|
+      prog = `which #{item}`
+      if prog == ""
+        STDERR << "You don't have #{item} on your path, but it is required\n"
+        exit(1)
+      end
+  end
+end
+
+required_gems ['rubygems', 'trollop', 'bio', 'Newick', 'fpdf']
+required_programs ['dnapars', 'protpars', 'dnadist', 'protdist']
 
 origARGV = ARGV.dup # keep unparsed copy for grid
 
@@ -47,6 +56,93 @@ if (opts.project)
   exit(0)
 end
 
+# is a fasta file DNA?
+def isDNA?(fasta)
+   seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
+   seq.count("AGTCN").to_f / seq.length > 0.90
+end
+
+# provide aliased fasta name so programs like PHYLIP don't get confused by long names
+def aliasFasta(fasta, ali, out, outgroup = nil)
+   outFile = File.new(out, "w")
+   aliFile = File.new(ali, "w") if (!ali.nil?)
+   aliHash = Hash.new
+   orfNum = "SID0000001"
+   Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+      newName = orfNum
+      name = seq.definition.split(" ").first
+      newName = "SID0000000" if (outgroup == name)
+      aliFile.printf("%s\t%s\n", newName, seq.definition) if (ali)
+      aliHash[newName] = seq.definition.tr("(),:","_")
+      seq.definition = newName
+      outFile.print seq
+      orfNum = orfNum.succ if (outgroup != name)
+   end
+   outFile.close
+   aliFile.close if (ali)
+   return aliHash
+end
+
+# given a NewickTree and an alignment add ML distances
+def estimateMLBranchLengths(tree, alignFile, tmpdir)
+  required_programs ['puzzle']
+  outgroup = tree.taxa.sort.last
+  tree.reroot(tree.findNode(outgroup))
+  bClades = tree.clades(true)
+  fasta2Phylip(alignFile, "#{tmpdir}/infile")
+  tree.write("#{tmpdir}/intree")
+  treepuzzle = "puzzle infile intree"
+  system("cd #{tmpdir};echo  \"y\" | #{treepuzzle} > /dev/null")
+  tree = NewickTree.fromFile("#{tmpdir}/intree.tree")
+  tree.reroot(tree.findNode(outgroup))
+  tree.addBootStrap(bClades)
+  File.unlink(tmpdir+"/intree", tmpdir+"/intree.tree", tmpdir+"/infile")
+  File.unlink(tmpdir+"/intree.dist", tmpdir+"/intree.puzzle")
+  return tree
+end
+
+# converts fasta to phylip format
+def fasta2Phylip(alignFile, phyFile)
+  seqs = Hash.new
+  name = nil
+  inFile = File.new(alignFile)
+  inFile.each do |line|
+    line.chomp!
+    line.tr!("*","")
+    if line =~ /^>/
+      name = line[1..line.length].split(";").pop
+      seqs[name] = ""
+    else
+      seqs[name] += line.gsub(".","-")
+    end
+  end
+  inFile.close
+  phy = File.new(phyFile, "w")
+  lineLen = 60
+  phy.printf("%d %d\n", seqs.size, seqs[name].length)
+  pos = 0
+  while (pos < seqs[name].length)
+    seqs.keys.sort.each do |name|
+      if pos == 0
+        phy.printf("%-10s ", name)
+      end
+      phy.printf("%s\n", seqs[name][pos..pos + lineLen - 1])
+    end
+    pos += lineLen
+    phy.printf("\n")
+  end
+  phy.close
+end
+
+# cleans up temporary files
+def cleanup(dir)
+  Dir.glob(dir+"/*").each do |file|
+    File.unlink(file)
+  end
+  Dir.unlink(dir)
+end
+
+# main program loop
 opts.input.each do |fasta|
   name = File.basename(fasta).split(".").first
   tmpdir = ENV["HOME"] + "/.tmp"
@@ -55,7 +151,7 @@ opts.input.each do |fasta|
   Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
   tname = tmpdir + "/" + name
   dna = isDNA?(fasta)
-  aliHash = aliasFasta(fasta, nil, tname, opts.outgroup, opts.trim)
+  aliHash = aliasFasta(fasta, nil, tname, opts.outgroup)
   fasta2Phylip(tname, "#{tname}.phy")
   File.unlink("#{tmpdir}/infile") if (File.exists?("#{tmpdir}/infile"))
   File.unlink("#{tmpdir}/outfile") if (File.exists?("#{tmpdir}/outfile"))
