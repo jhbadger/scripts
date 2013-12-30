@@ -3,12 +3,55 @@
 require 'rubygems'
 require 'trollop'
 require 'bio'    
-require 'apis_lib'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "Input fasta file", :required=>true, :type=>:string
+end
+
+# is a fasta file DNA?
+def isDNA?(fasta)
+   seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
+   seq.count("AGTCN").to_f / seq.length > 0.90
+end
+
+# converts fasta to NEXUS format
+def fasta2Nexus(alignFile, dna, nexFile = nil)
+   seqs = Hash.new
+   name = nil
+   seqFile = File.new(alignFile)
+   Bio::FlatFile.new(Bio::FastaFormat, seqFile).each do |seq|
+      seqs[seq.full_id] = seq.seq.gsub("?","-").gsub(".","-")
+   end
+   seqFile.close
+   if dna
+      type = "NUC"
+   else
+      type = "PROT"
+   end
+   if (nexFile.nil?)
+      out = STDOUT
+   else
+      out = File.new(nexFile, "w")
+   end
+   lineLen = 40
+   aLen = seqs[seqs.keys.first].size
+   out.print "#NEXUS\nBEGIN DATA;\n"
+   out.print "DIMENSIONS NTAX=#{seqs.size} NCHAR=#{aLen};\n"
+   out.print "FORMAT DATATYPE=#{type} INTERLEAVE MISSING=-;\n"
+   out.print "MATRIX\n"
+   pos = 0
+   while (pos < aLen)
+      seqs.keys.sort.each do |name|
+         out.printf("%35s ", name)
+         out.printf("%s\n", seqs[name][pos..pos + lineLen - 1])
+      end
+      pos += lineLen
+      out.printf("\n")
+   end
+   out.print ";\nEND;\n"
+   out.close if nexFile
 end
 
 dna = isDNA?(opts.input)

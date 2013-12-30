@@ -5,9 +5,28 @@ require 'ostruct'
 require 'trollop'
 require 'yajl'
 require 'ZFile'
-require 'apis_lib'
 require 'csv'
 
+if Object.const_defined?("Yajl") # Has Yajl been loaded?
+   # add JSON encoding to every object
+   class Object
+      def to_json_pp
+         Yajl::Encoder.encode(self,:pretty => true) + "\n"
+      end
+   end
+   class JsonStreamer
+      def initialize(filehandle)
+         @filehandle = filehandle
+      end
+      def each
+         parser = Yajl::Parser.new
+         parser.on_parse_complete = proc{|obj| yield obj}
+         @filehandle.each do |line|
+            parser << line
+         end
+      end
+   end
+end
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do

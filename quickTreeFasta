@@ -1,19 +1,31 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
-require 'trollop'
-require 'bio'
-require 'apis_lib'
-require 'Newick'
-require 'fpdf'
-
 $VERBOSE = nil
-quicktree = `which quicktree`.chomp
 
-if quicktree == ""
-  STDERR << "I can't find quicktree on your path!\n"
-  exit(1)
+def required_gems(array)
+  array.each do |item|
+    begin
+      require item
+    rescue LoadError
+      item = "newick-ruby" if item=="Newick"
+      STDERR << "Gem #{item} missing. You need to gem install #{item}\n"
+      exit(1)
+    end
+  end
 end
+
+def required_programs(array)
+  array.each do |item|
+      prog = `which #{item}`
+      if prog == ""
+        STDERR << "You don't have #{item} on your path, but it is required\n"
+        exit(1)
+      end
+  end
+end
+
+required_gems ['rubygems', 'trollop', 'bio', 'Newick', 'fpdf']
+required_programs ['quicktree']
 
 origARGV = ARGV.dup # keep unparsed copy for grid
 
@@ -36,6 +48,76 @@ if (opts.project)
   exit(0)
 end
 
+# is a fasta file DNA?
+def isDNA?(fasta)
+   seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
+   seq.count("AGTCN").to_f / seq.length > 0.90
+end
+
+# provide aliased fasta name so programs like PHYLIP don't get confused by long names
+def aliasFasta(fasta, ali, out, outgroup = nil)
+   outFile = File.new(out, "w")
+   aliFile = File.new(ali, "w") if (!ali.nil?)
+   aliHash = Hash.new
+   orfNum = "SID0000001"
+   Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+      newName = orfNum
+      name = seq.definition.split(" ").first
+      newName = "SID0000000" if (outgroup == name)
+      aliFile.printf("%s\t%s\n", newName, seq.definition) if (ali)
+      aliHash[newName] = seq.definition.tr("(),:","_")
+      seq.definition = newName
+      outFile.print seq
+      orfNum = orfNum.succ if (outgroup != name)
+   end
+   outFile.close
+   aliFile.close if (ali)
+   return aliHash
+end
+
+# produces stock format needed for quicktree from fastaFormat
+def fasta2Stockholm(alignFile)
+   stock = alignFile + ".stock"
+   stockf = File.new(stock, "w")
+   stockf.printf("# STOCKHOLM 1.0\n")
+   align = Hash.new
+   aSize = 0
+   nSize = 0
+   Bio::FlatFile.new(Bio::FastaFormat, File.new(alignFile)).each do |seq|
+      name = headerName(seq.definition)
+      align[name] = seq.seq
+      aSize = seq.seq.length
+      nSize = name.size if (nSize < name.size)
+   end
+   0.step(aSize, 50) do |i|
+      stockf.printf("\n")
+      align.keys.sort.each do |key|
+         stockf.printf("%-#{nSize}s %s\n", key, align[key][i..i+49])
+      end
+   end
+   stockf.printf("//\n")
+   stockf.close
+   stock
+end
+
+#returns first word from header
+def headerName(header)
+   begin
+      header.split(" ")[0]
+   rescue
+      ""
+   end
+end
+
+# cleans up temporary files
+def cleanup(dir)
+  Dir.glob(dir+"/*").each do |file|
+    File.unlink(file)
+  end
+  Dir.unlink(dir)
+end
+
+# main program loop
 opts.input.each do |fasta|
   dna = isDNA?(fasta)
   if (dna)
@@ -56,9 +138,9 @@ opts.input.each do |fasta|
     boot = ""
   end
   if (opts.distance)
-    system("#{quicktree} -out m #{stock} > #{name}_quick.dist")
+    system("quicktree -out m #{stock} > #{name}_quick.dist")
   else
-    system("cd #{tmpdir};#{quicktree} #{boot} #{stock} > #{tmpdir}/quick.tree")
+    system("cd #{tmpdir};quicktree #{boot} #{stock} > #{tmpdir}/quick.tree")
     tree = NewickTree.fromFile("#{tmpdir}/quick.tree")
     tree.unAlias(aliHash)
     if (opts.outgroup)

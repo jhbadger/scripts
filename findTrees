@@ -3,8 +3,7 @@
 require 'rubygems'
 require 'trollop'
 require 'Newick'
-require File.dirname($0)+"/apis_lib"
-require 'fcsv'
+require 'csv'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -16,6 +15,37 @@ opts = Trollop::options do
   opt :spreadsheet, "spreadsheet to read in", :required=>true, :type=>:string
   opt :taxonomy, "APIS usedTaxa file", :required => true, :type => :string
   opt :verbose, "be verbose"
+end
+
+# load taxonomy and return species-based hash
+def loadTaxonomy(taxf, verbose)
+   # recusively walk up tax tree
+   def recurseTaxonomy(tax, current)
+      name, parent, rank = tax[current]
+      if (name.nil? || name == "root" || name == "cellular organisms")
+         []
+      else
+         recurseTaxonomy(tax, parent).to_a + [name]
+      end
+   end
+   STDERR << "Loading taxonomy...\n" if verbose
+   tax = Hash.new
+   sp = Hash.new
+   tax_ids = Hash.new
+   taxf.each do |tf|
+      ZFile.new(tf).each do |line|
+         current, name, parent, rank = line.chomp.split("\t")
+         name = name.tr("(),:","")
+         tax[current.to_i] = [name, parent.to_i, rank]
+         sp[name] = current.to_i if rank == "species" || rank == "subspecies" || rank == "no rank" || rank == "metagenome"
+         tax_ids[name] = current
+      end
+   end
+   taxonomy = Hash.new
+   sp.keys.each do |s|
+      taxonomy[s.gsub(" ","_")] = recurseTaxonomy(tax, sp[s])
+   end
+   [taxonomy, tax_ids]
 end
 
 # summarize set of matching taxonomies

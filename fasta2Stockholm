@@ -3,12 +3,36 @@
 require 'rubygems'
 require 'trollop'
 require 'bio'    
-require 'apis_lib'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "Input fasta file", :required=>true, :type=>:string
+end
+
+# produces stock format needed for quicktree from fastaFormat
+def fasta2Stockholm(alignFile)
+   stock = alignFile + ".stock"
+   stockf = File.new(stock, "w")
+   stockf.printf("# STOCKHOLM 1.0\n")
+   align = Hash.new
+   aSize = 0
+   nSize = 0
+   Bio::FlatFile.new(Bio::FastaFormat, File.new(alignFile)).each do |seq|
+      name = headerName(seq.definition)
+      align[name] = seq.seq
+      aSize = seq.seq.length
+      nSize = name.size if (nSize < name.size)
+   end
+   0.step(aSize, 50) do |i|
+      stockf.printf("\n")
+      align.keys.sort.each do |key|
+         stockf.printf("%-#{nSize}s %s\n", key, align[key][i..i+49])
+      end
+   end
+   stockf.printf("//\n")
+   stockf.close
+   stock
 end
 
 fasta2Stockholm(opts.input)

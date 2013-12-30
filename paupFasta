@@ -1,21 +1,32 @@
 #!/usr/bin/env ruby
 
-$:.unshift File.dirname(File.expand_path($0))
-
-require 'rubygems'
-require 'trollop'
-require 'bio'
-require 'apis_lib'
-require 'Newick'
-require 'fpdf'
-
 $VERBOSE = nil
-paup = `which paup`.chomp
 
-if paup == ""
-  STDERR << "I can't find paup on your path!\n"
-  exit(1)
+def required_gems(array)
+  array.each do |item|
+    begin
+      require item
+    rescue LoadError
+      item = "newick-ruby" if item=="Newick"
+      STDERR << "Gem #{item} missing. You need to gem install #{item}\n"
+      exit(1)
+    end
+  end
 end
+
+def required_programs(array)
+  array.each do |item|
+      prog = `which #{item}`
+      if prog == ""
+        STDERR << "You don't have #{item} on your path, but it is required\n"
+        exit(1)
+      end
+  end
+end
+
+required_gems ['rubygems', 'trollop', 'bio', 'Newick', 'fpdf']
+required_programs ['paup']
+
 
 origARGV = ARGV.dup # keep unparsed copy for grid
 
@@ -44,6 +55,140 @@ if (opts.project)
   exit(0)
 end
 
+# is a fasta file DNA?
+def isDNA?(fasta)
+   seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
+   seq.count("AGTCN").to_f / seq.length > 0.90
+end
+
+# provide aliased fasta name so programs like PHYLIP don't get confused by long names
+def aliasFasta(fasta, ali, out, outgroup = nil)
+   outFile = File.new(out, "w")
+   aliFile = File.new(ali, "w") if (!ali.nil?)
+   aliHash = Hash.new
+   orfNum = "SID0000001"
+   Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+      newName = orfNum
+      name = seq.definition.split(" ").first
+      newName = "SID0000000" if (outgroup == name)
+      aliFile.printf("%s\t%s\n", newName, seq.definition) if (ali)
+      aliHash[newName] = seq.definition.tr("(),:","_")
+      seq.definition = newName
+      outFile.print seq
+      orfNum = orfNum.succ if (outgroup != name)
+   end
+   outFile.close
+   aliFile.close if (ali)
+   return aliHash
+end
+
+# given a NewickTree and an alignment add ML distances
+def estimateMLBranchLengths(tree, alignFile, tmpdir)
+  required_programs ['puzzle']
+  outgroup = tree.taxa.sort.last
+  tree.reroot(tree.findNode(outgroup))
+  bClades = tree.clades(true)
+  fasta2Phylip(alignFile, "#{tmpdir}/infile")
+  tree.write("#{tmpdir}/intree")
+  treepuzzle = "puzzle infile intree"
+  system("cd #{tmpdir};echo  \"y\" | #{treepuzzle} > /dev/null")
+  tree = NewickTree.fromFile("#{tmpdir}/intree.tree")
+  tree.reroot(tree.findNode(outgroup))
+  tree.addBootStrap(bClades)
+  File.unlink(tmpdir+"/intree", tmpdir+"/intree.tree", tmpdir+"/infile")
+  File.unlink(tmpdir+"/intree.dist", tmpdir+"/intree.puzzle")
+  return tree
+end
+
+if Object.const_defined?("Bio") # has bioruby been loaded?
+   # do this to avoid splitting on "|"
+   class Bio::FastaFormat
+      def full_id
+         return definition.split(" ").first
+      end
+   end
+end
+
+# converts fasta to NEXUS format
+def fasta2Nexus(alignFile, dna, nexFile = nil)
+   seqs = Hash.new
+   name = nil
+   seqFile = File.new(alignFile)
+   Bio::FlatFile.new(Bio::FastaFormat, seqFile).each do |seq|
+      seqs[seq.full_id] = seq.seq.gsub("?","-").gsub(".","-")
+   end
+   seqFile.close
+   if dna
+      type = "NUC"
+   else
+      type = "PROT"
+   end
+   if (nexFile.nil?)
+      out = STDOUT
+   else
+      out = File.new(nexFile, "w")
+   end
+   lineLen = 40
+   aLen = seqs[seqs.keys.first].size
+   out.print "#NEXUS\nBEGIN DATA;\n"
+   out.print "DIMENSIONS NTAX=#{seqs.size} NCHAR=#{aLen};\n"
+   out.print "FORMAT DATATYPE=#{type} INTERLEAVE MISSING=-;\n"
+   out.print "MATRIX\n"
+   pos = 0
+   while (pos < aLen)
+      seqs.keys.sort.each do |name|
+         out.printf("%35s ", name)
+         out.printf("%s\n", seqs[name][pos..pos + lineLen - 1])
+      end
+      pos += lineLen
+      out.printf("\n")
+   end
+   out.print ";\nEND;\n"
+   out.close if nexFile
+end
+
+# converts fasta to phylip format
+def fasta2Phylip(alignFile, phyFile)
+  seqs = Hash.new
+  name = nil
+  inFile = File.new(alignFile)
+  inFile.each do |line|
+    line.chomp!
+    line.tr!("*","")
+    if line =~ /^>/
+      name = line[1..line.length].split(";").pop
+      seqs[name] = ""
+    else
+      seqs[name] += line.gsub(".","-")
+    end
+  end
+  inFile.close
+  phy = File.new(phyFile, "w")
+  lineLen = 60
+  phy.printf("%d %d\n", seqs.size, seqs[name].length)
+  pos = 0
+  while (pos < seqs[name].length)
+    seqs.keys.sort.each do |name|
+      if pos == 0
+        phy.printf("%-10s ", name)
+      end
+      phy.printf("%s\n", seqs[name][pos..pos + lineLen - 1])
+    end
+    pos += lineLen
+    phy.printf("\n")
+  end
+  phy.close
+end
+
+# cleans up temporary files
+def cleanup(dir)
+  Dir.glob(dir+"/*").each do |file|
+    File.unlink(file)
+  end
+  Dir.unlink(dir)
+end
+
+# main program loop
 opts.input.each do |fasta|
   name = File.basename(fasta).split(".").first
   tmpdir = ENV["HOME"] + "/.tmp"
@@ -88,7 +233,7 @@ opts.input.each do |fasta|
   out.print "savetrees from=1 to=1 format=phylip file=#{tmpdir}/out.tree;\n"
   out.print "quit;\n"
   out.close
-  system("#{paup} #{tname}.nex")
+  system("paup #{tname}.nex")
   tree = NewickTree.fromFile("#{tmpdir}/out.tree")
   tree.fixPhylip
   tree = estimateMLBranchLengths(tree, tname, tmpdir) if (opts.estimate)

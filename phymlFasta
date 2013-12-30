@@ -1,21 +1,31 @@
 #!/usr/bin/env ruby
 
-$:.unshift File.dirname(File.expand_path($0))
-
-require 'rubygems'
-require 'trollop'
-require 'bio'
-require 'apis_lib'
-require 'Newick'
-require 'fpdf'
-
 $VERBOSE = nil
-phyml = `which phyml`.chomp
 
-if phyml == ""
-  STDERR << "I can't find phyml on your path!\n"
-  exit(1)
+def required_gems(array)
+  array.each do |item|
+    begin
+      require item
+    rescue LoadError
+      item = "newick-ruby" if item=="Newick"
+      STDERR << "Gem #{item} missing. You need to gem install #{item}\n"
+      exit(1)
+    end
+  end
 end
+
+def required_programs(array)
+  array.each do |item|
+      prog = `which #{item}`
+      if prog == ""
+        STDERR << "You don't have #{item} on your path, but it is required\n"
+        exit(1)
+      end
+  end
+end
+
+required_gems ['rubygems', 'trollop', 'bio', 'Newick', 'fpdf']
+required_programs ['phyml']
 
 origARGV = ARGV.dup # keep unparsed copy for grid
 
@@ -39,6 +49,75 @@ if (opts.project)
   exit(0)
 end
 
+# is a fasta file DNA?
+def isDNA?(fasta)
+   seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
+   seq.count("AGTCN").to_f / seq.length > 0.90
+end
+
+# provide aliased fasta name so programs like PHYLIP don't get confused by long names
+def aliasFasta(fasta, ali, out, outgroup = nil)
+   outFile = File.new(out, "w")
+   aliFile = File.new(ali, "w") if (!ali.nil?)
+   aliHash = Hash.new
+   orfNum = "SID0000001"
+   Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+      newName = orfNum
+      name = seq.definition.split(" ").first
+      newName = "SID0000000" if (outgroup == name)
+      aliFile.printf("%s\t%s\n", newName, seq.definition) if (ali)
+      aliHash[newName] = seq.definition.tr("(),:","_")
+      seq.definition = newName
+      outFile.print seq
+      orfNum = orfNum.succ if (outgroup != name)
+   end
+   outFile.close
+   aliFile.close if (ali)
+   return aliHash
+end
+
+# converts fasta to phylip format
+def fasta2Phylip(alignFile, phyFile)
+  seqs = Hash.new
+  name = nil
+  inFile = File.new(alignFile)
+  inFile.each do |line|
+    line.chomp!
+    line.tr!("*","")
+    if line =~ /^>/
+      name = line[1..line.length].split(";").pop
+      seqs[name] = ""
+    else
+      seqs[name] += line.gsub(".","-")
+    end
+  end
+  inFile.close
+  phy = File.new(phyFile, "w")
+  lineLen = 60
+  phy.printf("%d %d\n", seqs.size, seqs[name].length)
+  pos = 0
+  while (pos < seqs[name].length)
+    seqs.keys.sort.each do |name|
+      if pos == 0
+        phy.printf("%-10s ", name)
+      end
+      phy.printf("%s\n", seqs[name][pos..pos + lineLen - 1])
+    end
+    pos += lineLen
+    phy.printf("\n")
+  end
+  phy.close
+end
+
+# cleans up temporary files
+def cleanup(dir)
+  Dir.glob(dir+"/*").each do |file|
+    File.unlink(file)
+  end
+  Dir.unlink(dir)
+end
+
+# main program loop
 opts.input.each do |fasta|
   name = File.basename(fasta).split(".").first
   Dir.mkdir(opts.tmpdir) if !File.exists?(opts.tmpdir)
@@ -63,7 +142,7 @@ opts.input.each do |fasta|
   else
     boot = "-b -1"
   end
-  system("cd #{tmpdir};#{phyml} --no_memory_check -d #{data} -m #{model} #{boot} -i #{tname}.phy")
+  system("cd #{tmpdir};phyml --no_memory_check -d #{data} -m #{model} #{boot} -i #{tname}.phy")
   tree = NewickTree.fromFile("#{tmpdir}/#{name}.phy_phyml_tree.txt")
   tree.unAlias(aliHash)
   if (opts.outgroup)

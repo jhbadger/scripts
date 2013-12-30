@@ -3,7 +3,48 @@
 require 'rubygems'
 require 'trollop'
 require 'bio'    
-require 'apis_lib'
+
+# converts pointless stockholm alignment to a useful fasta one
+def stockholm2Fasta(alignFile)
+   afa = alignFile + ".afa"
+   afaf = File.new(afa, "w")
+   seqs = Hash.new
+   start = false
+   File.new(alignFile).each do |line|
+      if (line =~ /^#|\/\//)
+         start = true
+         next
+      end
+      next if !start
+      name, ali = line.split(" ")
+      next if (!start || ali.nil?)
+      ali.gsub!(".","-")
+      seqs[name] = "" if (seqs[name].nil?)
+      seqs[name] += ali += "\n"
+   end
+   seqs.keys.each do |name|
+      afaf.printf(">%s\n%s",name,seqs[name])
+   end
+   afaf.close
+   afa
+end
+
+# infers tree by desired method, populates db, returns tree
+def infer(pid, afa, method, verbose)
+   STDERR << "Making tree for " << pid << "...\n" if verbose
+   ali = aliasFasta(afa, nil, afa + ".ali")
+   tree = nil
+   if (method == "nj")
+      stock = fasta2Stockholm(afa + ".ali")
+      nj = `quicktree -boot 100 '#{stock}'`
+      tree = NewickTree.new(nj.tr("\n",""))
+      tree.unAlias(ali)
+      tree.midpointRoot
+   end
+   File.unlink(stock) if File.exists?(stock)
+   File.unlink(afa + ".ali") if File.exists?(afa + ".ali")
+   tree
+end
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do

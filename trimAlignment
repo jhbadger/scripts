@@ -2,7 +2,6 @@
 
 require 'rubygems'
 require 'bio'
-require 'apis_lib'
 require 'trollop'
 
 
@@ -12,6 +11,40 @@ opts = Trollop::options do
   	opt :input, "Input fasta file", :required=>true, :type=>:string
   	opt :fraction, "fraction gaps allowed", :default=>0.1, :type=>:float
   	opt :exclude, "exclude-regexp", :type=>:string
+end
+
+def trimAlignment(trimFile, alignFile, maxGapFract = 0.5, exclude = nil)
+   if (File.exist?(alignFile) && !File.exist?(trimFile))
+      seqs = []
+      badCols = []
+      len = 0
+      Bio::FlatFile.new(Bio::FastaFormat, File.new(alignFile)).each do |seq|
+         seq.data.tr!("\n","")
+         seqs.push(seq)
+      end
+      seqs[0].data.length.times do |i|
+         gapNum = 0
+         count = 0
+         seqs.each do |seq|
+            next if (exclude && seq.full_id =~/#{exclude}/)
+            gapNum += 1 if (seq.data[i].chr == "-" || seq.data[i].chr == "?" || seq.data[i].chr == ".")
+            count += 1
+         end
+         badCols.push(i) if (gapNum > maxGapFract*count)
+      end
+      out = File.new(trimFile, "w")
+      seqs.each do |seq|
+         badCols.each do |col|
+            seq.data[col] = "!"
+         end
+         seq.data.tr!("!","")
+         len = seq.data.length
+         out.print Bio::Sequence.auto(seq.data).to_fasta(seq.definition, 60)
+      end
+      out.close
+      return len if len > 0
+   end
+   return nil
 end
 
 trimAlignment(File.basename(opts.input, ".afa") + "_trim.afa", opts.input, opts.fraction, opts.exclude)
