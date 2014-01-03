@@ -1,4 +1,6 @@
-#!/usr/bin/env ruby 
+#!/usr/bin/env ruby
+
+$VERBOSE=nil 
 
 require 'trollop'
 require 'sqlite3'
