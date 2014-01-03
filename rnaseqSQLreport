@@ -1,0 +1,96 @@
+#!/usr/bin/env ruby
+
+$VERBOSE=nil 
+
+require 'trollop'
+require 'sqlite3'
+require 'csv'
+
+$:.unshift File.dirname(File.expand_path($0))
+require 'rnaseq_lib'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :exp, "experiment name", :required=>:true, :type=>:string
+  opt :db, "sqlite database name", :required=>true, :type=>:string
+end
+
+if File.exists?(opts.db)
+  db = SQLite3::Database.new(opts.db)
+else
+  db = nil
+  STDERR << opts.db << " not found!\n"
+  exit(1)
+end
+
+org = db.get_first_value("SELECT org FROM experiments WHERE name = ?", opts.exp)
+if !org
+  STDERR << opts.exp << " not found!\n"
+  STDERR << "Existing Samples:\n"
+  db.query("SELECT name FROM experiments").each do |row|
+    STDERR << row[0] << "\n"
+  end
+  exit(1)
+end
+
+samples = []
+counts = Hash.new
+rpkms = Hash.new
+
+db.query("SELECT sample, gene, counts, rpkm FROM gene_counts WHERE experiment = ?", opts.exp).each do |row|
+  sample, gene, count, rpkm = row
+  gene = gene.to_i
+  samples.push(sample) if !samples.include?(sample)
+  counts[gene] = Hash.new if !counts[gene]
+  rpkms[gene] = Hash.new if !rpkms[gene]
+  counts[gene][sample] = count
+  rpkms[gene][sample] = rpkm
+end
+samples.sort!
+
+avrpkm = Hash.new
+
+rpkms.keys.each do |gene|
+  total = 0
+  rpkms[gene].keys.each do |sample|
+    total += rpkms[gene][sample].to_f
+  end
+  avrpkm[gene] = total/samples.size
+end
+
+ann = Hash.new
+ann_fields = []
+if org == "pt3"
+  ann = Hash.new
+  db.query("SELECT * FROM pt2pt3").each do |row|
+    pt3 = row[1].to_i
+    ann_fields = row.fields if ann_fields.empty?
+    row.delete_at(1)
+    ann[pt3] = row
+  end
+  ann_fields.delete_at(1)
+end
+
+header = ["gene_id"] + ["Avg_RPKM"] + samples.collect{|x| x + "_RPKM"} + samples.collect{|x| x + "_Count"} + ann_fields
+print header.to_csv
+counts.keys.sort {|x,y| avrpkm[y] <=>avrpkm[x]}.each do |gene|
+  row = [gene]
+  row.push(sprintf("%8.2f", avrpkm[gene]))
+  samples.each do |sample|
+    row.push(rpkms[gene][sample].to_f)
+  end
+  samples.each do |sample|
+    row.push(counts[gene][sample].to_i)
+  end
+  begin
+    row += ann[gene]
+  rescue
+    STDERR << gene << "\n"
+  end
+  print row.to_csv
+end
+
+
+
+
