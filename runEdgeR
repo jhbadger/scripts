@@ -1,4 +1,9 @@
 #!/usr/bin/env Rscript
+# csv file needs columns with sample names with _Count e.g. FooR1_Count
+# also, gene in gene_id
+# sample.csv three columns Sample,Group,Name
+# eg.  NH4R1,1,NH4 
+#      NH4R2,1,NH4
 
 createDisp <- function (counts, group) {
   dlist <- DGEList(counts = counts, group = factor(group))
@@ -26,16 +31,17 @@ options <- commandArgs(trailingOnly = TRUE)
 if (length(options) != 2) {
   print("Usage: runEdgeR expression.csv groups.csv")
 } else {
-  csv <- read.csv(options[1], row.names="Transcript")
-  counts <- subset(csv, select=grep("Counts", colnames(csv)))
+  csv <- read.csv(options[1], row.names="gene_id")
+  counts <- subset(csv, select=grep("_Count", colnames(csv)))
   gcsv <- read.csv(options[2], row.names="Sample")
   groups <- c()
   for (i in 1:length(counts)) {
-    name <- as.character(strsplit(colnames(counts)[i], ".Counts")[1])
+    name <- as.character(strsplit(colnames(counts)[i], "_Count")[1])
     colnames(counts)[i] <- name
     group <- gcsv[name,1]
     groups <- c(groups, group)
   }
+  
   disp <- createDisp(counts, groups)
   for (i in 1:(max(groups) - 1)) {
     group1 <- as.character(gcsv[gcsv$Group==i,]$Name[1])

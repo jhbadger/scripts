@@ -20,20 +20,20 @@ end
 required_programs ['bedtools']
 
 if File.exists?(opts.db)
-	db = SQLite3::Database.new(opts.db)
+  db = SQLite3::Database.new(opts.db)
 else
-	db = nil
-	STDERR << opts.db << " not found!\n"
-	exit(1)
+  db = nil
+  STDERR << opts.db << " not found!\n"
+  exit(1)
 end
 
 if db.count("exons WHERE org = ?", opts.org) == 0
-	STDERR << opts.org << " not in database\n"
-	exit(1)
+  STDERR << opts.org << " not in database\n"
+  exit(1)
 end
 
 if db.count("experiments WHERE org = ? AND name=?", opts.org, opts.exp) == 0
-	db.query("INSERT INTO experiments VALUES(?,?,?)", opts.exp, opts.org, Date.today.to_s)
+  db.query("INSERT INTO experiments VALUES(?,?,?)", opts.exp, opts.org, Date.today.to_s)
 end
 
 tmpbed = opts.exp + ".bed"
@@ -41,18 +41,18 @@ tmpbed = opts.exp + ".bed"
 gene_lengths = gene_lengths(db, opts.org)
 
 opts.input.each do |bam|
-	sample = File.basename(bam, ".bam")
-	sample = sample.split(".fa_")[1] if sample.index(".fa_")
-	if db.count("exon_counts WHERE experiment=? AND sample=?", opts.exp, sample) == 0
-	  	STDERR << "Computing counts for sample " << sample << "...\n"
-	  	writeBed(db, opts.org, tmpbed) if !File.exists?(tmpbed)
-	  	`bedtools bamtobed -i #{bam} | bedtools coverage -a - -b #{tmpbed}`.split("\n").each do |line|
-	  		contig, start, stop, exon, score, strand, count = line.chomp.split("\t")
-	  		gene = exon.split("_").first
-	  		db.query("INSERT INTO exon_counts VALUES(?,?,?,?,?)", opts.exp, sample, exon, gene, count)
-	  	end
-		computeRPKM(db, opts.exp, sample, gene_lengths)
-	end
+  sample = File.basename(bam, ".bam")
+  sample = sample.split(".fa_")[1] if sample.index(".fa_")
+  if db.count("exon_counts WHERE experiment=? AND sample=?", opts.exp, sample) == 0
+    STDERR << "Computing counts for sample " << sample << "...\n"
+    writeBed(db, opts.org, tmpbed) if !File.exists?(tmpbed)
+    `bedtools bamtobed -i #{bam} | bedtools coverage -a - -b #{tmpbed}`.split("\n").each do |line|
+      contig, start, stop, exon, score, strand, count = line.chomp.split("\t")
+      gene = exon.split("_").first
+      db.query("INSERT INTO exon_counts VALUES(?,?,?,?,?)", opts.exp, sample, exon, gene, count)
+    end
+    computeRPKM(db, opts.exp, sample, gene_lengths)
+  end
 end
 
 File.unlink(tmpbed) if File.exists?(tmpbed)

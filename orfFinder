@@ -1,55 +1,38 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'rubygems'
 require 'bio'
 require 'ZFile'
-require 'optparse'
-opt = OpenStruct.new
+require 'trollop'
 
-opt.minSize = 150
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input DNA fasta file", :required=>true, :type=>:string
+  opt :minorf, "minimum orf size (in nucleotides)", :default=>150
+  opt :starts, "regex of start aas", :default=> "M|I|L|V"
+end
 
-ARGV.options {|opts|
-  opts.banner << " fasta"
-  opts.on("-m ", "--minSize ", Integer, 
-          "minimum size of ORF (in nt -- default #{opt.minSize})") {|t| opt.minSize = t}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size != 1)
-    STDERR.puts opts
-    exit(1)
-  end
-}
-
-dna = ARGV.shift
-
-
-Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(dna)).each do |seq|
-  next if seq.length < opt.minSize*3
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  next if seq.length < opts.minorf*3
   [1, 2, 3, -1, -2, -3].each do |frame|
     num = "_0001"
-    
     prot = seq.naseq.translate(frame, 11)
-    prot.seq.split("*").each do |orf|
-      start = orf.index("M")
-      next if start.nil?
-      orf = orf[orf.index("M")..orf.length]
-      orfStart = frame.abs + 3*prot.seq.index(orf)
-      orfEnd = orfStart + (orf.length*3) - 1
-      if (frame < 1)
-        orfStart = 1 + seq.length - orfStart
-        orfEnd = 1 + seq.length - orfEnd
-      end
-      orfName = seq.entry_id + "_" + frame.to_s + num
-      orfName += " " + seq.entry_id + " " + orfStart.to_s + " " + orfEnd.to_s
-      if (orf.length >= opt.minSize)
-	      print Bio::Sequence.new(orf).to_fasta(orfName, 60)
-	      orfName.succ!
+    prot.seq.split(/\*|$/).each do |orf|
+      start = -1
+      while start = orf.index(/#{opts.starts}/, start + 1)
+        norf = orf[start..orf.length]
+        orfStart = frame.abs + 3*prot.seq.index(norf)
+        orfEnd = orfStart + (norf.length*3) - 1
+        if frame < 1
+          orfStart = 1 + seq.length - orfStart
+          orfEnd = 1 + seq.length - orfEnd
+        end
+        orfName = seq.entry_id + "_" + frame.to_s + num
+        orfName += " " + seq.entry_id + " " + orfStart.to_s + " " + orfEnd.to_s
+        if norf.length >= opts.minorf
+          print Bio::Sequence.new(norf).to_fasta(orfName, 60)
+          orfName.succ!
+        end
       end
     end
   end
