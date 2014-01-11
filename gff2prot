@@ -21,7 +21,7 @@ strand = Hash.new
 STDERR << "Parsing gff...\n"
 File.new(opts.gff).each do |line|
   contig, source, feature, start, stop, score, strandl, frame, attribute = line.chomp.split("\t")
-  if attribute =~/transcript_id/ || opts.bed
+  if attribute =~/transcript_id/
     ftarget = "exon"
   else
     ftarget = "CDS"
@@ -34,6 +34,7 @@ File.new(opts.gff).each do |line|
     start, stop, frame = start.to_i, stop.to_i, frame.to_i
     if attribute.tr("\"","") =~/(proteinId |transcript_id |ID=)([^;]*);/
       ename = $2
+      ename = ename + ":exon:" + ename if !ename.index(":exon:")
       pid = ename.split(":exon").first
       exons[contig][pid] = Hash.new if !exons[contig][pid]
     else
