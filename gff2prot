@@ -11,6 +11,7 @@ opts = Trollop::options do
   opt :gff, "Input gtf/gff file\n", :required=>true, :type=>:string
   opt :code, "Genetic code to use", :default=>11, :type=>:integer
   opt :transcripts, "output transcripts, not proteins"
+  opt :bed, "output a bed file"
 end
 
 
@@ -20,54 +21,61 @@ strand = Hash.new
 STDERR << "Parsing gff...\n"
 File.new(opts.gff).each do |line|
   contig, source, feature, start, stop, score, strandl, frame, attribute = line.chomp.split("\t")
-  if (attribute =~/transcript_id/)
+  if attribute =~/transcript_id/ || opts.bed
     ftarget = "exon"
   else
     ftarget = "CDS"
   end
   if feature == ftarget
-   pid = nil
-   exons[contig] = Hash.new if !exons[contig]
-   strand[contig] = Hash.new if !strand[contig]
-   start, stop, frame = start.to_i, stop.to_i, frame.to_i
-   if attribute.tr("\"","") =~/(proteinId |transcript_id |ID=)([^;]*);/
-     pid = $2.split(":exon").first
-     exons[contig][pid] = Hash.new if !exons[contig][pid]
-   else
-     STDERR << "Cannot parse: " << attribute
-     exit(1)
-   end
-   exons[contig][pid][start] = [start, stop]
-   strand[contig][pid] = strandl if !strand[contig][pid]
-   if strandl != strand[contig][pid]
-     STDERR << "Error! " << contig << " " << pid << " is inconsistent in strand information\n"
-     exit(1)
-   end
+    pid = nil
+    ename = nil
+    exons[contig] = Hash.new if !exons[contig]
+    strand[contig] = Hash.new if !strand[contig]
+    start, stop, frame = start.to_i, stop.to_i, frame.to_i
+    if attribute.tr("\"","") =~/(proteinId |transcript_id |ID=)([^;]*);/
+      ename = $2
+      pid = ename.split(":exon").first
+      exons[contig][pid] = Hash.new if !exons[contig][pid]
+    else
+      STDERR << "Cannot parse: " << attribute
+      exit(1)
+    end
+    exons[contig][pid][start] = [start, stop]
+    strand[contig][pid] = strandl if !strand[contig][pid]
+    if strandl != strand[contig][pid]
+      STDERR << "Error! " << contig << " " << pid << " is inconsistent in strand information\n"
+      exit(1)
+    end
+    if opts.bed
+      print [contig, start, stop, ename, 0, strandl].join("\t") + "\n"
+    end
   end
 end
 
-STDERR << "Extracting sequence...\n"
-Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
-  exonList = exons[seq.entry_id]
-  if (exonList)
-    exonList.keys.sort.each do |pid|
-      nseq = ""
-      strandl = strand[seq.entry_id][pid]
-      exons[seq.entry_id][pid].keys.sort.each do |loc|
-        start, stop = exonList[pid][loc]
-        subseq = seq.seq[start - 1 .. stop - 1]
-        nseq += subseq
-      end
-      if strandl == "-"
-        nseq = Bio::Sequence::NA.new(nseq).complement.seq
-      end
-      if (opts.transcripts)
-        print Bio::Sequence::NA.new(nseq).upcase.to_fasta(pid, 60)
-      else
-        pseq = Bio::Sequence::NA.new(nseq).translate(opts.gencode).seq.chomp("*")
-        print Bio::Sequence::AA.new(pseq).to_fasta(pid, 60)
-        if (pseq.count("*") > 1)
+if !opts.bed
+  STDERR << "Extracting sequence...\n"
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+    exonList = exons[seq.entry_id]
+    if exonList
+      exonList.keys.sort.each do |pid|
+        nseq = ""
+        strandl = strand[seq.entry_id][pid]
+        exons[seq.entry_id][pid].keys.sort.each do |loc|
+          start, stop = exonList[pid][loc]
+          subseq = seq.seq[start - 1 .. stop - 1]
+          nseq += subseq
+        end
+        if strandl == "-"
+          nseq = Bio::Sequence::NA.new(nseq).complement.seq
+        end
+        if opts.transcripts
+          print Bio::Sequence::NA.new(nseq).upcase.to_fasta(pid, 60)        
+        else
+          pseq = Bio::Sequence::NA.new(nseq).translate(opts.gencode).seq.chomp("*")
+          print Bio::Sequence::AA.new(pseq).to_fasta(pid, 60)
+        if pseq.count("*") > 1
           STDERR << "Possible problem with pid " << pid << " (" << strandl << ")\n"
+        end
         end
       end
     end
