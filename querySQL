@@ -15,13 +15,15 @@ opts = Trollop::options do
 end
 
 if File.exists?(opts.db)
-	db = SQLite3::Database.new(opts.db)
+  db = SQLite3::Database.new(opts.db)
 else
-	db = Mysql::new(opts.host, opts.user, opts.password, opts.db)
+  db = Mysql::new(opts.host, opts.user, opts.password, opts.db)
 end
 
-db.query(opts.sql).each do |row|
-	print row.to_a.join("\t") + "\n"
+results = db.query(opts.sql)
+if results
+  results.each do |row|
+    print row.to_a.join("\t") + "\n"
+  end
 end
-
 db.close
