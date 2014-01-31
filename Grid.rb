@@ -63,8 +63,8 @@ class Grid
         qsub +=  @queue
         printL = true
       end
-      qsub += " -o #{Dir.pwd} "
-      qsub += " -e #{Dir.pwd} "
+      qsub += " -o #{@dir} "
+      qsub += " -e #{@dir} "
       qsub += " #{Dir.pwd}/#{@name}.com"
       system(qsub)
     end
