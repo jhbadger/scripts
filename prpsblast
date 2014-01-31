@@ -18,7 +18,8 @@ opts = Trollop::options do
   opt :maxhits, "max number of BLAST hits", :default => 50, :type => :integer
   opt :project, "JCVI project number if not local", :type => :string
   opt :sizejob, "number of sequences per grid job", :default => 1000
-  opt :queue, "grid queue to use", :type=>:string, :default => "medium" 
+  opt :queue, "grid queue to use", :type=>:string, :default => "medium"
+  opt :verbose, "report more messages"
 end
 
 blast = opts.blast + " -m 8 -e 1e-5 -p t -d #{db} -i "

@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bio'    
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input blast file(s)", :required=>true, :type=>:strings
+  opt :top, "only report top match for each query"
+end
+
+opts.input.each do |blast|
+  out = File.new(blast + ".m8plus", "w")
+  Bio::Blast::Default::Report.open(blast, "r").each do |query|
+    fields = [""]*13
+    fields[0] = query.query_def.split(" ").first
+    begin
+      query.each do |hit|
+        hsp = hit.hsps.first
+        fields[1] = hit.definition.split(" ").first
+        fields[2] = hsp.percent_identity
+	fields[3] = (hit.target_start - hit.target_end).abs + 1
+	fields[4] = 0
+	fields[5] = hsp.gaps 
+	fields[6] = hit.query_start
+        fields[7] = hit.query_end
+        fields[8] = hit.target_start
+        fields[9] = hit.target_end
+        fields[10] = hit.evalue
+	fields[11] = hit.score
+        fields[12] = hit.definition
+        out.print fields.join("\t")+"\n"
+        break if opts.top
+      end
+    rescue
+      STDERR.printf("Skipping query %s...\n", fields[0])
+    end
+  end
+  out.close
+end

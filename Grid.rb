@@ -3,12 +3,13 @@ class Grid
   attr_accessor :name
   
   def initialize(command, project = nil, memory = nil, queue = nil, dir = Dir.pwd)
-    @command = [command].flatten
-    @name = @command.first.gsub("/","_").split(" ").first
+    @command = command
+    @name = @command.gsub("/","_").split(" ").first
     @project = project
     @memory = memory
     @queue = queue
     @dir = dir
+    Dir.mkdir(@dir) if !Dir.exists?(@dir)
     @count = 0
   end
   
@@ -24,25 +25,21 @@ class Grid
     out = File.new(@name + ".com", "w")
     out.printf("\#!/bin/sh\n")
     out.printf("\#$ -t 1-%d\n", @count)
-    out.printf("cd %s\n", @dir)
-    if @command[1]
-      out.printf("%s %s_input.$SGE_TASK_ID | %s\n", @command.first, 
-      @name, @command[1])
-    else
-      out.printf("%s %s_input.$SGE_TASK_ID\n", @command.first, @name)
-    end
+    out.printf("cd %s\n", Dir.pwd)
+    filename = @dir + "/" + @name + "_input."
+    out.printf("%s %s$SGE_TASK_ID\n", @command, filename)
     out.close
     File.chmod(0777, @name + ".com")
   end
   
   # submit array to grid
-  def submit(sync = false, local=false, maxLocal=4)
+  def submit(sync = false, local=false, verbose=false, maxLocal=4)
     writeJob
     if local
       1.upto(@count).each do |i|
-        com = Dir.pwd+"/"+@name+".com"
-        cmd = "export SGE_TASK_ID=#{i};bash #{@name}.com > #{tmp}/#{com}.o#{i} 2>#{tmp}/#{com}.e#{i}"
-        STDERR << "Submitting #{cmd}...\n"
+        com = @name+".com"
+        cmd = "export SGE_TASK_ID=#{i};bash #{@name}.com > #{@dir}/#{com}.o#{i} 2>#{@dir}/#{com}.e#{i}"
+        STDERR << "Submitting #{cmd}...\n" if verbose
         fork do
           `#{cmd}` 
         end
@@ -75,7 +72,7 @@ class Grid
 
   # concatenate output, error, removing input files
   def cleanup
-    Dir.glob(@name + "_input*").each do |file|
+    Dir.glob(@dir + "/" + @name + "_input*").each do |file|
       File.unlink(file)
     end
     out = File.new(@name + ".out", "w")

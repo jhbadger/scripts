@@ -13,21 +13,23 @@ opts = Trollop::options do
   opt :blast, "blast program", :default=>"blastp", :type => :string
   opt :database, "BLAST database to use", :required => true, :type => :string
   opt :evalue, "BLAST evalue", :default => 1e-9, :type => :float
-  opt :format, "BLAST output format (ncbi, m8)", :default=>"ncbi"
+  opt :format, "BLAST output format", :default=>"ncbi"
   opt :input, "FASTA input file(s) to blast", :required => true, :type => :strings
   opt :maxhits, "max number of BLAST hits", :default => 50, :type => :integer
+  opt :maxlocal, "maximum number of simultaneous local processes", :default=>4
   opt :project, "JCVI project number if not local", :type => :string
   opt :sizejob, "number of sequences per grid job", :default => 1000
   opt :queue, "grid queue to use", :type=>:string, :default => "medium" 
+  opt :verbose, "report more messages"
 end
 
 if (File.basename(opts.database) == opts.database)
   opts.database = Dir.pwd + "/" + opts.database
 end
 
-Trollop::die :choose_blastn_blastp_blastx_tblastn_tblastx unless opts.blast =~ /^([t]?blast)/ 
+Trollop::die :blast, "must be blastn, blastp, blastx, tblastn, tblastx" unless opts.blast =~ /^([t]?blast)/ 
 
-Trollop::die :choose_ncbi_m8 unless opts.format=~/ncbi|m8/
+Trollop::die :format, "must be ncbi, m8, btab, m8plus" unless opts.format=~/ncbi|m8$|m8plus|btab/
 
 blast = "blastall -p #{opts.blast} -d #{opts.database} -b#{opts.maxhits}"
 blast += " -m8 " if opts.format == "m8"
@@ -38,7 +40,7 @@ opts.input.each do |file|
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
-  grid = Grid.new(blast, opts.project, "4G", opts.queue)
+  grid = Grid.new(blast, opts.project, "4G", opts.queue, Dir.pwd + "/tmp")
   out = nil
   count = 0
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
@@ -51,12 +53,17 @@ opts.input.each do |file|
   end
   out.close
   if !opts.project
-    STDERR << "Warning: running locally, not on grid...\n"
+    STDERR << "Warning: running locally, not on grid...\n" if opts.verbose
   end
-  grid.submit(sync = true, !opts.project)
+  grid.submit(sync = true, !opts.project, opts.verbose, opts.maxlocal)
   grid.cleanup
   bout = File.basename(file) + "_vs_" + File.basename(opts.database) + "." + opts.blast + "." + opts.format
   berr = File.basename(file) + "_vs_" + File.basename(opts.database) + ".err"
+  if opts.format == "btab"
+    system("btab blastall.out;mv blastall.out.btab blastall.out")
+  elsif opts.format == "m8plus"
+    system("m8plus -i blastall.out;mv blastall.out.m8plus blastall.out")
+  end
   File.rename("blastall.out", bout)
   File.rename("blastall.err", berr)
 end
