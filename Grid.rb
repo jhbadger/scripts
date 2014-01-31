@@ -11,13 +11,15 @@ class Grid
     @dir = dir
     Dir.mkdir(@dir) if !Dir.exists?(@dir)
     @count = 0
+    @files = []
   end
   
   # return name for next data file
   def next
     @count += 1
     filename = @dir + "/" + @name + "_input." + @count.to_s
-    return filename
+    @files.push(filename)
+    filename
   end
   
   # write job script
@@ -92,5 +94,26 @@ class Grid
     end
     err.close
     File.unlink(@name + ".com")
+  end
+
+  def join(fileendings, dataset)
+    ofiles = Hash.new
+    fileendings.each do |ending|
+      ofiles[ending] = File.new(dataset + "_" + ending, "a")
+    end
+    @files.each do |file|
+      fileendings.each do |ending|
+        if File.exist?(file + "_" + ending)
+          File.new(file + "_" + ending).each do |line|
+            ofiles[ending].print line
+          end
+          File.unlink(file + "_" + ending)
+        end
+      end
+    end
+    ofiles.keys.each do |key|
+      ofiles[key].close
+    end
+    File.unlink(File.basename(@name) + ".com*") if File.exists?(File.basename(@name) + ".com*")
   end
 end
