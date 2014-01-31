@@ -1,9 +1,8 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
 require 'trollop'
 require 'bio'
-require 'SunGrid'
+require 'Grid'
 
 $VERBOSE=nil
 
@@ -14,7 +13,7 @@ opts = Trollop::options do
   opt :database, "HMM database to use", 
       :default=>"/usr/local/db/HMM3_LIB/ALL_LIB.HMM", :type => :string
   opt :input, "FASTA input file(s)", :required => true, :type => :strings
-  opt :project, "JCVI project number", :required => true, :type => :string
+  opt :project, "JCVI project number if not local", :type => :string
   opt :sizejob, "number of sequences per grid job", 
       :type=>:integer, :default=>10000
   opt :queue, "grid queue to use", :type=>:string, :default => "medium" 
@@ -37,7 +36,7 @@ opts.input.each do |file|
   hmm = "#{opts.command} --cut_tc -Z 15930 -o hmmscan_input.$SGE_TASK_ID.out "
   hmm += "--tblout hmmscan_input.$SGE_TASK_ID.tbl "
   hmm += "--domtblout hmmscan_input.$SGE_TASK_ID.dom #{opts.database} "
-  grid = SunGrid.new(hmm, opts.project, "4G", opts.queue)
+  grid = Grid.new(hmm, opts.project, "4G", opts.queue)
   count = 0
   out = nil
 

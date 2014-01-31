@@ -1,5 +1,5 @@
-# class to encapsulate running jobs on a Sun Grid Engine
-class SunGrid
+# class to encapsulate running jobs on a Grid Engine (or locally on multiple CPUs/cores)
+class Grid
   attr_accessor :name
   
   def initialize(command, project = nil, memory = nil, queue = nil)
@@ -35,28 +35,41 @@ class SunGrid
   end
   
   # submit array to grid
-  def submit(sync = false)
+  def submit(sync = false, local=false, maxLocal=4)
     writeJob
-    qsub = "qsub -t 1:" + @count.to_s
-    qsub += " -sync yes" if (sync)
-    qsub += " -P #{@project}" if @project
-    printL = false
-    if (@memory)
-      qsub += " -l " if !printL
-      qsub += "," if printL
-      qsub +=  "memory=#{@memory}"
-      printL = true
+    if local
+      1.upto(@count).each do |i|
+        com = Dir.pwd+"/"+@name+".com"
+        cmd = "export SGE_TASK_ID=#{i};bash #{com} > #{com}.o#{i} 2>#{com}.e#{i}"
+        STDERR << "Submitting #{cmd}...\n"
+        fork do
+          `#{cmd}` 
+        end
+        Process.waitall if i%maxLocal == 0
+      end  
+      Process.waitall
+    else
+      qsub = "qsub -t 1:" + @count.to_s
+      qsub += " -sync yes" if (sync)
+      qsub += " -P #{@project}" if @project
+      printL = false
+      if (@memory)
+        qsub += " -l " if !printL
+        qsub += "," if printL
+        qsub +=  "memory=#{@memory}"
+        printL = true
+      end
+      if (@queue)
+        qsub += " -l " if !printL
+        qsub += "," if printL
+        qsub +=  @queue
+        printL = true
+      end
+      qsub += " -o #{Dir.pwd} "
+      qsub += " -e #{Dir.pwd} "
+      qsub += " #{Dir.pwd}/#{@name}.com"
+      system(qsub)
     end
-    if (@queue)
-      qsub += " -l " if !printL
-      qsub += "," if printL
-      qsub +=  @queue
-      printL = true
-    end
-    qsub += " -o #{Dir.pwd} "
-    qsub += " -e #{Dir.pwd} "
-    qsub += " #{Dir.pwd}/#{@name}.com"
-    system(qsub)
   end
 
   # concatenate output, error, removing input files

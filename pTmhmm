@@ -1,57 +1,31 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'optparse'
+require 'trollop'
 require 'bio'
-require 'SunGrid'
+require 'Grid'
 
-opt = OpenStruct.new
-opt.command = "tmhmm"
-opt.project = nil
-opt.queue = "default"
-opt.gridSize = nil
-$VERBOSE = nil
+$VERBOSE=nil
 
-
-ARGV.options do |opts|
-  opts.banner << " fasta [fasta...]"
-  opts.on("-c ", "--command ", String,
-         "command to run hmm search (#{opt.command})") {|t| opt.command = t}
-  opts.on("-p", "--project ", String,  
-          "JCVI project number") {|t| opt.project = t}
-  opts.on("-q ", "--queue ", String, 
-	  "grid queue to use (default #{opt.queue})") {|t| opt.queue = t}
-  opts.on("-z ", "--size ", Integer,  
-	  "number of sequences per each grid job (default automatic)") {|t| opt.gridSize = t} 
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size < 1)
-    STDERR.puts opts
-    exit(1)
-  end
+ARGV.push("-h") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :command, "hmm search program", :default=>"tmhmm", :type => :string
+  opt :input, "FASTA input file(s)", :required => true, :type => :strings
+  opt :project, "JCVI project number if not local", :type => :string
+  opt :sizejob, "number of sequences per grid job", 
+      :type=>:integer, :default=>10000
+  opt :queue, "grid queue to use", :type=>:string, :default => "medium" 
 end
 
-if (opt.project.nil?)
-  STDERR.printf("A project is required\n")
-  exit(1)
-end
-
-
-ARGV.each do |file|
-  opt.gridSize = 10000 if (opt.gridSize.nil?)
+opts.input.each do |file|
   outName = File.basename(file, ".pep") + "_tmhmm.txt"
   next if File.exist?(outName) 
   if (!File.exists?(file))
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
-  hmm = "#{opt.command} tmhmm_input.$SGE_TASK_ID.out "
-  grid = SunGrid.new(hmm, opt.project, "4G")
+  hmm = "#{opts.command} tmhmm_input.$SGE_TASK_ID.out "
+  grid = Grid.new(hmm, opts.project, "4G")
   count = 0
   out = nil
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|

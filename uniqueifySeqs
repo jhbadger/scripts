@@ -1,31 +1,41 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
-require'bio'
-include Bio
+require 'bio'
+require 'trollop'
+require 'csv'
 
-
-if (ARGV.size < 1)
-  STDERR.printf("usage: %s fasta-file [fasta-file...]\n", $0)
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "name of fasta file(s)", :required=>true, :type=>:strings
+  opt :dups, "don't print seqs, print dup.csv"
 end
+
 
 names = Hash.new
 
-ARGV.each {|file|
-  FlatFile.new(FastaFormat, File.new(file)).each {|seq|
-    names[seq.seq] = Array.new if names[seq.seq].nil?
+opts.input.each do |file|
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
+    names[seq.seq] = [] if names[seq.seq].nil?
     names[seq.seq].push(seq.entry_id)
-  }
-}
+  end
+end
 
 tot = 0
 
-names.keys.each {|seq|
+print ["Gene_Names", "Count", "Seq"].to_csv if opts.dups
+names.keys.each do |seq|
   names[seq].sort! {|x, y| x.length <=> y.length}
   name = names[seq].last + "_[#{names[seq].size}]"
   tot += names[seq].size
-  print seq.to_fasta(name, 60)
-}
+  if opts.dups
+    if names[seq].size > 1
+      print [names[seq].join(" "), names[seq].size, seq].to_csv
+    end
+    print names[seq].join("\t") + "\n" if names[seq].size > 1
+  else 
+    print seq.to_fasta(name, 60)
+  end
+end
 
 STDERR.printf("%d seqs in %d groups\n", tot, names.keys.size)
