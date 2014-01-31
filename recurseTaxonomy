@@ -15,20 +15,26 @@ opts = Trollop::options do
   opt :names, "use NCBI names.dmp (with nodes.dmp)", :type=>:string
   opt :minlen, "only report taxonomies with fewer than n nodes", :type=>:integer
   opt :maxlen, "only report taxonomies with more than n nodes", :type=>:integer
+  opt :unused, "report unused nodes"
   opt :verbose, "verbose messaging"
 end
 
-if (!opts.taxonomy && !opts.nodes)
+tax = Hash.new
+used = Hash.new
+
+if !opts.taxonomy && !opts.nodes
   db = Mysql.new(opts.host, "access", "access", "phylodb")
-elsif (opts.taxonomy)
-  tax = Hash.new
+  sql = "SELECT taxon_id, name, parent_id, rank FROM taxonomy"
+  db.query(sql).each do |row|
+    current, name, parent, rank = row
+    tax[current.to_i] = [name, parent.to_i, rank]
+  end
+elsif opts.taxonomy
   File.new(opts.taxonomy).each do |line|
     current, name, parent, rank = line.chomp.split("\t")
     tax[current.to_i] = [name, parent.to_i, rank]
   end
-  db = tax
-elsif (opts.nodes)
-  tax = Hash.new
+elsif opts.nodes
   names = Hash.new
   File.new(opts.names).each do |line|
     num, name = line.chomp.split("\t|\t")
@@ -38,20 +44,16 @@ elsif (opts.nodes)
     current, parent, rank = line.chomp.split("\t|\t")
     tax[current.to_i] = [names[current.to_i], parent.to_i, rank]
   end
-  db = tax
 end
 
-def recurseTaxonomy(db, current, verbose, count = 0)
-  if db.class == Hash # not using db
-    name, parent, rank = db[current]
-  else
-    name, parent, rank = db.query("SELECT name, parent_id FROM taxonomy WHERE taxon_id=#{current}").fetch_row
-  end
+def recurseTaxonomy(tax, current, used, verbose, count = 0)
+  name, parent, rank = tax[current]
+  used[current] = true
   if (current == 1 || name.nil? || name == "Bacteria" || name == "Eukaryota" || name == "Viruses" || name == "Archaea" || count > 50)
     [name]
   else
     print [current, name, parent, rank, 1].join("\t") + "\n" if verbose
-    recurseTaxonomy(db, parent, verbose, count + 1).to_a + [name]
+    recurseTaxonomy(tax, parent, used, verbose, count + 1).to_a + [name]
   end
 end
 
@@ -59,13 +61,22 @@ end
 if (opts.file)
   ids = []
   File.new(opts.input.first).each do |line|
-    ids.push(line.chomp.to_i)
+    id = line.chomp.split(/\s/).first.to_i
+    ids.push(id)
   end
 else
   ids = opts.input
 end
 
 ids.each do |id|
-  tax = recurseTaxonomy(db, id.to_i, opts.verbose)
-  print [id,tax.join(";")].join("\t") + "\n"
+  tx = recurseTaxonomy(tax, id.to_i, used, opts.verbose)
+  print [id,tx.join(";")].join("\t") + "\n"
+end
+
+if opts.unused
+  tax.keys.each do |key|
+    if !used[key] 
+      STDERR.print key.to_s + "\t" + tax[key].join("\t") + "\n"
+    end 
+  end
 end
