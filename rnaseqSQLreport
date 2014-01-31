@@ -49,6 +49,12 @@ db.query("SELECT sample, gene, counts, rpkm FROM gene_counts WHERE experiment = 
 end
 samples.sort!
 
+sortsamp = []
+db.query("SELECT sample FROM sample_order WHERE experiment = ? ORDER BY order_num", opts.exp).each do |row|
+  sortsamp.push(row.first)
+end
+samples = sortsamp if !sortsamp.empty?
+
 avrpkm = Hash.new
 
 rpkms.keys.each do |gene|
