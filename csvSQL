@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'sqlite3'
+require 'csv'
+require 'simple_xlsx_reader'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input csv/txt/xlsx file(s)", :required=>true, :type=>:strings
+  opt :sql, "SQL Query", :required=>true, :type=>:string
+  opt :db, "db to load tables in", :default => "csv.db"
+  opt :headers, "show headers"
+  opt :format, "format, tab or csv", :default=>"csv"
+  opt :sheet, "sheet numbder if xlsx", :default=>0
+  opt :verbose, "be verbose in reporting messages"
+end
+
+Trollop::die :format, "must be tab or csv" unless opts.format == "tab" or opts.format == "csv"
+
+db = SQLite3::Database.new(opts.db)
+
+opts.input.each do |file|
+  name = File.basename(file)
+  ext = name.split(".").last
+  name = name[0..name.index(ext) - 2]
+  if db.get_first_value("SELECT count(name) FROM sqlite_master WHERE type='table' AND name=?", name) == 0
+    STDERR << "Loading " << file << "...\n" if opts.verbose
+    headers = nil
+    ins = ""
+    count = 1
+    if ext == "csv"
+      iter = CSV.open(file, {:col_sep=>","})
+    elsif ext == "tab"
+      iter = CSV.open(file, {:col_sep=>"\t"})
+    else
+      iter = SimpleXlsxReader.open(file).sheets[opts.sheet].rows
+    end
+    iter.each do |row|
+      if !headers
+        headers = row.dup
+        sql = "CREATE TABLE #{name} ("
+        row.each do |val|
+          sql += val.gsub(" ","_").gsub("(),","")+"," 
+        end
+        sql.chop!
+        sql += ")"
+        db.query(sql)
+      else
+        vals = row[0..headers.length - 1]
+        vals = vals.collect{ |x| "\"" + x.to_s + "\""}.join(",")
+        ins += "(#{vals}),"
+        if count % 400 == 0
+          db.query("INSERT INTO #{name} VALUES #{ins.chop!}")
+          STDERR << "Loading row #{count} into #{name}...\n" if opts.verbose
+          ins = ""
+        end
+        count += 1
+      end
+    end
+    db.query("INSERT INTO #{name} VALUES #{ins.chop!}") if ins.length > 0
+  end
+end
+
+first = true
+db.execute2(opts.sql) do |row|
+  if first
+    first = false
+    next if !opts.headers
+  end
+  if opts.format == "csv"
+    print row.to_csv(:col_sep=>",")
+  else
+    print row.to_csv(:col_sep=>"\t")
+  end
+end
