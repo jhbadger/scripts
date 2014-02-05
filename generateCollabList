@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :email, "email address", :default=>"jbadger@jcvi.org"
+  opt :name, "search name", :default=>"Badger JH"
+  opt :full, "use full name"
+  opt :years, "years to include", :required=>true, :type=>:integers
+end
+
+Bio::NCBI.default_email=opts.email
+
+query = opts.name+"[au] AND ("
+opts.years.each do |year|
+  query += year.to_s + "[dp] OR "
+end
+query = query[0..query.length - 5] + ")"
+pmeds = Bio::PubMed.esearch(query)
+
+names = Hash.new
+Bio::PubMed::efetch(pmeds).each do |record|
+  record.split("\n").each do |line| 
+    if (line=~/^AU / && !opts.full) || (line=~/^FAU / && opts.full)
+      head, name = line.split("- ", 2)
+      if opts.full
+        name = name.split(",", 2).join("\t")
+      end
+      names[name] = true
+    end
+  end
+end
+
+names.keys.sort.each do |name|
+  print name+"\n"
+end
