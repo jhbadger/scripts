@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "gff file", :required=>true, :type=>:string
+end
+
+genes = Hash.new
+locs = Hash.new
+
+File.new(opts.input).each do |line|
+  contig, source, feature, start, stop, score, strand, phase, attribute = line.chomp.split("\t")
+  next if line =~/^#/
+  if attribute =~/ID=([^;]*);/
+    gname = $1
+    gname = gname.split(":exon").first if gname.index(":exon")
+    genes[feature] = Hash.new if !genes[feature]
+    locs[feature] = Hash.new if !locs[feature]
+    lkey = contig + "_" + start + "_" + stop
+    locs[feature][lkey] = 0 if !locs[feature][lkey]
+    locs[feature][lkey] += 1
+    genes[feature][gname] = true
+  else
+    STDERR << "Cannot parse line: " << line
+    exit(1)
+  end
+end
+genes.keys.each do |feature|
+  printf("%10s\%8d\n", feature, genes[feature].size)
+  genes.keys.each do |feat2|
+    if genes[feature].size > genes[feat2].size
+      out = File.new(feature+"_"+feat2+".txt", "w")
+      diff = genes[feature].keys - genes[feat2].keys
+      diff.sort.each do |extra|
+        out.printf("%10s\n", extra)
+      end
+      out.close
+    end
+  end
+  out = File.new("loc_dups.txt","w")
+  locs[feature].keys.sort.each do |key|
+    if locs[feature][key] > 1
+      out.printf("%10s\t%20s\t%8d\n", feature, key, locs[feature][key])
+    end
+  end
+  out.close
+end
