@@ -4,6 +4,7 @@ require 'trollop'
 require 'sqlite3'
 require 'csv'
 require 'simple_xlsx_reader'
+require 'axlsx'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -12,12 +13,15 @@ opts = Trollop::options do
   opt :sql, "SQL Query", :required=>true, :type=>:string
   opt :db, "db to load tables in", :default => "csv.db"
   opt :headers, "show headers"
-  opt :format, "format, tab or csv", :default=>"csv"
-  opt :sheet, "sheet numbder if xlsx", :default=>0
+  opt :format, "format, tab, csv, or xlsx", :default=>"csv"
+  opt :output, "output file name (required if format xlsx)", :type=>:string
+  opt :sheet, "sheet number if xlsx", :default=>0
   opt :verbose, "be verbose in reporting messages"
 end
 
-Trollop::die :format, "must be tab or csv" unless opts.format == "tab" or opts.format == "csv"
+Trollop::die :format, "must be tab, csv, or xlsx" unless opts.format == "tab" or opts.format == "csv" or opts.format == "xlsx"
+
+Trollop::die :output, "must provide output for xlsx" if opts.format == "xlsx" && !opts.output
 
 db = SQLite3::Database.new(opts.db)
 
@@ -32,7 +36,7 @@ opts.input.each do |file|
     count = 1
     if ext == "csv"
       iter = CSV.open(file, {:col_sep=>","})
-    elsif ext == "tab"
+    elsif ext == "tab" || ext == "txt"
       iter = CSV.open(file, {:col_sep=>"\t"})
     else
       iter = SimpleXlsxReader.open(file).sheets[opts.sheet].rows
@@ -64,14 +68,33 @@ opts.input.each do |file|
 end
 
 first = true
+proj = nil
+sheet = nil
+if opts.format == "xlsx"
+  proj = Axlsx::Package.new
+  wb = proj.workbook
+  sheet = wb.add_worksheet
+end
+
+if opts.output && opts.format != "xlsx"
+  out = File.new(opts.output, "w")
+else
+  out = STDOUT
+end
+
 db.execute2(opts.sql) do |row|
   if first
     first = false
     next if !opts.headers
   end
   if opts.format == "csv"
-    print row.to_csv(:col_sep=>",")
+    out.print row.to_csv(:col_sep=>",")
+  elsif opts.format == "tab"
+    out.print row.to_csv(:col_sep=>"\t")
   else
-    print row.to_csv(:col_sep=>"\t")
+    sheet.add_row(row)
   end
 end
+
+proj.serialize(opts.output) if opts.format == "xlsx"
+out.close if out.class == File
