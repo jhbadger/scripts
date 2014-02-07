@@ -1,4 +1,5 @@
 # wrapper to handle compressed files transparently
+$VERBOSE=nil
 class ZFile < File
   def self.new(fn,options="r")
     if (options == "r")
