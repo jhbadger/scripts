@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'bio'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input blast file", :required=>true, :type=>:string
+  opt :fasta, "input fasta file(s)", :required=>true, :type=>:strings
+end
+
+ali = Hash.new
+opts.fasta.each do |fasta| 
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+    tid, name = seq.definition.split("|", 2)
+    ali[name] = seq.definition
+  end
+end
+
+ZFile.new(opts.input).each do |line|
+  fields = line.chomp.split("\t")
+  fields[0] = ali[fields[0]] if ali[fields[0]]
+  fields[1] = ali[fields[1]] if ali[fields[1]]
+  print fields.join("\t") + "\n"
+end
