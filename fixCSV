@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input csv file", :required=>true, :type=>:string
+end
+
+num = nil
+CSV.foreach(opts.input) do |row|
+  num = row.size if !num
+  if row.size != num
+    STDERR << "Problem: row has " << row.size << " fields. Should be " << num << "\n"
+    if row.size < num
+      row += [""] * (num - row.size)
+    else
+      row = row[0..num - 1]
+    end
+  end
+  print row.to_csv
+end
