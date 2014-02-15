@@ -14,8 +14,8 @@ end
 ali = Hash.new
 opts.fasta.each do |fasta| 
   Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
-    tid, name = seq.definition.split("|", 2)
-    ali[name] = seq.definition
+    tid, name = seq.definition.split(" ").first.split("|", 2)
+    ali[name] = tid + "|" + name
   end
 end
 

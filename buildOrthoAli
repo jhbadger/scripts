@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input taxa", :required=>true, :type=>:string
+  opt :fasta, "input fasta file", :required=>true, :type=>:string
+end
+
+ali = Hash.new
+seen = Hash.new
+
+out = File.new("ali.txt", "w")
+File.new(opts.input).each do |line|
+  num, tx = line.chomp.split("\t")
+  sp = tx.split(";").last
+  g, sp = sp.split(" ")
+  abbr = (g[0..1] + sp[0..1]).upcase
+  while seen[abbr]
+    if abbr[3].to_i == 0
+      abbr = abbr[0..2] + "0"
+    end
+    abbr.succ!
+  end
+  ali[num] = abbr
+  seen[abbr] = true
+  out.print [num, tx, abbr].join("\t") + "\n"
+end
+out.close
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.fasta)).each do |seq|
+  n = seq.definition.split(" ")[-2]
+  if ali[n]
+    print Bio::Sequence::AA.new(seq.seq).to_fasta(ali[n] + "|" + seq.definition, 60)
+  else
+    STDERR << "Can't find alias for " << n << "\n"
+    exit(1)
+  end
+end
+

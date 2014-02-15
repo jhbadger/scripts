@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input fasta file", :required=>true, :type=>:string
+end
+
+files = Hash.new
+Dir.mkdir("fasta") if !Dir.exists?("fasta")
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  name = seq.definition.split(" ").first
+  abbr = name.split("|").first
+  if !files[abbr]
+    files[abbr] = File.new("fasta/#{abbr}.fasta", "w")
+  end
+  files[abbr].print Bio::Sequence::AA.new(seq.seq).to_fasta(name, 60)
+end
+
+files.keys.each do |key|
+  files[key].close
+end 
