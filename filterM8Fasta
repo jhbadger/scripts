@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :fasta, "fasta file", :required=>true, :type=>:string
+end
+
+need = Hash.new
+STDERR << "Processing Fasta...\n"
+File.new(opts.fasta).each do |line|
+  if line=~/>([^\s]*)/
+    need[$1]=true
+  end
+end
+
+STDERR << "Processing Blast...\n"
+ZFile.new(opts.input).each do |line|
+  x, y, rest = line.split("\t",3)
+  print line if need[x] && need[y]
+end

@@ -62,9 +62,14 @@ if opts.input
           vals = vals.collect{ |x| "\"" + x.to_s + "\""}.join(",")
           ins += "(#{vals}),"
           if count % 400 == 0
-            db.query("INSERT INTO #{name} VALUES #{ins.chop!}")
-            STDERR << "Loading row #{count} into #{name}...\n" if opts.verbose
-            ins = ""
+            begin
+              db.query("INSERT INTO #{name} VALUES #{ins.chop!}")
+              STDERR << "Loading row #{count} into #{name}...\n" if opts.verbose
+              ins = ""
+            rescue
+              print ins + "\n"
+              exit(1)
+            end
           end
           count += 1
         end

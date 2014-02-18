@@ -7,21 +7,64 @@ require 'ZFile'
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :input, "input blast file", :required=>true, :type=>:string
-  opt :fasta, "input fasta file(s)", :required=>true, :type=>:strings
+  opt :alias, "alias file", :required=>true, :type=>:string
+  opt :input, "blast file", :required=>true, :type=>:string
+  opt :fasta, "fasta file", :required=>true, :type=>:string
 end
 
 ali = Hash.new
-opts.fasta.each do |fasta| 
-  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
-    tid, name = seq.definition.split(" ").first.split("|", 2)
-    ali[name] = tid + "|" + name
-  end
+File.new(opts.alias).each do |line|
+  num, tax, abbr = line.chomp.split("\t")
+  ali[num.to_i] = abbr
 end
 
+out = File.new(opts.fasta + ".ali", "w")
+nnum = 0
+nums = Hash.new
+names = Hash.new
+species = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.fasta)).each do |seq|
+  name = seq.definition.split(" ").first
+  num = seq.definition.split(" ")[-2].to_i
+  if ali[num]
+    seq.definition = ali[num] + "|" + name
+    out.print seq
+    nums[name] = nnum
+    names[nnum] = name
+    species[nnum] = ali[num]
+    nnum += 1
+  else
+    STDERR << "Missing alias for " << seq.definition << "\n"
+    exit(1)
+  end
+end
+out.close
+
+scores = Hash.new
 ZFile.new(opts.input).each do |line|
   fields = line.chomp.split("\t")
-  fields[0] = ali[fields[0]] if ali[fields[0]]
-  fields[1] = ali[fields[1]] if ali[fields[1]]
-  print fields.join("\t") + "\n"
+  q = fields[0]
+  s = fields[1]
+  score = fields[11].to_f
+  qnum = nums[q]
+  snum = nums[s]
+  scores[qnum]=Hash.new if !scores[qnum]
+  scores[qnum][snum] = score
+end
+
+scores.keys.each do |i|
+  saa = scores[i][i]
+  scores.keys.each do |j|
+    sbb = scores[j][j]
+    if scores[i][j] && scores[j][i]
+      ba = scores[i][j]/saa
+      bb = scores[j][i]/sbb
+      if ba > bb
+        s = ba
+      else
+        s = bb
+      end
+      print [species[i]+"|"+names[i], species[j]+"|"+names[j], sprintf("%8.4f", s)].join("\t")+"\n"
+    end
+  end
 end

@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input fasta file(s)", :required=>true, :type=>:strings
+  opt :blast, "optional blast file(s)", :type=>:strings
+end
+
+opts.input.each do |fasta|
+  STDERR << "Processing " << fasta << "...\n"
+  aliOut = File.new(fasta + ".ali.pep", "w")
+  aliTxt = File.new(fasta + ".ali", "w")
+  aid = "SEQ00000001"
+  ali = Hash.new
+  File.new(fasta).each do |line|
+    if line=~/>([^\n]*)\n/
+      name = $1
+      ali[name] = aid
+      aliOut.print ">" + ali[name] + "\n"
+      aliTxt.print ali[name] + "\t" + name + "\n"
+      aid.succ!
+    else
+      aliOut.print line
+    end
+  end
+  aliTxt.close
+  aliOut.close
+  if opts.blast
+    blast = opts.blast.grep(/#{fasta}/)
+    if blast
+      outBlast = File.new(blast.first + ".ali.blast", "w")
+      File.new(blast.first).each do |line|
+        x, rest = line.chomp.split("\t", 2)
+        x = ali[x] if ali[x]
+        outBlast.print x + "\t" + rest + "\n"  
+      end
+      outBlast.close
+    end
+  end
+end

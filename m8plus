@@ -9,10 +9,14 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "Input blast file(s)", :required=>true, :type=>:strings
   opt :top, "only report top match for each query"
+  opt :m8, "output plain m8, without desc"
 end
 
+ext = ".m8plus"
+ext = ".m8" if opts.m8
+
 opts.input.each do |blast|
-  out = File.new(blast + ".m8plus", "w")
+  out = File.new(blast + ext, "w")
   Bio::Blast::Default::Report.open(blast, "r").each do |query|
     fields = [""]*13
     fields[0] = query.query_def.split(" ").first
@@ -31,6 +35,7 @@ opts.input.each do |blast|
         fields[10] = hit.evalue
 	fields[11] = hit.score
         fields[12] = hit.definition
+        fields.pop if opts.m8
         out.print fields.join("\t")+"\n"
         break if opts.top
       end
