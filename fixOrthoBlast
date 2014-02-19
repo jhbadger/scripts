@@ -45,11 +45,19 @@ ZFile.new(opts.input).each do |line|
   fields = line.chomp.split("\t")
   q = fields[0]
   s = fields[1]
-  score = fields[11].to_f
+  score = fields[11].to_f 
   qnum = nums[q]
   snum = nums[s]
+  if qnum.nil?
+    STDERR << "Missing qnum for " << q <<"\n"
+    next
+  end
+  if snum.nil?
+    STDERR << "Missing snum for " << s <<"\n"
+    next
+  end
   scores[qnum]=Hash.new if !scores[qnum]
-  scores[qnum][snum] = score
+  scores[qnum][snum] = score if !scores[qnum][snum] || score > scores[qnum][snum]
 end
 
 scores.keys.each do |i|
@@ -64,7 +72,17 @@ scores.keys.each do |i|
       else
         s = bb
       end
-      print [species[i]+"|"+names[i], species[j]+"|"+names[j], sprintf("%8.4f", s)].join("\t")+"\n"
+      begin
+        print [species[i]+"|"+names[i], species[j]+"|"+names[j], sprintf("%8.4f", s)].join("\t")+"\n"
+      rescue
+        STDERR << "i: " << i << "\n"
+        STDERR << "names[i]: " << names[i] << "\n"
+        STDERR << "species[i]: " << species[i] << "\n"
+        STDERR << "j: " << j << "\n"
+        STDERR << "names[j]: " << names[j] << "\n"
+        STDERR << "species[j]: " << species[j] << "\n"
+        exit(1)
+      end
     end
   end
 end
