@@ -1,0 +1,91 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :alias, "alias file", :required=>true, :type=>:string
+  opt :input, "blast M8 file", :required=>true, :type=>:string
+  opt :fasta, "fasta file", :required=>true, :type=>:string
+  opt :mcl, "run mcl after processing"
+end
+
+ali = Hash.new
+File.new(opts.alias).each do |line|
+  num, tax, abbr = line.chomp.split("\t")
+  ali[num.to_i] = abbr
+end
+
+STDERR << "Processing Fasta...\n"
+species = Hash.new
+out = File.new(opts.fasta + ".ali", "w")
+ZFile.new(opts.fasta).each do |line|
+  if line =~/^>([^\s]*)/
+    name = $1
+    num = line.split(" ")[-2].to_i
+    if ali[num]
+      defline = ali[num] + "|" + name
+      out.print ">" + defline
+      species[name] = ali[num]
+    else
+      STDERR << "Missing alias for " << seq.definition << "\n"
+      exit(1)
+    end
+  else
+    out.print line
+  end
+end
+out.close
+
+current = nil
+cscore = nil
+seen = nil
+STDERR << "Processing Blast...\n"
+tmp = File.basename(opts.input)+".tmp"
+out = File.new(tmp, "w")
+ZFile.new(opts.input).each do |line|
+  fields = line.chomp.split("\t")
+  q = fields[0]
+  s = fields[1]
+  score = fields[11] 
+  if score
+    score = score.to_f
+    if current != q
+      current=q
+      cscore = score
+      seen = Hash.new
+    end
+    if !seen[s]
+      ratio = score/cscore
+      out.printf("%s|%s\t%s|%s\t%8.4f\n", species[q], q, species[s], s, ratio)
+      seen[s] = true
+    end
+  end
+end
+out.close
+STDERR << "Sorting score file...\n"
+system ("sort -nr -k3 #{tmp} > #{tmp}.sort")
+STDERR << "Writing final scores...\n"
+mcl = File.basename(opts.fasta, ".pep") + ".mcl"
+out = File.new(mcl, "w")
+seen = Hash.new
+File.new("#{tmp}.sort").each do |line|
+  x,y,score = line.chomp.split("\t")
+  x, y = y, x if y < x
+  key = x+y
+  if !seen[key]
+    out.printf("%s\t%s\t%8.4f\n", x,y,score)
+    out.printf("%s\t%s\t%8.4f\n", y,x,score) if x != y
+    seen[key] = true
+  end
+end
+out.close
+File.unlink(tmp, tmp + ".sort")
+
+if opts.mcl
+  STDERR << "Running clustering...\n"
+  clusters = File.basename(mcl, ".mcl") + ".clusters"
+  system("mcl #{mcl} --abc -o #{clusters}")
+end
