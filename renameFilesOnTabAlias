@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :alias, "alias file (to from)", :required=>true, :type=>:string
+end
+
+ali = Hash.new
+File.new(opts.alias).each do |line|
+  to, from = line.chomp.split("\t")
+  ali[from] = to
+end
+
+opts.input.each do |file|
+  moved = false
+  ali.keys.each do |key|
+    if file =~/(#{key})/
+      cmd = "mv #{file} #{file.gsub($1, ali[key])}"
+      system(cmd)
+      moved = true
+      break
+    end
+  end
+  STDERR << "Couldn't find alias for " << file << "\n" if !moved
+end
