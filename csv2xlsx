@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+require 'axlsx'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input csv/tab file(s)", :required=>true, :type=>:strings
+  opt :expression, "regular expression to process file names", :type=>:string
+  opt :output, "output file name", :required=>true, :type=>:string
+  opt :tab, "use tab for separator rather than comma"
+end
+
+if opts.tab
+  sep ="\t"
+else
+  sep = ","
+end
+
+proj = Axlsx::Package.new
+wb = proj.workbook
+opts.input.each do |file|
+  if opts.expression && file =~/#{opts.expression}/
+    name = $1
+  else
+    name = File.basename(file)
+  end
+  sheet = wb.add_worksheet(:name=> name)
+  CSV.foreach(file, :col_sep=>sep) do |row|
+    sheet.add_row(row)
+  end
+end
+proj.serialize(opts.output)
