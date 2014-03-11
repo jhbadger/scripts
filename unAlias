@@ -1,34 +1,78 @@
-#!/usr/bin/env ruby
+#!/usr/bin/env ruby 
 
-rev = false
-if (ARGV.first == "-r")
-  ARGV.shift
-  rev = true
+$VERBOSE=nil
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input file(s)", :required=>true, :type=>:strings
+  opt :alias, "Tab-delimited file(s): alias realName", :required=>true, 
+    :type=>:strings
+  opt :caseignore, "ignore case of names when matching aliases"
+  opt :modify, "modify files themselves, with backups made"
+  opt :reverse, "rename from alias column 2 to column 1", :default=>false
+  opt :regexp, "only match regexp", :type=>:string
 end
 
-if (ARGV.size != 2)
-  STDERR.printf("usage: %s [-r] in-file alias-file\n", $0)
-  exit(1)
-end
 
-inF, aliasF = ARGV
-
-realNames = Hash.new
-
-File.new(aliasF).each {|line|
-  line.chomp!
-  ali, real = line.split("\t")
-  if (!rev)
-    realNames[ali] = real
+aliases = opts.alias.dup
+opts.input.each do |file|
+  if opts.alias.size == opts.input.size
+    alif = aliases.shift
+  elsif opts.alias.size == 1
+    alif = aliases.first
   else
-    realNames[real] = ali
+    STDERR << "Number of aliases doesn't match number of files. I don't know what to do\n"
+    exit(1)
   end
-}
-
-File.new(inF).each {|line|
-  realNames.keys.sort {|x, y| y.length <=> x.length}.each {|aliasName|
-    line.gsub!(aliasName, realNames[aliasName])
-  }
-  print line
-}
+  realNames = Hash.new
+  
+  File.new(alif).each do |line|
+    line.chomp!
+    ali, real = line.split("\t")
+    if !opts.reverse
+      realNames[ali] = real
+    else
+      realNames[real] = ali
+    end
+  end
+  
+  STDERR << "Processing " << file << "...\n"
+  if opts.modify
+    `cp #{file} #{file}.orig`
+    out = File.new(file+".new", "w")
+  else
+    out = STDOUT
+  end
+  File.new(file).each do |line|
+    if opts.regexp
+      if line =~/#{opts.regexp}/
+        aliasName = $1
+        repName = realNames[aliasName]
+        if aliasName
+          if repName
+            line.gsub!(aliasName, repName)
+          else
+            STDERR << "Warning: No alias for " << aliasName << "\n"
+          end
+        end
+      end
+    else
+      realNames.keys.sort {|x, y| y.length <=> x.length}.each do |aliasName|
+        if opts.caseignore && realNames[aliasName]
+          line.gsub!(/#{aliasName}/i, realNames[aliasName])
+        elsif realNames[aliasName]
+          line.gsub!(aliasName, realNames[aliasName])
+        end
+      end
+    end
+    out.print line
+  end
+  if opts.modify
+    out.close
+    `mv #{file}.new #{file}`
+  end
+end
 

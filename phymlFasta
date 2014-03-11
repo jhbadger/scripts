@@ -41,7 +41,7 @@ opts = Trollop::options do
   opt :tmpdir, "temporary directory", :default=>tmpdir = ENV["HOME"] + "/.tmp"
 end
 
-if  opts.project
+if opts.project
   cmd = $0
   keys = opts.keys - [:help, :input, :project]
   keys.each do |key|
@@ -54,7 +54,7 @@ if  opts.project
   end
   opts.input.each do |input|
     system("qsub -P #{opts.project} -cwd " + cmd + 
-           " --input #{input}", opts.project)
+           " --input #{input}")
   end
   exit(0)
 end

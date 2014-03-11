@@ -47,10 +47,20 @@ if (opts.algorithm != "pars" && opts.algorithm != "nj" && opts.algorithm != "ml"
   exit(1)
 end
 
-if (opts.project)
-  cmd = cmdLine($0, opts, [:project, :input])
+if opts.project
+  cmd = $0
+  keys = opts.keys - [:help, :input, :project]
+  keys.each do |key|
+    k = key.to_s
+    val = opts[key]
+    if val.is_a?(Array)
+      val = val.join(" ")
+    end
+    cmd += " --#{key} #{val}" if !k.index("_given") && val
+  end
   opts.input.each do |input|
-    qsystem(cmd + " --input #{input}", opts.project)
+    system("qsub -P #{opts.project} -cwd " + cmd + 
+           " --input #{input}")
   end
   exit(0)
 end
