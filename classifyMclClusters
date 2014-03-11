@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'Stats'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "mcl clusters output file", :required=>true, :type=>:string
+  opt :minSize, "minimum cluster size", :default=>1
+  opt :maxSize, "maximum cluster size", :default=>10000
+  opt :minSpecies, "minimum species per cluster", :default=>1
+  opt :maxSpecies, "maximum species size", :default=>10000
+end
+
+species = Hash.new
+sizeArray = []
+speciesArray = []
+File.new(opts.input).each do |line|
+  prots = line.chomp.split("\t")
+  spec = prots.collect{|x| x.split("|").first}.uniq
+  if prots.size >= opts.minSize && spec.size >= opts.minSpecies && 
+      prots.size <= opts.maxSize && spec.size <= opts.maxSpecies
+    sizeArray.push(prots.size)
+    speciesArray.push(spec.size)
+    spec.collect{|x| species[x] = true}
+  end
+end
+
+
+
+STDERR.printf("%8d clusters\n", sizeArray.size, opts.minSize, opts.minSpecies)
+STDERR.printf("MinSize: %d MaxSize: %d AvgSize: %d MedianSize: %d\n", 
+              sizeArray.min, sizeArray.max, sizeArray.average, sizeArray.median)
+STDERR>printf("MinSpecies: %d MaxSpecies: %d AvgSpecies: %d MedianSpecies: %d\n", 
+              speciesArray.min, speciesArray.max, speciesArray.average, speciesArray.median)
+
