@@ -2,23 +2,59 @@
 
 require 'trollop'
 require 'Stats'
+require 'ZFile'
+require 'csv'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "mcl clusters output file", :required=>true, :type=>:string
+  opt :groups, "use groups file", :type=>:string
   opt :minSize, "minimum cluster size", :default=>1
   opt :maxSize, "maximum cluster size", :default=>10000
   opt :minSpecies, "minimum species per cluster", :default=>1
   opt :maxSpecies, "maximum species size", :default=>10000
 end
 
+groups = Hash.new
+if opts.groups
+  File.new(opts.groups).each do |line|
+    fields = line.chomp.split("\t")
+    group = fields.shift
+    fields.each do |abbr|
+      groups[abbr] = group
+    end
+  end
+  print (["Represenative"] + groups.values.uniq.sort).to_csv
+end
+
 species = Hash.new
 sizeArray = []
 speciesArray = []
-File.new(opts.input).each do |line|
+ZFile.new(opts.input).each do |line|
   prots = line.chomp.split("\t")
-  spec = prots.collect{|x| x.split("|").first}.uniq
+  if opts.groups
+    spec = nil
+    specProts = Hash.new
+    prots.each do |pep|
+      sp = pep.split("|").first
+      group = groups[sp]
+      specProts[group] = [] if !specProts[group]
+      specProts[group].push(pep)
+      spec = specProts.keys
+    end
+    row = [prots.first]
+    groups.values.uniq.sort.each do |group|
+      if specProts[group]
+        row.push(specProts[group].join(" "))
+      else
+        row.push(nil)
+      end
+    end
+    print row.to_csv
+  else
+    spec = prots.collect{|x| x.split("|").first}.uniq
+  end
   if prots.size >= opts.minSize && spec.size >= opts.minSpecies && 
       prots.size <= opts.maxSize && spec.size <= opts.maxSpecies
     sizeArray.push(prots.size)
@@ -28,10 +64,9 @@ File.new(opts.input).each do |line|
 end
 
 
-
-STDERR.printf("%8d clusters\n", sizeArray.size, opts.minSize, opts.minSpecies)
-STDERR.printf("MinSize: %d MaxSize: %d AvgSize: %d MedianSize: %d\n", 
-              sizeArray.min, sizeArray.max, sizeArray.average, sizeArray.median)
-STDERR>printf("MinSpecies: %d MaxSpecies: %d AvgSpecies: %d MedianSpecies: %d\n", 
-              speciesArray.min, speciesArray.max, speciesArray.average, speciesArray.median)
-
+STDERR.printf("%8d clusters\n", sizeArray.size, opts.minSize,
+opts.minSpecies)
+STDERR.printf("MinSize: %d MaxSize: %d AvgSize: %d MedianSize: %d\n",
+sizeArray.min, sizeArray.max, sizeArray.average, sizeArray.median)
+STDERR.printf("MinSpecies: %d MaxSpecies: %d AvgSpecies: %d MedianSpecies: %d\n", speciesArray.min, speciesArray.max,speciesArray.average, 
+              speciesArray.median)
