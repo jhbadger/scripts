@@ -26,11 +26,12 @@ if !File.exists?(opts.fasta + ".ali")
   ZFile.new(opts.fasta).each do |line|
     if line =~/^>([^\s]*)/
       name = $1
+      species[name] = []
       num = line.split(" ")[-2].to_i
       if ali[num]
         defline = ali[num] + "|" + name
         out.print ">" + defline
-        species[name] = ali[num]
+        species[name].push(ali[num])
       else
         STDERR << "Missing alias for " << seq.definition << "\n"
         exit(1)
@@ -41,57 +42,42 @@ if !File.exists?(opts.fasta + ".ali")
   end
   out.close
 end
-current = nil
-cscore = nil
-seen = nil
+
+scores = Hash.new
+maxScore = Hash.new
 STDERR << "Processing Blast...\n"
-tmp = File.basename(opts.input)+".tmp"
-if !File.exists?(tmp)
-  out = File.new(tmp, "w")
-  ZFile.new(opts.input).each do |line|
-    fields = line.chomp.split("\t")
-    q = fields[0]
-    s = fields[1]
-    score = fields[11] 
-    if score
-      score = score.to_f
-      if current != q
-        current=q
-        cscore = score
-        seen = Hash.new
-      end
-      if !seen[s]
-        ratio = score/cscore
-        out.printf("%s|%s\t%s|%s\t%8.4f\n", species[q], q, species[s], s, ratio)
-        seen[s] = true
+ZFile.new(opts.input).each do |line|
+  fields = line.chomp.split("\t")
+  q = fields[0]
+  s = fields[1]
+  score = fields[11] 
+  if score
+    score = score.to_f
+    scores[q] = Hash.new if !scores[q]
+    scores[q][s] = score if !scores[q][s] || score > scores[q][s]
+    if !maxScore[q] || maxScore[q] < score
+      maxScore[q] = score
+    end
+    if !seen[s]
+      ratio = score/cscore
+      out.printf("%s|%s\t%s|%s\t%8.4f\n", species[q], q, species[s], s, ratio)
+      seen[s] = true
+    end
+  end
+end
+mcl = File.basename(opts.input).split(".m8").first + ".mcl"
+out = File.new(mcl, "w") 
+scores.keys.each do |q|
+  species[q].each do |qsp|
+    scores[q].keys.each do |s|
+      species[s].each do |ssp|
+        ratio = scores[q][s]/maxScore[q]
+        out.printf("%s|%s\t%s|%s\t%8.4f\n", qsp, q, ssp, s, ratio)
       end
     end
   end
-  out.close
 end
-STDERR << "Sorting score file...\n"
-if !File.exists?(tmp + ".sort")
-  system ("sort -nr -k3 #{tmp} > #{tmp}.sort")
-end
-STDERR << "Writing final scores...\n"
-mcl = File.basename(opts.fasta, ".pep") + ".mcl"
-if !File.exists?(mcl)
-  out = File.new(mcl, "w")
-  seen = Hash.new
-  File.new("#{tmp}.sort").each do |line|
-    x,y,score = line.chomp.split("\t")
-    x, y = y, x if y < x
-    key = x+y
-    if !seen[key]
-      out.printf("%s\t%s\t%8.4f\n", x,y,score)
-      out.printf("%s\t%s\t%8.4f\n", y,x,score) if x != y
-      seen[key] = true
-    end
-  end
-  out.close
-  File.unlink(tmp, tmp + ".sort")
-  seen = nil
-end
+out.close
 
 if opts.mcl
   STDERR << "Running clustering...\n"
