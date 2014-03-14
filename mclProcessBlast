@@ -21,26 +21,18 @@ end
 STDERR << "Processing Fasta...\n"
 species = Hash.new
 
-if !File.exists?(opts.fasta + ".ali")
-  out = File.new(opts.fasta + ".ali", "w")
-  ZFile.new(opts.fasta).each do |line|
-    if line =~/^>([^\s]*)/
-      name = $1
-      species[name] = []
-      num = line.split(" ")[-2].to_i
-      if ali[num]
-        defline = ali[num] + "|" + name
-        out.print ">" + defline
-        species[name].push(ali[num])
-      else
-        STDERR << "Missing alias for " << seq.definition << "\n"
-        exit(1)
-      end
+ZFile.new(opts.fasta).each do |line|
+  if line =~/^>([^\s]*)/
+    name = $1
+    species[name] = []
+    num = line.split(" ")[-2].to_i
+    if ali[num]      
+      species[name].push(ali[num])
     else
-      out.print line
+      STDERR << "Missing alias for " << seq.definition << "\n"
+      exit(1)
     end
   end
-  out.close
 end
 
 scores = Hash.new
@@ -58,13 +50,10 @@ ZFile.new(opts.input).each do |line|
     if !maxScore[q] || maxScore[q] < score
       maxScore[q] = score
     end
-    if !seen[s]
-      ratio = score/cscore
-      out.printf("%s|%s\t%s|%s\t%8.4f\n", species[q], q, species[s], s, ratio)
-      seen[s] = true
-    end
   end
 end
+
+STDERR << "Writing Matrix...\n"
 mcl = File.basename(opts.input).split(".m8").first + ".mcl"
 out = File.new(mcl, "w") 
 scores.keys.each do |q|

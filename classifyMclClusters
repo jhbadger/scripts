@@ -9,64 +9,63 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "mcl clusters output file", :required=>true, :type=>:string
-  opt :groups, "use groups file", :type=>:string
-  opt :minSize, "minimum cluster size", :default=>1
-  opt :maxSize, "maximum cluster size", :default=>10000
-  opt :minSpecies, "minimum species per cluster", :default=>1
-  opt :maxSpecies, "maximum species size", :default=>10000
+  opt :groups, "groups file", :type=>:string, :required=>true
+  opt :miss_species, "maximum number of missed species", :default=>0
+  opt :exclude, "file of cluster abbreviations to exclude",:type=>:string
+end
+
+
+exclude = Hash.new
+if opts.exclude
+  File.new(opts.exclude).each do |line|
+    abbr = line.chomp.split("\t").last
+    exclude[abbr] = true
+  end
 end
 
 groups = Hash.new
-if opts.groups
-  File.new(opts.groups).each do |line|
-    fields = line.chomp.split("\t")
-    group = fields.shift
-    fields.each do |abbr|
-      groups[abbr] = group
-    end
+File.new(opts.groups).each do |line|
+  name, species = line.chomp.split("\t", 2)
+  groups[name] = Hash.new
+  species.split("\t").each do |sp|
+    groups[name][sp] = true if !exclude[sp]
   end
-  print (["Represenative"] + groups.values.uniq.sort).to_csv
 end
 
-species = Hash.new
-sizeArray = []
-speciesArray = []
-ZFile.new(opts.input).each do |line|
-  prots = line.chomp.split("\t")
-  if opts.groups
-    spec = nil
-    specProts = Hash.new
-    prots.each do |pep|
-      sp = pep.split("|").first
-      group = groups[sp]
-      specProts[group] = [] if !specProts[group]
-      specProts[group].push(pep)
-      spec = specProts.keys
-    end
-    row = [prots.first]
-    groups.values.uniq.sort.each do |group|
-      if specProts[group]
-        row.push(specProts[group].join(" "))
+def checkCluster(cluster, groups)
+  seen = Hash.new
+  cluster.split("\t").each do |pep|
+    sp = pep.split("|").first
+    seen[sp] = [] if !seen[sp]
+    seen[sp].push(pep)
+  end
+  found = Hash.new
+  missing = Hash.new
+  groups.keys.each do |group|
+    found[group] = Hash.new
+    missing[group] = []
+    groups[group].keys.each do |sp|
+      if seen[sp]
+        found[group][sp] = [] if !found[group][sp]
+        found[group][sp] += seen[sp]
       else
-        row.push(nil)
+        missing[group].push(sp)
       end
     end
-    print row.to_csv
-  else
-    spec = prots.collect{|x| x.split("|").first}.uniq
   end
-  if prots.size >= opts.minSize && spec.size >= opts.minSpecies && 
-      prots.size <= opts.maxSize && spec.size <= opts.maxSpecies
-    sizeArray.push(prots.size)
-    speciesArray.push(spec.size)
-    spec.collect{|x| species[x] = true}
-  end
+  [found, missing]
 end
 
-
-STDERR.printf("%8d clusters\n", sizeArray.size, opts.minSize,
-opts.minSpecies)
-STDERR.printf("MinSize: %d MaxSize: %d AvgSize: %d MedianSize: %d\n",
-sizeArray.min, sizeArray.max, sizeArray.average, sizeArray.median)
-STDERR.printf("MinSpecies: %d MaxSpecies: %d AvgSpecies: %d MedianSpecies: %d\n", speciesArray.min, speciesArray.max,speciesArray.average, 
-              speciesArray.median)
+print (["Representative"] + groups.keys).to_csv
+ZFile.new(opts.input).each do |line|
+  found, missing = checkCluster(line, groups)
+  row = [line.split(" ").first]
+  groups.keys.each do |group|
+    if missing[group].size <= opts.miss_species
+      row.push(1)
+    else
+      row.push(nil)
+    end
+  end
+  print row.to_csv
+end

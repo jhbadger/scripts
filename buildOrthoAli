@@ -7,7 +7,6 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input taxa", :required=>true, :type=>:string
-  opt :fasta, "input fasta file", :required=>true, :type=>:string
 end
 
 ali = Hash.new
@@ -30,14 +29,4 @@ File.new(opts.input).each do |line|
   out.print [num, tx, abbr].join("\t") + "\n"
 end
 out.close
-
-Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.fasta)).each do |seq|
-  n = seq.definition.split(" ")[-2]
-  if ali[n]
-    print Bio::Sequence::AA.new(seq.seq).to_fasta(ali[n] + "|" + seq.definition, 60)
-  else
-    STDERR << "Can't find alias for " << n << "\n"
-    exit(1)
-  end
-end
 
