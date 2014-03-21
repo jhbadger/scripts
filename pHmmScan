@@ -10,13 +10,24 @@ ARGV.push("-h") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :command, "hmm search program", :default=>"hmm3scan", :type => :string
+  opt :cutoff, "cut-off score file (hmm score)", :type => :string
   opt :database, "HMM database to use", 
       :default=>"/usr/local/db/HMM3_LIB/ALL_LIB.HMM", :type => :string
   opt :input, "FASTA input file(s)", :required => true, :type => :strings
+  opt :maxlocal, "maximum number of simultaneous local processes", :default=>4
+  opt :options, "hmmscan options", :default => "--cut_tc -Z 15930"
   opt :project, "JCVI project number if not local", :type => :string
   opt :sizejob, "number of sequences per grid job", 
       :type=>:integer, :default=>10000
   opt :queue, "grid queue to use", :type=>:string, :default => "medium" 
+end
+
+cutScore = Hash.new
+if opts.cutoff
+  File.new(opts.cutoff).each do |line|
+    name, score = line.chomp.split(" ")
+    cutScore[name] = score.to_f
+  end
 end
 
 if File.basename(opts.database) == opts.database
@@ -25,7 +36,6 @@ end
 
 opts.input.each do |file|
   outName = File.basename(file, ".pep") + "_" + File.basename(opts.database)
-  next if File.exist?(outName + ".tbl")
   hout = File.basename(file) + "_vs_" + File.basename(opts.database) + ".out"
   tblout = File.basename(file) + "_vs_" + File.basename(opts.database) + ".tbl"
   domout = File.basename(file) + "_vs_" + File.basename(opts.database) + ".dom"
@@ -33,7 +43,7 @@ opts.input.each do |file|
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
-  hmm = "#{opts.command} --cut_tc -Z 15930 -o hmmscan_input.$SGE_TASK_ID.out "
+  hmm = "#{opts.command} #{opts.options} 2>/dev/null "
   hmm += "--tblout hmmscan_input.$SGE_TASK_ID.tbl "
   hmm += "--domtblout hmmscan_input.$SGE_TASK_ID.dom #{opts.database} "
   grid = Grid.new(hmm, opts.project, "4G", opts.queue)
@@ -49,11 +59,13 @@ opts.input.each do |file|
     count += 1
   end
   out.close
-  grid.submit(sync = true)
+  grid.submit(sync = true, !opts.project, opts.verbose, opts.maxlocal)
   out = File.new(outName + ".tbl", "w")
   Dir.glob("*input*.tbl").each do |tbl|
     File.new(tbl).each do |line|
-      out.print line
+      next if line =~/^#/
+      target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
+      out.print line if !opts.cutoff || score.to_f >= cutScore[target]
     end
     File.unlink(tbl)
   end
@@ -61,7 +73,9 @@ opts.input.each do |file|
   out = File.new(outName + ".dom", "w")
   Dir.glob("*input*.dom").each do |dom|
     File.new(dom).each do |line|
-      out.print line
+      next if line =~/^#/
+      target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
+      out.print line if !opts.cutoff || score.to_f >= cutScore[target]
     end
     File.unlink(dom)
   end
