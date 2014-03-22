@@ -11,13 +11,6 @@ opts = Trollop::options do
   opt :subset, "fields to include in venn", :type=>:integers
 end
 
-subset = Hash.new
-if opts.subset
-  opts.subset.each do |sub|
-    subset[sub - 1] = true
-  end
-end
-
 name = []
 list = []
 map = []
@@ -25,13 +18,18 @@ orths = Hash.new
 
 CSV.foreach(opts.input) do |fields|
   rep = fields.shift
+  if opts.subset
+    subset = []
+    opts.subset.each do |num|
+      subset.push(fields[num - 1])
+    end
+    fields = subset
+  end
   if name.empty?
     fields.size.times do |i|
-      if !opts.subset || subset[i]
-        map.push(i)
-        name.push(fields[i])
-        list.push([])
-      end
+      map.push(i)
+      name.push(fields[i])
+      list.push([])
     end
   else
     good = false
@@ -169,6 +167,8 @@ if name.size == 3
   venn = eval(DATA.read)["venn3"]
 elsif name.size == 4
   venn = eval(DATA.read)["venn4"]
+elsif name.size == 5
+  venn = eval(DATA.read)["venn5"]
 end
 
 
@@ -291,6 +291,66 @@ venn  = {"venn3" => '<?xml version="1.0"?>
   <text x="270" y="220" text-anchor="middle" font-family="Verdana" font-size="10" fill="black" >BCD</text>
   <text x="180" y="320" text-anchor="middle" font-family="Verdana" font-size="10" fill="black" >ACD</text>
   <text x="265" y="320" text-anchor="middle" font-family="Verdana" font-size="10" fill="black" >ABD</text>
-  </svg>'}
+  </svg>',
+'venn5' =>'<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="746" height="742" viewBox="-362 -388 776 742">
+ <desc>5-way Venn Devised by Branko Gruenbaum and rendered by CMG Lee.</desc>
+ <defs>
+  <ellipse id="ellipse" cx="36" cy="-56" rx="160" ry="320" />
+  <g id="ellipses">
+   <use xlink:href="#ellipse" fill="#0000ff" />
+   <use xlink:href="#ellipse" fill="#0099ff" transform="rotate(72)" />
+   <use xlink:href="#ellipse" fill="#00cc00" transform="rotate(144)" />
+   <use xlink:href="#ellipse" fill="#cc9900" transform="rotate(216)" />
+   <use xlink:href="#ellipse" fill="#ff0000" transform="rotate(288)" />
+  </g>
+ </defs>
+ <use xlink:href="#ellipses" fill-opacity="0.3" />
+ <use xlink:href="#ellipses" fill-opacity="0" stroke="#000" stroke-width="2" />
+ <g text-anchor="middle" font-family="sans-serif" font-size="16">
+  <text x="30"   y="-300" dy="0.7ex">Aonly</text>
+  <text x="200"  y="-330" dy="0.7ex">Anamestring</text>
+  <text x="200"  y="-350" dy="0.7ex">Atotal</text>
+  <text x="300"  y="-60"  dy="0.7ex">Bonly</text>
+  <text x="290"  y="-180"  dy="0.7ex">Bnamestring</text>
+  <text x="290"  y="-200"  dy="0.7ex">Btotal</text>
+  <text x="320"  y="160"  dy="0.7ex">Ctotal</text>
+  <text x="320"  y="180"  dy="0.7ex">Cnamestring</text>
+  <text x="160"  y="280"  dy="0.7ex">Conly</text>
+  <text x="-220" y="220"  dy="0.7ex">Donly</text>
+  <text x="-220" y="340"  dy="0.7ex">Dnamestring</text>
+  <text x="-220" y="320"  dy="0.7ex">Dtotal</text>
+  <text x="-280" y="-130" dy="0.7ex">Eonly</text>
+  <text x="-240" y="-250" dy="0.7ex">Enamestring</text>
+  <text x="-240" y="-270" dy="0.7ex">Etotal</text>
+  <text x="180"  y="-130" dy="0.7ex">AB</text>
+  <text x="40"   y="230"  dy="0.7ex">AC</text>
+  <text x="100"  y="-200" dy="0.7ex">AD</text>
+  <text x="-80"  y="-215" dy="0.7ex">AE</text>
+  <text x="190"  y="125"  dy="0.7ex">BC</text>
+  <text x="-190" y="120"  dy="0.7ex">BD</text>
+  <text x="230"  y="40"   dy="0.7ex">BE</text>
+  <text x="-60"  y="220"  dy="0.7ex">CD</text>
+  <text x="-170" y="-150" dy="0.7ex">CE</text>
+  <text x="-222" y="0"    dy="0.7ex">DE</text>
+  <text x="90"   y="150"  dy="0.7ex">ABC</text>
+  <text x="148"  y="-153" dy="0.7ex">ABD</text>
+  <text x="170"  y="-20"  dy="0.7ex">ABE</text>
+  <text x="-33"  y="208"  dy="0.7ex">ACD</text>
+  <text x="-93"  y="-193" dy="0.7ex">ACE</text>
+  <text x="20"   y="-180" dy="0.7ex">ADE</text>
+  <text x="-120" y="120"  dy="0.7ex">BCD</text>
+  <text x="190"  y="100"  dy="0.7ex">BCE</text>
+  <text x="-211" y="32"   dy="0.7ex">BDE</text>
+  <text x="-150" y="-80"  dy="0.7ex">CDE</text>
+  <text x="-30"  y="160"  dy="0.7ex">ABCD</text>
+  <text x="140"  y="80"   dy="0.7ex">ABCE</text>
+  <text x="120"  y="-100" dy="0.7ex">ABDE</text>
+  <text x="-60"  y="-140" dy="0.7ex">ACDE</text>
+  <text x="-160" y="20"   dy="0.7ex">BCDE</text>
+  <text x="0"    y="0"    dy="0.7ex">ABCDE</text>
+ </g>
+</svg>'}
 
 
