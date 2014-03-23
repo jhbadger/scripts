@@ -9,6 +9,7 @@ opts = Trollop::options do
   opt :input, "Input csv file", :required=>true, :type=>:string
   opt :lists, "output lists of shared genes", :default=>false
   opt :subset, "fields to include in venn", :type=>:integers
+  opt :core, "output core list"
 end
 
 name = []
@@ -45,6 +46,11 @@ CSV.foreach(opts.input) do |fields|
       end
     end
   end
+end
+
+if name.size < 3 || name.size > 5
+  STDERR << "Sorry. I can only do Venns of order 3, 4, or 5\n"
+  exit(1)
 end
 
 only = []
@@ -206,7 +212,13 @@ elsif name.size == 5
   venn.gsub!("ABCDE", core[0].size.to_s)
 end
 
-print venn
+if opts.core
+  core[0].each do |id|
+    print id.split("|",2)[1] + "\n"
+  end
+else
+  print venn
+end
 
 __END__
 venn  = {"venn3" => '<?xml version="1.0"?>

@@ -31,6 +31,9 @@ File.new(opts.groups).each do |line|
     groups[name][sp] = true if !exclude[sp]
   end
 end
+groups.keys.each do |key|
+  groups.delete(key) if groups[key].empty?
+end
 
 def checkCluster(cluster, groups)
   seen = Hash.new
@@ -47,7 +50,7 @@ def checkCluster(cluster, groups)
     groups[group].keys.each do |sp|
       if seen[sp]
         found[group][sp] = [] if !found[group][sp]
-        found[group][sp] += seen[sp]
+        found[group][sp] += ["1"] #seen[sp]
       else
         missing[group].push(sp)
       end
@@ -56,7 +59,11 @@ def checkCluster(cluster, groups)
   [found, missing]
 end
 
-print (["Representative"] + groups.keys).to_csv
+colnames = []
+groups.keys.each do |key|
+  colnames.push(key + " (" + groups[key].size.to_s + ")")
+end
+print (["Representative"] + colnames).to_csv
 ZFile.new(opts.input).each do |line|
   found, missing = checkCluster(line, groups)
   row = [line.split(" ").first]
