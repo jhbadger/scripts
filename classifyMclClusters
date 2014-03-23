@@ -60,13 +60,19 @@ def checkCluster(cluster, groups)
 end
 
 colnames = []
+used = ""
 groups.keys.each do |key|
   colnames.push(key + " (" + groups[key].size.to_s + ")")
+  used += groups[key].keys.join("|")
 end
+
+
+
 print (["Representative"] + colnames).to_csv
 ZFile.new(opts.input).each do |line|
   found, missing = checkCluster(line, groups)
-  row = [line.split(" ").first]
+  row = [line.split(" ").grep(/#{used}/).first]
+  next if row[0].nil?
   groups.keys.each do |group|
     if missing[group].size <= opts.miss_species
       row.push(1)

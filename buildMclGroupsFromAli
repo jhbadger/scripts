@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "ali file", :required=>true, :type=>:string
+  opt :level, "numerical level in taxonomy to use", :required=>true, :type=>:integer
+end
+
+groups = Hash.new
+File.new(opts.input).each do |line|
+  tid, tax, abbr = line.chomp.split("\t")
+  taxon = tax.split(";")[opts.level]
+  groups[taxon] = [] if !groups[taxon]
+  groups[taxon].push(abbr)
+end
+
+groups.keys.each do |key|
+  print ([key] + groups[key].sort).join("\t") + "\n"
+end
