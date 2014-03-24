@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "euk core hmm", :required=>true, :type=>:string
+  opt :fasta, "fasta pep file", :required=>true, :type=>:string
+  opt :taxonomy, "taxonomy file", :required=>true, :type=>:string
+end
+
+tax = Hash.new
+File.new(opts.taxonomy).each do |line|
+  num, tx = line.chomp.split("\t")
+  tax[num.to_i] = tx
+end
+
+tid = Hash.new
+counts = Hash.new
+STDERR << "Loading peptides...\n"
+File.new(opts.fasta).each do |line|
+  if line=~/^>/
+    name = line.split(" ")[0].split(">")[1]
+    num = line.split(" ")[-2].to_i
+    tid[name] = num
+    counts[num] = 0 if !counts[num]
+    counts[num] += 1
+  end
+end
+
+hits = Hash.new
+STDERR << "Loading hmm...\n"
+File.new(opts.input).each do |line|
+  target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
+  num = tid[query]
+  if !num
+    STDERR << "Unknown protein " << query << "\n"
+  else
+    hits[num] = Hash.new if !hits[num]
+    hits[num][target] = true
+  end
+end
+
+print ["Taxon Id", "Taxonomy", "Peptides", "Core Peptides"].to_csv
+hits.keys.sort.each do |key|
+  print [key, tax[key], counts[key], hits[key].size].to_csv
+end

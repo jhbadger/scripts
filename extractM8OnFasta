@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input m8 file", :required=>true, :type=>:string
+  opt :fasta, "fasta file", :required=>true, :type=>:string
+end
+
+keep = Hash.new
+
+STDERR << "Processing " << opts.fasta << "...\n"
+ZFile.new(opts.fasta).each do |line|
+  if line =~/^>([^\s]*)/
+    keep[$1] = true
+  end
+end
+
+STDERR << "Processing " << opts.input << "...\n"
+ZFile.new(opts.input).each do |line|
+  x, y = line.chomp.split("\t")
+  print line if keep[x] || keep[y]
+end

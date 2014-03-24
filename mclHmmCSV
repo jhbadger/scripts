@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'ZFile'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input cluster csv file", :required=>true, :type=>:string
+  opt :hmm, "hmm tbl file", :required=>true, :type=>:string
+end
+
+ann = Hash.new
+hits = Hash.new
+ZFile.new(opts.hmm).each do |line|
+  fields = line.chomp.split(" ", 19)
+  name = fields[0]
+  hit = fields[2]
+  desc = fields.last
+  ann[name] = desc if !ann[name]
+  hits[hit] = [] if !hits[hit]
+  hits[hit].push(name)
+end
+
+headers = ["Representative", "HMM hits", "HMM desc"]
+groups = nil
+CSV.foreach(opts.input, :headers=>true) do |row|
+  if !groups
+    groups = row.headers.dup
+    groups.shift
+    print (headers + groups).to_csv
+  end
+  newrow=[row.fields.first]
+  hit = row[0].split("|").last
+  if hits[hit]
+    newrow.push(hits[hit].sort.uniq.join("||"))
+    newrow.push(hits[hit].sort.uniq.collect{|x| ann[x]}.join("||"))
+  else
+    newrow.push(nil,nil)
+  end
+  groups.each do |group|
+    if row[group].nil?
+      newrow.push(nil)
+    else
+      newrow.push("X")
+    end
+  end
+  print newrow.to_csv
+end
