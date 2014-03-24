@@ -12,6 +12,8 @@ opts = Trollop::options do
   opt :groups, "groups file", :type=>:string, :required=>true
   opt :miss_species, "maximum number of missed species", :default=>0
   opt :exclude, "file of cluster abbreviations to exclude",:type=>:string
+  opt :onepergroup, "one per group is fine"
+  opt :sizecount, "include multiple hits per cluster"
 end
 
 
@@ -50,7 +52,7 @@ def checkCluster(cluster, groups)
     groups[group].keys.each do |sp|
       if seen[sp]
         found[group][sp] = [] if !found[group][sp]
-        found[group][sp] += ["1"] #seen[sp]
+        found[group][sp] += ["1"] 
       else
         missing[group].push(sp)
       end
@@ -63,19 +65,22 @@ colnames = []
 used = ""
 groups.keys.each do |key|
   colnames.push(key + " (" + groups[key].size.to_s + ")")
-  used += groups[key].keys.join("|")
+  used += groups[key].keys.join("|")+"|"
 end
-
+used.chop!
 
 
 print (["Representative"] + colnames).to_csv
 ZFile.new(opts.input).each do |line|
   found, missing = checkCluster(line, groups)
   row = [line.split(" ").grep(/#{used}/).first]
-  next if row[0].nil?
   groups.keys.each do |group|
-    if missing[group].size <= opts.miss_species
-      row.push(1)
+    if missing[group].size <= opts.miss_species || (found[group].size > 0 && opts.onepergroup)
+      if opts.sizecount
+        row.push(found[group].size)
+      else
+        row.push(1)
+      end
     else
       row.push(nil)
     end

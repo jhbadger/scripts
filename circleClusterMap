@@ -1,0 +1,83 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "csv input file", :required=>true, :type=>:string
+end
+
+counts = Hash.new
+core = 0
+CSV.foreach(opts.input, :headers=>true) do |row|
+  missed = false
+  1.upto(row.size - 1) do |i|
+    name = row.headers[i]
+    if row.fields[i].nil? 
+      missed = true
+    else
+      counts[name] = 0 if  counts[name].nil?
+      counts[name] += 1
+    end
+  end
+  core += 1 if !missed
+end
+
+
+def svgHeader
+  "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\"
+         \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">
+<svg xmlns=\"http://www.w3.org/2000/svg\"
+     xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n"
+end
+
+def svgClose
+  "</svg>\n"
+end
+
+def svgCircle(cx, cy, r, fill, opacity = 0.5)
+  c =  "<circle cx=\"#{cx}\" cy=\"#{cy}\" r=\"#{r}\" "
+  c += "fill=\"#{fill}\" stroke=\"black\" stroke-width=\"1\" "
+  c += "fill-opacity=\"#{opacity}\"/>\n"
+  c
+end
+
+def svgLabel(x, y, label)
+  c = "<text x=\"#{x}\" y=\"#{y}\" text-anchor=\"middle\" "
+  c += "font-family=\"Verdana\" font-size=\"10\" "
+  c += "fill=\"black\" >#{label}</text>\n"
+  c
+end
+
+def bestLabel(x, y, radius, rpos, offset)
+  if rpos < 3
+    [x, offset + y + radius]
+  else
+    [x, y - radius - offset]
+  end
+end
+
+maincx = 310
+maincy = 310
+mainr = 200
+print svgHeader
+
+print svgCircle(maincx, maincy, mainr, "red")
+print svgLabel(maincx, maincy, core)
+colors = ["blue", "green", "purple", "brown", "tan", "yellow", "pink"]
+rads = (4*Math.acos(0))/counts.keys.size
+rpos = 0
+radius = 500/counts.keys.size
+counts.keys.each do |key|
+  cx = (maincx + mainr*Math.cos(rpos)).to_i
+  cy = (maincy + mainr*Math.sin(rpos)).to_i
+  print svgCircle(cx, cy, radius, colors.shift)
+  x, y = bestLabel(cx, cy, radius, rpos, 10)
+  print svgLabel(x, y, key)
+  x, y = bestLabel(cx, cy, radius, rpos, -15)
+  print svgLabel(x, y, counts[key])
+  rpos += rads
+end
+print svgClose
