@@ -9,6 +9,31 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input cluster csv file", :required=>true, :type=>:string
   opt :hmm, "hmm tbl file", :required=>true, :type=>:string
+  opt :superfamily, "superfamily hits file", :type=>:string
+  opt :model, "superfamily model.tab file", :type=>:string
+  opt :scop, "scop mapping file (dir.cla.scop)", :type=>:string
+end
+
+sann = Hash.new
+scop = Hash.new
+fold = Hash.new
+sfam = Hash.new
+
+if opts.superfamily && opts.model && opts.scop
+  ZFile.new(opts.model).each do |line|
+    hmm, family, d, sid, desc = line.chomp.split("\t")
+    sann[family] = desc
+    sfam[hmm] = family
+    scop[hmm] = sid
+  end
+  ZFile.new(opts.scop).each do |line|
+    if line !~/^#/
+      id, d, d, d, d, fields = line.chomp.split("\t")
+      if fields=~/fa=([0-9]+)/
+        fold[id] = $1.to_i
+      end
+    end
+  end
 end
 
 ann = Hash.new
@@ -20,10 +45,23 @@ ZFile.new(opts.hmm).each do |line|
   desc = fields.last
   ann[name] = desc if !ann[name]
   hits[hit] = [] if !hits[hit]
-  hits[hit].push(name)
+  hits[hit].push(name) if !hits[hit].include?(name)
+end
+
+shits = Hash.new
+sfolds = Hash.new
+if opts.superfamily
+  ZFile.new(opts.superfamily).each do |line|
+    hit, name = line.chomp.split("\t")
+    shits[hit] = [] if !shits[hit]
+    shits[hit].push(sfam[name]) if !shits[hit].include?(sfam[name])
+    sfolds[hit] = [] if !sfolds[hit]
+    sfolds[hit].push(fold[scop[name]]) if !sfolds[hit].push(fold[scop[name]])
+  end
 end
 
 headers = ["Representative", "HMM hits", "HMM desc"]
+headers += ["Superfamily hits", "Superfamily desc", "SCOP folds"] if opts.superfamily
 groups = nil
 CSV.foreach(opts.input, :headers=>true) do |row|
   if !groups
@@ -34,10 +72,19 @@ CSV.foreach(opts.input, :headers=>true) do |row|
   newrow=[row.fields.first]
   hit = row[0].split("|").last
   if hits[hit]
-    newrow.push(hits[hit].sort.uniq.join("||"))
-    newrow.push(hits[hit].sort.uniq.collect{|x| ann[x]}.join("||"))
+    newrow.push(hits[hit].sort.join("||"))
+    newrow.push(hits[hit].sort.collect{|x| ann[x]}.join("||"))
   else
     newrow.push(nil,nil)
+  end
+  if opts.superfamily
+    if shits[hit]
+      newrow.push(shits[hit].sort.join("||"))
+      newrow.push(shits[hit].sort.collect{|x| sann[x]}.join("||"))
+      newrow.push(sfolds[hit].sort.join("||"))
+    else
+      newrow.push(nil,nil,nil)
+    end
   end
   groups.each do |group|
     if row[group].nil?
