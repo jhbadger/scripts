@@ -21,15 +21,15 @@ sfam = Hash.new
 
 if opts.superfamily && opts.model && opts.scop
   ZFile.new(opts.model).each do |line|
-    hmm, family, d, sid, desc = line.chomp.split("\t")
-    sann[family] = desc
-    sfam[hmm] = family
+    hmm, sf, d, sid, desc = line.chomp.split("\t")
+    sann[sf] = desc
+    sfam[hmm] = sf
     scop[hmm] = sid
   end
   ZFile.new(opts.scop).each do |line|
     if line !~/^#/
       id, d, d, d, d, fields = line.chomp.split("\t")
-      if fields=~/fa=([0-9]+)/
+      if fields=~/cf=([0-9]+)/
         fold[id] = $1.to_i
       end
     end
@@ -61,7 +61,7 @@ if opts.superfamily
 end
 
 headers = ["Representative", "HMM hits", "HMM desc"]
-headers += ["Superfamily hits", "Superfamily desc", "SCOP folds"] if opts.superfamily
+headers += ["Superfamiles", "Superfamily desc", "SCOP folds"] if opts.superfamily
 groups = nil
 CSV.foreach(opts.input, :headers=>true) do |row|
   if !groups
@@ -80,8 +80,8 @@ CSV.foreach(opts.input, :headers=>true) do |row|
   if opts.superfamily
     if shits[hit]
       newrow.push(shits[hit].sort.join("||"))
-      newrow.push(shits[hit].sort.collect{|x| sann[x]}.join("||"))
-      newrow.push(sfolds[hit].sort.join("||"))
+      newrow.push(shits[hit].sort.uniq.collect{|x| sann[x]}.join("||"))
+      newrow.push(sfolds[hit].sort.uniq.join("||"))
     else
       newrow.push(nil,nil,nil)
     end
