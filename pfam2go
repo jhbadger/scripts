@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'bio'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input fasta file", :required=>true, :type=>:string
+  opt :tbl, "hmmer3.tbl file", :required=>true, :type=>:string
+  opt :pfam2go, "pfam2go.txt lookup file", :required=>true, :type=>:string
+end
+
+ann = Hash.new
+map = Hash.new
+STDERR << "Loading " << opts.pfam2go << "...\n"
+File.new(opts.pfam2go).each do |line|
+  if line !~/^!/
+    name, rest = line.chomp.split(" ", 2)
+    name.gsub!("Pfam:","")
+    desc, go = rest.chomp.split(" > GO:", 2)[1].split(" ; ")
+    map[name] = [] if !map[name]
+    map[name].push(go)
+    ann[go] = desc
+  end
+end
+
+STDERR << "Loading " << opts.tbl << "..\n"
+pfams = Hash.new
+File.new(opts.tbl).each do |line|
+  if line !~/^#/
+    name, pfam, pep = line.chomp.split(" ")
+    pfams[pep] = [] if !pfams[pep]
+    pfams[pep].push(pfam.split(".").first)
+  end
+end
+
+
+STDERR << "Loading " << opts.input << "...\n"
+print ["Seq_Id","GO", "GO Description"].to_csv
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  if pfams[seq.entry_id]
+    gos = pfams[seq.entry_id].collect{|x| map[x]}.flatten.sort.uniq
+  else
+    gos = []
+  end
+  desc = gos.collect{|x| ann[x]}
+  print [seq.entry_id, gos.join("||"),desc.join("||")].to_csv
+end
