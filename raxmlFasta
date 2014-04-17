@@ -170,6 +170,6 @@ opts.input.each do |fasta|
   end  
   tree.write("#{name}_raxml.tree")
   tree.draw("#{name}_raxml.tree.pdf")
-  File.link("#{tmpdir}/RAxML_info.#{name}", "#{name}_raxml.info")
+  File.link("#{tmpdir}/RAxML_info.#{name}", "#{name}_raxml.info") if !File.exists?("#{name}_raxml.info")
   cleanup(tmpdir)
 end

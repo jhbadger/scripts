@@ -27,6 +27,7 @@ opts.input.each do |file|
   else
     name = File.basename(file)
   end
+  name = name[0..30]
   sheet = wb.add_worksheet(:name=> name)
   CSV.foreach(file, :col_sep=>sep) do |row|
     sheet.add_row(row)

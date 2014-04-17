@@ -1,0 +1,61 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input mclHmmCsv file", :required=>true, :type=>:string
+  opt :field, "field to use", :default => "Superfamily"
+end
+
+seen = Hash.new
+ann = Hash.new
+groups = nil
+CSV.foreach(opts.input, :headers=>true) do |row|
+  groups = row.headers.grep(/\([0-9]+\)/) if !groups
+  if row[opts.field]
+    sups = row[opts.field].split("||")
+    desc = row[opts.field + " desc"].to_s.split("||")
+    sups.each do |sup|
+      ann[sup] = desc.shift
+      groups.each do |group|
+        if row[group] == "X"
+          seen[sup] = Hash.new if !seen[sup]
+          seen[sup][group] = 0 if !seen[sup][group]
+          seen[sup][group] += 1
+        end
+      end
+    end
+  end
+end
+
+headers = [opts.field, opts.field + " desc"] + groups
+files = Hash.new
+groups.each do |group|
+  files[group] = File.new(group.split(" (").first+"_" + opts.field + "_only.csv", "w")
+  files[group].print headers.to_csv
+end
+
+print headers.to_csv
+seen.keys.sort.each do |sup|
+  count = Hash.new
+  row = [sup, ann[sup]]
+  groups.each do |group|
+    if seen[sup][group].nil?
+      row.push(nil)
+    else
+      row.push("X")
+      count[group] = true
+    end
+  end
+  print row.to_csv
+  if count.keys.size == 1
+    files[count.keys.first].print row.to_csv
+  end
+end
+
+files.values.each do |file|
+  file.close
+end
