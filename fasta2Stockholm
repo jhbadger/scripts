@@ -2,7 +2,7 @@
 
 require 'rubygems'
 require 'trollop'
-require 'bio'    
+require 'bio'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -19,7 +19,7 @@ def fasta2Stockholm(alignFile)
    aSize = 0
    nSize = 0
    Bio::FlatFile.new(Bio::FastaFormat, File.new(alignFile)).each do |seq|
-      name = headerName(seq.definition)
+      name = seq.definition.split(" ")[0]
       align[name] = seq.seq
       aSize = seq.seq.length
       nSize = name.size if (nSize < name.size)

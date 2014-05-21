@@ -1,4 +1,4 @@
-#!/usr/bin/env ruby 
+#!/usr/bin/env ruby
 
 require 'trollop'
 require 'bio'
@@ -36,15 +36,14 @@ File.new(opts.tbl).each do |line|
   end
 end
 
-
 STDERR << "Loading " << opts.input << "...\n"
-print ["Seq_Id","GO", "GO Description"].to_csv
+print ["Seq_Id","GO", "GO Description"].to_csv(:col_sep=>"\t")
 Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
   if pfams[seq.entry_id]
-    gos = pfams[seq.entry_id].collect{|x| map[x]}.flatten.sort.uniq
+    gos = pfams[seq.entry_id].collect{|x| map[x].to_a}.flatten.sort.uniq
   else
     gos = []
   end
   desc = gos.collect{|x| ann[x]}
-  print [seq.entry_id, gos.join("||"),desc.join("||")].to_csv
+  print [seq.entry_id, gos.join("||"),desc.join("||")].to_csv(:col_sep=>"\t")
 end
