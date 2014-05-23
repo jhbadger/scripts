@@ -9,10 +9,10 @@ $VERBOSE=nil
 ARGV.push("-h") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :command, "hmm search program", :default=>"hmm3scan", :type => :string
+  opt :command, "hmm search program", :default=>"hmmscan", :type => :string
   opt :cutoff, "cut-off score file (hmm score)", :type => :string
   opt :database, "HMM database to use", 
-      :default=>"/usr/local/db/HMM3_LIB/ALL_LIB.HMM", :type => :string
+      :default=>"/home/jbadger/EVOL/Pfam/Pfam-AB.hmm", :type => :string
   opt :input, "FASTA input file(s)", :required => true, :type => :strings
   opt :maxlocal, "maximum number of simultaneous local processes", :default=>4
   opt :options, "hmmscan options", :default => "--cut_tc -Z 15930"
@@ -43,7 +43,7 @@ opts.input.each do |file|
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
-  hmm = "#{opts.command} #{opts.options} 2>/dev/null "
+  hmm = "#{opts.command} #{opts.options} "
   hmm += "--tblout hmmscan_input.$SGE_TASK_ID.tbl "
   hmm += "--domtblout hmmscan_input.$SGE_TASK_ID.dom #{opts.database} "
   grid = Grid.new(hmm, opts.project, "4G", opts.queue)

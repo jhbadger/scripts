@@ -29,7 +29,7 @@ opts.input.each do |file|
   count = 0
   out = nil
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
-    if (count % opt.gridSize == 0)
+    if (count % opts.sizejob == 0)
       out.close if (!out.nil?)
       out = File.new(grid.next, "w")
     end 
