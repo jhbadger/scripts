@@ -45,9 +45,9 @@ if opts.input
       end
       iter.each do |row|
         if !headers
-          headers = row.dup
+          headers = row.collect{|x| x.gsub(".","_")}
           sql = "CREATE TABLE #{name} ("
-          row.each do |val|
+          headers.each do |val|
             val = val.gsub(" ","_").gsub("(),","")
             if val.index("-")
               val = '"' + val + '"'
