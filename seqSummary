@@ -75,7 +75,7 @@ opts.input.each do |file|
       printf("Minimum length: %d Maximum length: %d\n", min, max)
       printf("Average length: %d (%.1f megabases)\n", avg, avg / (count*1.0e6))
       printf("%% Ambiguous: %d%\n", amper)
-      printf("GC:     %d%%\n", gcper)
+      printf("GC:     %d bp %d%%\n", tgc, gcper)
     end
   end
 end
