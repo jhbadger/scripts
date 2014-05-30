@@ -11,6 +11,7 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "genbank file(s) to process", :type=>:strings, :required=>true
   opt :prefix, "prefix for merged file", :type=>:string, :default=>"all"
+  opt :locus, "include locus tag"
   opt :separate, "separate files for each accession"
   opt :flag, "phylodb category flag", :type=>:integer, :default=> 0
   opt :phylodb, "output tab files for uploading to phylodb"
@@ -195,6 +196,7 @@ opts.input.each do |gb|
         end
 	header += key + " <<" + product.to_s + ">> {" + organism + "}"
 	header += " " + taxon_id.to_s if taxon_id
+        header += " " + feature.to_hash["locus_tag"].first if opts.locus
   	header += " " + flag_string(opts.flag) if opts.flag
         pep.print Bio::Sequence::AA.new(translation).to_fasta(header, 60)
         cds.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
