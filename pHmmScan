@@ -43,42 +43,44 @@ opts.input.each do |file|
     STDERR.printf("File %s does not exist!\n", file)
     next
   end
-  hmm = "#{opts.command} #{opts.options} "
-  hmm += "--tblout hmmscan_input.$SGE_TASK_ID.tbl "
-  hmm += "--domtblout hmmscan_input.$SGE_TASK_ID.dom #{opts.database} "
-  grid = Grid.new(hmm, opts.project, "4G", opts.queue)
-  count = 0
-  out = nil
+  if !File.exists?(outName + ".tbl")
+    hmm = "#{opts.command} #{opts.options} "
+    hmm += "--tblout hmmscan_input.$SGE_TASK_ID.tbl "
+    hmm += "--domtblout hmmscan_input.$SGE_TASK_ID.dom #{opts.database} "
+    grid = Grid.new(hmm, opts.project, "16G", opts.queue)
+    count = 0
+    out = nil
 
-  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
-    if (count % opts.sizejob == 0)
-      out.close if (!out.nil?)
-      out = File.new(grid.next, "w")
-    end 
-    out.print seq
-    count += 1
-  end
-  out.close
-  grid.submit(sync = true, !opts.project, opts.verbose, opts.maxlocal)
-  out = File.new(outName + ".tbl", "w")
-  Dir.glob("*input*.tbl").each do |tbl|
-    File.new(tbl).each do |line|
-      next if line =~/^#/
-      target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
-      out.print line if !opts.cutoff || score.to_f >= cutScore[target]
+    Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
+      if (count % opts.sizejob == 0)
+        out.close if (!out.nil?)
+        out = File.new(grid.next, "w")
+      end 
+      out.print seq
+      count += 1
     end
-    File.unlink(tbl)
-  end
-  out.close
-  out = File.new(outName + ".dom", "w")
-  Dir.glob("*input*.dom").each do |dom|
-    File.new(dom).each do |line|
-      next if line =~/^#/
-      target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
-      out.print line if !opts.cutoff || score.to_f >= cutScore[target]
+    out.close
+    grid.submit(sync = true, !opts.project, opts.verbose, opts.maxlocal)
+    out = File.new(outName + ".tbl", "w")
+    Dir.glob("*input*.tbl").each do |tbl|
+      File.new(tbl).each do |line|
+        next if line =~/^#/
+        target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
+        out.print line if !opts.cutoff || score.to_f >= cutScore[target]
+      end
+      File.unlink(tbl)
     end
-    File.unlink(dom)
+    out.close
+    out = File.new(outName + ".dom", "w")
+    Dir.glob("*input*.dom").each do |dom|
+      File.new(dom).each do |line|
+        next if line =~/^#/
+        target, tacc, query, qacc, evalue, score = line.chomp.split(" ")
+        out.print line if !opts.cutoff || score.to_f >= cutScore[target]
+      end
+      File.unlink(dom)
+    end
+    out.close
+    grid.cleanup
   end
-  out.close
-  grid.cleanup
 end

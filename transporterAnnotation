@@ -1,32 +1,35 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
+# put path of this script on require path
+$:.unshift File.dirname(File.expand_path($0)) 
+
 begin
-	require 'trollop'
-	require 'sqlite3'
+  require 'trollop'
+  require 'sqlite3'
+  require 'ZFile'
 rescue LoadError # gems not installed
-	miss = $!.to_s.gsub(">","").split(" ").last
-	STDERR << "required gem \"" << miss << "\" is not installed\n"
-	STDERR << "you can install it by typing:\n"
-	STDERR << "gem install " << miss << "\n"
-	STDERR << "Note that you may have to be root to do this\n"
-	exit(1)
+  miss = $!.to_s.gsub(">","").split(" ").last
+  STDERR << "required gem \"" << miss << "\" is not installed\n"
+  STDERR << "you can install it by typing:\n"
+  STDERR << "gem install " << miss << "\n"
+  STDERR << "Note that you may have to be root to do this\n"
+  exit(1)
 end
 
 ARGV.push("-h") if ARGV.empty?
 
 opts = Trollop::options do
-	banner File.basename($0) << " version 2.3 08/06/2013"
-	opt :blast, "blast m8 tab file(s) with seguids", :required =>true, :type => :strings
-	opt :database, "transporter database file", :required => true, :type => :string
-	opt :full, "full (traditional qinghu) output" 
-	opt :pfam, "PFAM/TIGRFAM htab file(s) with seguids", :required=> true, :type => :strings
-	opt :tmhmm, "TMHMM output for file", :type => :string, :required => true
-	opt :score, "score threshold to report", :type => :integer, :default => 2
-	opt :output, "output to file (default: stdout)", :type=>:string
-	opt :tbl, "Use HMM3 tbl format for HMMs, not htab"
-	opt :btab, "use btab format rather than NCBI m8 for blast"
-	opt :verbose, "print status of pipeline to STDERR, include score info"
+  banner File.basename($0) << " version 2.4 05/30/2014"
+  opt :blast, "blast m8 tab file(s) with seguids", :required =>true, :type => :strings
+  opt :database, "transporter database file", :required => true, :type => :string
+  opt :full, "full (traditional qinghu) output" 
+  opt :pfam, "PFAM/TIGRFAM htab file(s) with seguids", :required=> true, :type => :strings
+  opt :tmhmm, "TMHMM output for file", :type => :string, :required => true
+  opt :score, "score threshold to report", :type => :integer, :default => 2
+  opt :output, "output to file (default: stdout)", :type=>:string
+  opt :tbl, "Use HMM3 tbl format for HMMs, not htab"
+  opt :btab, "use btab format rather than NCBI m8 for blast"
+  opt :verbose, "print status of pipeline to STDERR, include score info"
 end
 
 
@@ -35,14 +38,14 @@ end
 
 # load entire (small) table to hash with given column as key and columns as other fields
 def loadHash(db, table, key, columns)
-	data = Hash.new
-	db.query("SELECT #{key}, #{columns.join(',')} FROM #{table}").each do |row|
-		data[row.first] = Hash.new
-		columns.size.times do |i|
-			data[row.first][columns[i]] = row[i+1]
-		end
-	end
-	data
+  data = Hash.new
+  db.query("SELECT #{key}, #{columns.join(',')} FROM #{table}").each do |row|
+    data[row.first] = Hash.new
+    columns.size.times do |i|
+      data[row.first][columns[i]] = row[i+1]
+    end
+  end
+  data
 end
 
 db = SQLite3::Database.new(opts.database)
@@ -68,68 +71,68 @@ tTopology = Hash.new
 
 # parse tmhmm file
 STDERR << "Loading TMHMM output...\n" if opts.verbose
-File.new(opts.tmhmm).each do |line|
-	if line =~ /^\# ([^\s]+) Length: (\d+)\s*/
-		tLength[$1] = $2.to_i
-	elsif line =~ /^\# ([^\s]+) Number of predicted TMHs:\s+(\d+)\s*/
-		tPredHel[$1] = $2.to_i
+ZFile.new(opts.tmhmm).each do |line|
+  if line =~ /^\# ([^\s]+) Length: (\d+)\s*/
+    tLength[$1] = $2.to_i
+  elsif line =~ /^\# ([^\s]+) Number of predicted TMHs:\s+(\d+)\s*/
+    tPredHel[$1] = $2.to_i
   elsif line =~/^([^\s]+)\t[^\s]+\t(inside|outside|TMhelix)\t([^\n]+)/
-  	tTopology[$1]="" if !tTopology[$1]
-  	tTopology[$1] += $2[0].chr if $2 == "inside" || $2 == "outside"
-  	tTopology[$1] += $3.split(" ").join("-") if $2 == "TMhelix"
+    tTopology[$1]="" if !tTopology[$1]
+    tTopology[$1] += $2[0].chr if $2 == "inside" || $2 == "outside"
+    tTopology[$1] += $3.split(" ").join("-") if $2 == "TMhelix"
   end
 end
 
 # parse hmm hit info
 opts.pfam.each do |hmm|
-	STDERR << "Loading hmm hit file #{File.basename(hmm)}...\n" if opts.verbose
-	File.new(hmm).each do |line|
-		fields = line.chomp.split("\t")
-		if (opts.tbl)
-			hmm, d, name, d, evalue = line.split(" ")
-			evalue = evalue.to_f
-			prog = nil
-			date = nil
-		else
-			fields = line.chomp.split("\t")
-			hmm, date, d, prog, d, name = fields
-			hmm = hmm.split(".").first # remove version num
-			evalue = fields.last.to_f
-		end
-		if hmm_info[hmm] && evalue < 0.0001 
-			if !pfam[name] || pfamSig[name] > evalue
-				pfam[name] = hmm
-				pfamSig[name] = evalue
-			end
-		end
-	end
+  STDERR << "Loading hmm hit file #{File.basename(hmm)}...\n" if opts.verbose
+  ZFile.new(hmm).each do |line|
+    fields = line.chomp.split("\t")
+    if (opts.tbl)
+      hmm, d, name, d, evalue = line.split(" ")
+      evalue = evalue.to_f
+      prog = nil
+      date = nil
+    else
+      fields = line.chomp.split("\t")
+      hmm, date, d, prog, d, name = fields
+      hmm = hmm.split(".").first # remove version num
+      evalue = fields.last.to_f
+    end
+    if hmm_info[hmm] && evalue < 0.0001 
+      if !pfam[name] || pfamSig[name] > evalue
+        pfam[name] = hmm
+        pfamSig[name] = evalue
+      end
+    end
+  end
 end
 
 # parse blast hit info
 opts.blast.each do |blast|
-	STDERR << "Loading blast #{File.basename(blast)}...\n" if opts.verbose
-	File.new(blast).each do |line|
-		if (opts.btab)
-			name, d, d, d, d, seguid, qstart, qend, tstart, tend, d, d, d, score, d,
-      		d, d, d, d, evalue = line.chomp.split("\t")
-      		name = name.split(" ").first
-		else
-			name, seguid, percent, alen, gaps, qstart, qend, tstart, tend, n, evalue = line.chomp.split("\t")
-		end
-		evalue = evalue.to_f
-		if tc_seguid[seguid] && evalue < 1e-5 
-			if !tcBlast[name] || tcBlastSig[name] > evalue
-				tcBlast[name] = tc_seguid[seguid]["tc"]
-				tcBlastSig[name] = evalue
-			end
-		end
-		if cog_seguid[seguid] && evalue < 1e-5 
-			if !cogBlast[name] || cogBlastSig[name] > evalue
-				cogBlast[name] = cog_seguid[seguid]["cog"]
-				cogBlastSig[name] = evalue
-			end
-		end
-	end
+  STDERR << "Loading blast #{File.basename(blast)}...\n" if opts.verbose
+  ZFile.new(blast).each do |line|
+    if (opts.btab)
+      name, d, d, d, d, seguid, qstart, qend, tstart, tend, d, d, d, score, d,
+      d, d, d, d, evalue = line.chomp.split("\t")
+      name = name.split(" ").first
+    else
+      name, seguid, percent, alen, gaps, qstart, qend, tstart, tend, n, evalue = line.chomp.split("\t")
+    end
+    evalue = evalue.to_f
+    if tc_seguid[seguid] && evalue < 1e-5 
+      if !tcBlast[name] || tcBlastSig[name] > evalue
+        tcBlast[name] = tc_seguid[seguid]["tc"]
+        tcBlastSig[name] = evalue
+      end
+    end
+    if cog_seguid[seguid] && evalue < 1e-5 
+      if !cogBlast[name] || cogBlastSig[name] > evalue
+        cogBlast[name] = cog_seguid[seguid]["cog"]
+        cogBlastSig[name] = evalue
+      end
+    end
+  end
 end
 
 out = STDOUT
@@ -137,40 +140,40 @@ out = File.new(opts.output, "w") if opts.output
 
 allNames = (pfam.keys + tcBlast.keys + cogBlast.keys - [nil]).uniq # total set of peptides with any evidence
 allNames.sort.each do |name|
-	score = 0
-	score += 1 if cogBlast[name]
-	score += 1 if tcBlast[name]
-	score += 1 if pfam[name]
-	score += 1 if tPredHel[name].to_i > 2
-	score -= 2 if fp_cog[cogBlast[name]]
-	
-	if score >= opts.score
-		if (cog_info[cogBlast[name]])
-			cog = cog_info[cogBlast[name]]
-			tc, family, subfamily, substrate = cog["tc"], cog["family"], 
-				cog["subfamily"], cog["substrate"]
-		elsif (hmm_info[pfam[name]])
-			hmm = hmm_info[pfam[name]]
-			tc, family, subfamily, substrate = hmm["tc"], hmm["family"], 
-				hmm["subfamily"], hmm["substrate"]
-		elsif transporter[tcBlast[name]]
-			tinfo = transporter[tcBlast[name]]
-			tc, family, subfamily, substrate = tcBlast[name], tinfo["family"],
-			"", tinfo["substrate"]
-		else
-			next
-		end
-
-		if (opts.full)
-			row = [name, name.split("|").first, family, subfamily, substrate,
-				tc, pfam[name], pfamSig[name].to_s, cogBlast[name], 
-				cogBlastSig[name].to_s, tLength[name], "PredHel=" + tPredHel[name].to_i.to_s, 
-				"Topology="+tTopology[name].to_s, score]
-		else
-			family = family + " (" + subfamily + ")" if subfamily != "" && subfamily != family
-			row = [name, family, substrate, score]
-		end
-		out.print row.join("\t") + "\n"
-	end
+  score = 0
+  score += 1 if cogBlast[name]
+  score += 1 if tcBlast[name]
+  score += 1 if pfam[name]
+  score += 1 if tPredHel[name].to_i > 2
+  score -= 2 if fp_cog[cogBlast[name]]
+  
+  if score >= opts.score
+    if (cog_info[cogBlast[name]])
+      cog = cog_info[cogBlast[name]]
+      tc, family, subfamily, substrate = cog["tc"], cog["family"], 
+      cog["subfamily"], cog["substrate"]
+    elsif (hmm_info[pfam[name]])
+      hmm = hmm_info[pfam[name]]
+      tc, family, subfamily, substrate = hmm["tc"], hmm["family"], 
+      hmm["subfamily"], hmm["substrate"]
+    elsif transporter[tcBlast[name]]
+      tinfo = transporter[tcBlast[name]]
+      tc, family, subfamily, substrate = tcBlast[name], tinfo["family"],
+      "", tinfo["substrate"]
+    else
+      next
+    end
+    
+    if (opts.full)
+      row = [name, name.split("|").first, family, subfamily, substrate,
+             tc, pfam[name], pfamSig[name].to_s, cogBlast[name], 
+             cogBlastSig[name].to_s, tLength[name], "PredHel=" + tPredHel[name].to_i.to_s, 
+             "Topology="+tTopology[name].to_s, score]
+    else
+      family = family + " (" + subfamily + ")" if subfamily != "" && subfamily != family
+      row = [name, family, substrate, score]
+    end
+    out.print row.join("\t") + "\n"
+  end
 end
 out.close if out != STDOUT
