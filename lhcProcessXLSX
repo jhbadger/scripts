@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'simple_xlsx_reader'
+require 'axlsx'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input xlsx", :required=>true, :type=>:string
+  opt :hmm, "hmm file", :default=>ENV["HOME"] + "/lib/lhc/minifam"
+  opt :column, "column position to insert results", :required=>true, 
+  :type=>:integer
+  opt :output, "output xlsx file", :required=>true, :type=>:string
+  opt :pep, "peptides file", :required=>true, :type=>:string
+  opt :threshold, "hmm evalue threshold", :default=>1e-5
+end
+
+STDERR << "Parsing Spreadsheet...\n"
+doc = SimpleXlsxReader.open(opts.input)
+need = Hash.new
+doc.sheets[0].rows.each do |row|
+  need[row[0]] = true
+end
+
+STDERR << "Pulling Peptides...\n"
+tmp = File.new(opts.pep+".tmp", "w")
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.pep)).each do |seq|
+  if need[seq.entry_id]
+    tmp.print seq
+  end
+end
+tmp.close
+
+if !File.exists?(opts.pep+".tbl")
+  STDERR << "Running HMMs...\n"
+  system("hmmsearch -E#{opts.threshold} --domtblout #{opts.pep}.tbl #{opts.hmm} #{opts.pep}.tmp >/dev/null")
+end
+File.unlink(opts.pep+".tmp")
+
+STDERR << "Processing HMMs...\n"
+best = Hash.new
+beste = Hash.new
+
+File.new(opts.pep+".tbl").each do |line|
+  name, d, d, type, d, d, evalue = line.chomp.split(" ")
+  if need[name] && (!best[name] || beste[name] > evalue.to_f)
+    best[name] = type
+    beste[name] = evalue.to_f
+  end
+end
+
+STDERR << "Writing output...\n"
+
+proj = Axlsx::Package.new
+wb = proj.workbook
+sheet = wb.add_worksheet
+doc = SimpleXlsxReader.open(opts.input)
+first = true
+doc.sheets[0].rows.each do |row|
+  if first
+    row.insert(opts.column, "LHC HMM")
+    row.insert(opts.column + 1, "LHC HMM evalue")
+    first = false
+  elsif best[row.first]
+    row.insert(opts.column, best[row.first])
+    row.insert(opts.column + 1, beste[row.first])
+  else
+    row.insert(opts.column, "")
+    row.insert(opts.column + 1, "")
+  end
+  sheet.add_row(row)
+end
+proj.serialize(opts.output)
