@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input bed file", :required=>true, :type=>:string
+end
+
+starts = Hash.new
+stops = Hash.new
+contigs = Hash.new
+strands = Hash.new
+
+File.new(opts.input).each do |line|
+  contig, start, stop, exon, score, strand = line.chomp.split("\t")
+  num = exon.rindex("_")
+  gene = exon[0..num - 1]
+  if !starts[gene] || starts[gene] > start.to_i
+    starts[gene] = start.to_i
+  end
+  if !stops[gene] || stops[gene] < stop.to_i
+    stops[gene] = stop.to_i
+  end
+  contigs[gene] = contig if !contigs[gene]
+  strands[gene] = strand if !strands[gene]
+end
+
+printf ["Gene", "Contig","start", "stop", "strand"].join("\t") + "\n"
+strands.keys.sort.each do |key|
+  printf [key, contigs[key], starts[key], stops[key], strands[key]].join("\t") + "\n"
+end
