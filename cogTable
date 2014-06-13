@@ -1,0 +1,87 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'bio'
+require 'csv'
+
+categories = {
+"A"=>"RNA processing and modification",
+"B"=>"Chromatin Structure and dynamics",
+"C"=>"Energy production and conversion",
+"D"=>"Cell cycle control and mitosis",
+"E"=>"Amino Acid metabolis and transport",
+"F"=>"Nucleotide metabolism and transport",
+"G"=>"Carbohydrate metabolism and transport",
+"H"=>"Coenzyme metabolis",
+"I"=>"Lipid metabolism",
+"J"=>"Translation",
+"K"=>"Transcription",
+"L"=>"Replication and repair",
+"M"=>"Cell wall/membrane/envelop biogenesis",
+"N"=>"Cell motility",
+"O"=>"Post-translational modification, protein turnover, chaperone functions",
+"P"=>"Inorganic ion transport and metabolism",
+"Q"=>"Secondary Structure",
+"T"=>"Signal Transduction",
+"R"=>"General Functional Prediction only",
+"S"=>"Function Unknown",
+"X"=>"Unassigned to COG"}
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input cog.tbl", :required=>true, :type=>:string
+  opt :fasta, "input pep files", :required=>true, :type=>:string
+  opt :evalue, "evalue threshold", :default=>1e-5
+end
+
+bestHit = Hash.new
+bestEvalue = Hash.new
+bestCat = Hash.new
+bestDesc = Hash.new
+File.new(opts.input).each do |line|
+  if line !~/^#/
+    fields = line.chomp.split(" ", 24)
+    cog, orf, evalue, cat, desc = fields[0], fields[3], fields[6], fields[22],
+    fields[23]
+    evalue = evalue.to_f
+    next if evalue > opts.evalue
+    if !bestHit[orf] || bestEvalue[orf] > evalue
+      bestHit[orf] = cog
+      bestEvalue[orf] = evalue
+      bestCat[orf] = cat
+      bestDesc[orf] = desc
+    end
+  end
+end
+
+counts = Hash.new
+totals = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.fasta)).each do |seq|
+  if seq.definition =~/{([^}]*)}/
+    sp = $1
+    counts[sp] = Hash.new if !counts[sp]
+    totals[sp] = 0 if !totals[sp]
+    totals[sp] += 1
+    name = seq.entry_id
+    if bestHit[name]
+      bestCat[name].size.times do |i|
+        counts[sp][bestCat[name][i]] = 0 if ! counts[sp][bestCat[name][i]]
+        counts[sp][bestCat[name][i]] += 1
+      end
+    else
+      counts[sp]["X"] = 0 if !counts[sp]["X"]
+      counts[sp]["X"] += 1
+    end
+  end
+end
+
+print ([""]+counts.keys.sort.collect{|x| [x+" counts", x+" value"]}).flatten.to_csv
+categories.keys.sort.each do |key|
+  row = [key + " " + categories[key]]
+  counts.keys.sort.each do |sp|
+    row.push(counts[sp][key].to_i)
+    row.push((10000*counts[sp][key].to_i/totals[sp]/100.0).to_s+"%")
+  end
+  print row.to_csv
+end
