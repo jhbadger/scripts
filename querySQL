@@ -11,7 +11,9 @@ opts = Trollop::options do
   opt :user, "user (for mysql)", :default=>"jbadger", :type=>:string
   opt :password, "password (for mysql)", :default=>"plankton", :type=>:string
   opt :db, "database (or file for sqlite3)", :required=>:true, :type=>:string
+  opt :file, "query is file"
   opt :sql, "SQL query", :required=>:true, :type=>:string
+  opt :verbose, "verbose reporting"
 end
 
 if File.exists?(opts.db)
@@ -20,10 +22,19 @@ else
   db = Mysql::new(opts.host, opts.user, opts.password, opts.db)
 end
 
-results = db.query(opts.sql)
-if results
-  results.each do |row|
-    print row.to_a.join("\t") + "\n"
+if opts.file
+  sql = File.read(opts.sql).split(";")
+else
+  sql = opts.sql.split(";")
+end
+
+sql.each do |s|
+  STDERR.printf("%s\n", s) if opts.verbose
+  results = db.query(s)
+  if results
+    results.each do |row|
+      print row.to_a.join("\t") + "\n"
+    end
   end
 end
 db.close

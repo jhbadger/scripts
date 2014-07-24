@@ -50,6 +50,27 @@ def processBtab(blast, names, hitName, hitVal, evalue)
   end
 end
 
+def processM8(blast, names, hitName, hitVal, evalue)
+  names[blast] = []
+  oldQuery = nil
+  File.new(blast).each do |line|
+    query, subject, percentid, alen, mismatch, gaps, qstart, qend, sstart,
+    send, ev, score = line.chomp.split("\t")
+    ev = ev.to_f
+    if query != oldQuery 
+      names[blast].push(query)
+      if ev > evalue
+        hitName[query] = "xxx"
+        hitVal[query] = "xxx"
+      else
+        hitName[query] = subject
+        hitVal[query] = ev
+      end
+      oldQuery=query
+    end
+  end
+end
+
 blast1, blast2 = opts.input
 
 hitName = Hash.new
@@ -59,6 +80,9 @@ names = Hash.new
 if blast1 =~/btab/
   processBtab(blast1, names, hitName, hitVal, opts.evalue)
   processBtab(blast2, names, hitName, hitVal, opts.evalue)
+elsif blast1 =~/m8/
+  processM8(blast1, names, hitName, hitVal, opts.evalue)
+  processM8(blast2, names, hitName, hitVal, opts.evalue)
 else
   processBlast(blast1, names, hitName, hitVal, opts.evalue)
   processBlast(blast2, names, hitName, hitVal, opts.evalue)

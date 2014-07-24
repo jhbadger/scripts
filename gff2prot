@@ -11,22 +11,19 @@ opts = Trollop::options do
   opt :gff, "Input gtf/gff file\n", :required=>true, :type=>:string
   opt :code, "Genetic code to use", :default=>11, :type=>:integer
   opt :transcripts, "output transcripts, not proteins"
+  opt :ftarget, "Target to use (CDS or exon)", :default=>"CDS"
   opt :bed, "output a bed file"
 end
 
 
 exons = Hash.new
 strand = Hash.new
+ec = 1
 
 STDERR << "Parsing gff...\n"
 File.new(opts.gff).each do |line|
-  contig, source, feature, start, stop, score, strandl, frame, attribute = line.chomp.split("\t")
-  if attribute =~/transcript_id/
-    ftarget = "exon"
-  else
-    ftarget = "CDS"
-  end
-  if feature == ftarget
+  contig, source, feature, start, stop, score, strandl, frame, attribute = line.chomp.split("\t") 
+  if feature == opts.ftarget
     pid = nil
     ename = nil
     exons[contig] = Hash.new if !exons[contig]
@@ -34,7 +31,8 @@ File.new(opts.gff).each do |line|
     start, stop, frame = start.to_i, stop.to_i, frame.to_i
     if attribute.tr("\"","") =~/(proteinId |transcript_id |ID=)([^;]*);/
       ename = $2
-      ename = ename + ":exon:" + ename if !ename.index(":exon:")
+      ename = ename + ":exon:" + ec.to_s
+      ec += 1
       pid = ename.split(":exon").first
       exons[contig][pid] = Hash.new if !exons[contig][pid]
     else

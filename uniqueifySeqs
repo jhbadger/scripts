@@ -9,15 +9,21 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "name of fasta file(s)", :required=>true, :type=>:strings
   opt :dups, "don't print seqs, print dup.csv"
+  opt :keep, "keep headers"
 end
 
 
 names = Hash.new
+headers = Hash.new
 
 opts.input.each do |file|
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
     names[seq.seq] = [] if names[seq.seq].nil?
     names[seq.seq].push(seq.entry_id)
+    if opts.keep
+      headers[seq.seq] = [] if headers[seq.seq].nil?
+      headers[seq.seq].push(seq.definition)
+    end
   end
 end
 
@@ -33,7 +39,9 @@ names.keys.each do |seq|
       print [names[seq].join(" "), names[seq].size, seq].to_csv
     end
     print names[seq].join("\t") + "\n" if names[seq].size > 1
-  else 
+  elsif opts.keep
+    print seq.to_fasta(headers[seq].first, 60)
+  else
     print seq.to_fasta(name, 60)
   end
 end

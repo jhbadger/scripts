@@ -16,6 +16,8 @@ opts = Trollop::options do
   opt :minlen, "only report taxonomies with fewer than n nodes", :type=>:integer
   opt :maxlen, "only report taxonomies with more than n nodes", :type=>:integer
   opt :unused, "report unused nodes"
+  opt :valid, "only report valid ranks"
+  opt :len, "report taxonomy length"
   opt :verbose, "verbose messaging"
 end
 
@@ -46,14 +48,22 @@ elsif opts.nodes
   end
 end
 
-def recurseTaxonomy(tax, current, used, verbose, count = 0)
+def isValid?(rank)
+  ["kingdom","phylum","class","order","family","genus","species"].index(rank)
+end
+
+def recurseTaxonomy(tax, current, used, valid, verbose, count = 0)
   name, parent, rank = tax[current]
   used[current] = true
   if (current == 1 || name.nil? || name == "Bacteria" || name == "Eukaryota" || name == "Viruses" || name == "Archaea" || count > 50)
     [name]
   else
-    print [current, name, parent, rank, 1].join("\t") + "\n" if verbose
-    recurseTaxonomy(tax, parent, used, verbose, count + 1).to_a + [name]
+    if !valid || isValid?(rank)
+      print [current, name, parent, rank, 1].join("\t") + "\n" if verbose
+      recurseTaxonomy(tax, parent, used, valid, verbose, count + 1).to_a + [name]
+    else
+      recurseTaxonomy(tax, parent, used, valid, verbose, count + 1).to_a
+    end
   end
 end
 
@@ -69,7 +79,8 @@ else
 end
 
 ids.each do |id|
-  tx = recurseTaxonomy(tax, id.to_i, used, opts.verbose)
+  tx = recurseTaxonomy(tax, id.to_i, used, opts.valid, opts.verbose)
+  print tx.length.to_s + "\t" if opts.len
   print [id,tx.join(";")].join("\t") + "\n"
 end
 

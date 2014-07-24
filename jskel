@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "name of script to create", :required=>true, :type=>:string
+end
+
+
+if !File.exists?(opts.input)
+  script = DATA.read
+  out = File.new(opts.input, "w")
+  out.print script
+  out.close
+  system("chmod a+x #{opts.input}")
+else
+  STDERR << opts.input << " already exists. Not overwriting.\n"
+end
+
+__END__
+#!/usr/bin/env julia
+
+using ArgParse
+
+function parse_commandline()
+    s = ArgParseSettings()
+    
+    @add_arg_table s begin
+        "--flag1"
+        help = "an option without argument, i.e. a flag"
+        action = :store_true
+        "foo"
+        required = true
+        arg_type = String
+    end
+    
+    return parse_args(s)
+end
+
+function main()
+    parsed_args = parse_commandline()
+    println("Parsed args:")
+    for pa in parsed_args
+        println("  $(pa[1])  =>  $(pa[2])")
+    end
+end
+
+main()

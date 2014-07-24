@@ -130,6 +130,14 @@ opts.peptides.each do |pep1|
       x = x + "_%_" + pep1
       y = y + "_%_" + pep2
       if (orth == "yes")
+        if !score[x]
+          STDERR << "No entry for x=#{x} in #{vs}...\n"
+          STDERR << line
+        end
+        if !score[y]
+          STDERR << "No entry for y=#{y} in #{vs}...\n"
+          STDERR << line
+        end
         score[x][y] = -Math.log(p1.to_f + 1e-300)
         score[x][y] = 200 if score[x][y] > 200
         score[y][x] = -Math.log(p2.to_f + 1e-300)

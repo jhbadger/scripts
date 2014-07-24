@@ -13,6 +13,8 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input sequence file(s)", :required=>true, :type=>:strings
   opt :csv, "output as csv", :default=>false
+  opt :minimum, "exclude seqs less than length", :type=>:integer
+  opt :maximum, "exclude seqs greater than length", :type=>:integer
   opt :total, "run all sequences in each file as one", :default=>false
   opt :fastq, "use fastq format", :default=>false
 end
@@ -37,6 +39,8 @@ opts.input.each do |file|
   max = 0
   stream = ZFile.new(file)
   Bio::FlatFile.new(format, stream).each do |seq|
+    next if opts.minimum && seq.seq.length < opts.minimum
+    next if opts.maximum && seq.seq.length > opts.maximum
     gc =  seq.seq.count("GCgc")
     at =  seq.seq.count("ATUatu")
     ambig = seq.seq.count("NRYWSnryws")

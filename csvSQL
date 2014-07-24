@@ -60,14 +60,14 @@ if opts.input
         else
           vals = row[0..headers.length - 1]
           vals = vals.collect{ |x| "\"" + x.to_s + "\""}.join(",")
-          ins += "(#{vals}),"
+          ins += "(#{vals})," if vals
           if count % 400 == 0
             begin
               db.query("INSERT INTO #{name} VALUES #{ins.chop!}")
               STDERR << "Loading row #{count} into #{name}...\n" if opts.verbose
               ins = ""
             rescue
-              print ins + "\n"
+              print $!
               exit(1)
             end
           end
