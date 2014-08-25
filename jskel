@@ -40,11 +40,7 @@ function parse_commandline()
 end
 
 function main()
-    parsed_args = parse_commandline()
-    println("Parsed args:")
-    for pa in parsed_args
-        println("  $(pa[1])  =>  $(pa[2])")
-    end
+    opts = parse_commandline()
 end
 
 main()

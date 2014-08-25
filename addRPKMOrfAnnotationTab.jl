@@ -1,6 +1,7 @@
 #!/usr/bin/env julia
 
 using ArgParse
+using DataFrames
 
 function parse_commandline()
     s = ArgParseSettings()
@@ -37,15 +38,6 @@ function loadGeneLengths(bed)
     return geneLengths
 end
 
-function totalMapped(ann, samples)
-    println(STDERR, "Calculating total mapped reads...")
-    total = 0
-    for sample in samples
-        total += reduce(+, ann[sample])
-    end
-    return total
-end
-
 function rpkm(num, totalMapped, len)
     if num != nothing && len != nothing
         return int(1e11*float(num)/(totalMapped*len))/1e2
@@ -54,48 +46,49 @@ function rpkm(num, totalMapped, len)
     end
 end
 
-function addRPKM(ann, samples, lens, total)
+function addRPKM(ann, samples, lens)
     println(STDERR, "Calculating RPKMs...")
     withRPKM = copy(ann)
-    genes = withRPKM[:orf_id]
+    genes = withRPKM[1]
     for sample in samples
+        tot = reduce(+, ann[sample])
         rpkms = Float64[]
         for gene in genes
-            counts = first(withRPKM[withRPKM[:orf_id].==gene, sample])
-            rpkmVal = rpkm(counts, total, lens[gene])
+            counts = first(withRPKM[withRPKM[1].==gene, sample])
+            rpkmVal = rpkm(counts, tot, lens[gene])
             push!(rpkms, rpkmVal)
         end
-        rpkmName = symbol(string(sample)*"_RPKM")
+        rpkmName = symbol(replace(string(sample),"_Count","")*"_RPKM")
         withRPKM[rpkmName] = rpkms
     end
     return sort(withRPKM, cols=:Total_Counts, rev=true)
 end
 
 function addTotalSample(ann, samples)
-    genes = ann[:orf_id]
+    genes = ann[1]
     totalCounts = Int[]
     for gene in genes
         rowtot = 0
         for sample in samples
-            rowtot += first(ann[ann[:orf_id].==gene, sample])
+            rowtot += first(ann[ann[1].==gene, sample])
         end
         push!(totalCounts, rowtot)
     end
     ann[symbol("Total_Counts")] = totalCounts
 end
 
-using DataFrames
-
 function main()
     parsed_args = parse_commandline()
     println(STDERR, "Loading data...")
     ann = readtable(parsed_args["ann"], separator = '\t')
-    samples = names(ann)[34:length(names(ann))]
+    samples = filter(x->contains(string(x), "_Count"), names(ann))
+    if isempty(samples)
+        samples = names(ann)[34:end] # from John's "rap"
+    end
     addTotalSample(ann, samples)
     lens = loadGeneLengths(parsed_args["bed"])
-    total = totalMapped(ann, samples)
-    withRPKM = addRPKM(ann, samples, lens, total)
-    outFile = first(split(parsed_args["ann"],".tab"))*"_rpkm.tab"
+    withRPKM = addRPKM(ann, samples, lens)
+    outFile = replace(replace(parsed_args["ann"],".tab",""),".tsv","")*"_rpkm.tsv"
     writetable(outFile, withRPKM, separator = '\t')
 end
 

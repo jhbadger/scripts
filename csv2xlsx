@@ -11,12 +11,20 @@ opts = Trollop::options do
   opt :expression, "regular expression to process file names", :type=>:string
   opt :output, "output file name", :required=>true, :type=>:string
   opt :tab, "use tab for separator rather than comma"
+  opt :dropna, "Convert NA to empty field"
 end
 
 if opts.tab
   sep ="\t"
 else
   sep = ","
+end
+
+def dropna(row)
+  row.length.times do |i|
+    row[i] = "" if row[i]=="NA"
+  end
+  row
 end
 
 proj = Axlsx::Package.new
@@ -30,6 +38,7 @@ opts.input.each do |file|
   name = name[0..30]
   sheet = wb.add_worksheet(:name=> name)
   CSV.foreach(file, :col_sep=>sep) do |row|
+    row = dropna(row) if opts.dropna
     sheet.add_row(row)
   end
 end
