@@ -32,7 +32,11 @@ function cleanFrame(df)
     for i in 1:rows
         for j in 1:cols
             if isna(df[i,j])
+                if contains(string(names(df)[j]),"Total")
+                    df[i,j] = "0"
+                else
                     df[i,j] = ""
+                end
             end
         end
     end

@@ -49,13 +49,16 @@ end
 function addRPKM(ann, samples, lens)
     println(STDERR, "Calculating RPKMs...")
     withRPKM = copy(ann)
-    genes = withRPKM[1]
+    genes = dropna(withRPKM[1])
     for sample in samples
-        tot = reduce(+, ann[sample])
+        tot = reduce(+, dropna(ann[sample]))
         rpkms = Float64[]
         for gene in genes
-            counts = first(withRPKM[withRPKM[1].==gene, sample])
-            rpkmVal = rpkm(counts, tot, lens[gene])
+            count = first(withRPKM[withRPKM[1].==gene, sample])
+            if isna(count)
+                count = 0
+            end
+            rpkmVal = rpkm(count, tot, lens[string(gene)])
             push!(rpkms, rpkmVal)
         end
         rpkmName = symbol(replace(string(sample),"_Count","")*"_RPKM")
@@ -65,12 +68,15 @@ function addRPKM(ann, samples, lens)
 end
 
 function addTotalSample(ann, samples)
-    genes = ann[1]
     totalCounts = Int[]
+    genes = ann[1]
     for gene in genes
         rowtot = 0
         for sample in samples
-            rowtot += first(ann[ann[1].==gene, sample])
+            value = ann[ann[1].==gene, sample][1]
+            if !isna(value)
+                rowtot += value
+            end
         end
         push!(totalCounts, rowtot)
     end
@@ -78,17 +84,18 @@ function addTotalSample(ann, samples)
 end
 
 function main()
-    parsed_args = parse_commandline()
+    opts = parse_commandline()
     println(STDERR, "Loading data...")
-    ann = readtable(parsed_args["ann"], separator = '\t')
+    ann = readtable(opts["ann"], separator = '\t')
+    ann = ann[!isna(ann[1]),:] # remove lines without gene id
     samples = filter(x->contains(string(x), "_Count"), names(ann))
     if isempty(samples)
         samples = names(ann)[34:end] # from John's "rap"
     end
     addTotalSample(ann, samples)
-    lens = loadGeneLengths(parsed_args["bed"])
+    lens = loadGeneLengths(opts["bed"])
     withRPKM = addRPKM(ann, samples, lens)
-    outFile = replace(replace(parsed_args["ann"],".tab",""),".tsv","")*"_rpkm.tsv"
+    outFile = replace(replace(opts["ann"],".tab",""),".tsv","")*"_rpkm.tsv"
     writetable(outFile, withRPKM, separator = '\t')
 end
 
