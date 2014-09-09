@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input csv file", :required=>true, :type=>:string
+  opt :field, "search field (title, author, year)", :default=>"title"
+  opt :format, "format (pdf, epub, mobi, djvu)", :default=>"any"
+  opt :search, "search info", :type=>:string, :required=>true
+  opt :language, "language", :default=>"English"
+  opt :download, "print download script to file", :type=>:string
+end
+
+print ["Author", "Title", "Volume", "Edition", "Year", "Publisher", "Language", "Dewey", "LC", "Size (Mb)", "Format", "MD5"].to_csv
+
+subfile = false
+first = true
+
+if opts.download
+  down = File.new(opts.download, "w")
+else
+  down = nil
+end
+
+ZFile.new(opts.input).each do |row|
+  subfile = true if first && row=~/^Author/
+  first = false if first
+  begin
+    if row =~/#{opts.search}/i
+      row = CSV.parse(row.gsub('\"', '""')).first
+      rownum,title,volume,unknown,unknown,author,year,ed,publisher,unknown,pages,language,unknown,unknown,unknown,isbn,unknown,unknown,unknown,unknown,dewey,libcon,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,size,format,md5 = row
+      if subfile
+        author, title, volume, ed, year, publisher, language, dewey, libcon, suze, format, md5 = row
+      end
+      if format == opts.format || opts.format=="any"
+        if eval(opts.field) =~/#{opts.search}/i && (language =~/#{opts.language}/i || language == "any")
+          size = sprintf("%4.2f", size.to_f/1024/1024)
+          print [author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5].to_csv
+          if down
+            url = "http://libgen.org/get.php?md5=#{md5}"
+            outFile = author.gsub(" ","_")+"-"+title.gsub(" ","_")+"."+format
+            outFile.tr!("():/\,","")
+            down.printf("wget \"%s\" -O %s\n", url, outFile)
+          end
+        end
+      end
+    end
+  rescue
+    #STDERR << "Can't parse: " << row << "\n" 
+  end
+end
+
+down.close if down
