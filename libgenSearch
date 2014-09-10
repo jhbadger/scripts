@@ -15,7 +15,7 @@ opts = Trollop::options do
   opt :download, "print download script to file", :type=>:string
 end
 
-print ["Author", "Title", "Volume", "Edition", "Year", "Publisher", "Language", "Dewey", "LC", "Size (Mb)", "Format", "MD5"].to_csv
+print ["Author", "Title", "Volume", "Edition", "Year", "Publisher", "Language", "Dewey", "LC", "Size (Mb)", "Format", "MD5", "Wget"].to_csv
 
 subfile = false
 first = true
@@ -34,18 +34,17 @@ ZFile.new(opts.input).each do |row|
       row = CSV.parse(row.gsub('\"', '""')).first
       rownum,title,volume,unknown,unknown,author,year,ed,publisher,unknown,pages,language,unknown,unknown,unknown,isbn,unknown,unknown,unknown,unknown,dewey,libcon,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,size,format,md5 = row
       if subfile
-        author, title, volume, ed, year, publisher, language, dewey, libcon, suze, format, md5 = row
+        author, title, volume, ed, year, publisher, language, dewey, libcon, suze, format, md5, wget = row
       end
       if format == opts.format || opts.format=="any"
         if eval(opts.field) =~/#{opts.search}/i && (language =~/#{opts.language}/i || opts.language == "any")
           size = sprintf("%4.2f", size.to_f/1024/1024)
-          print [author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5].to_csv
-          if down
-            url = "http://libgen.org/get.php?md5=#{md5}"
-            outFile = author.gsub(" ","_")+"-"+title.gsub(" ","_")+"."+format
-            outFile.tr!("():/\,","")
-            down.printf("wget \"%s\" -O %s\n", url, outFile)
-          end
+          url = "http://libgen.org/get.php?md5=#{md5}"
+          outFile = author.gsub(" ","_")+"-"+title.gsub(" ","_")+"."+format
+          outFile.tr!("():/\,","")
+          wget = sprintf("wget \"%s\" -O %s", url, outFile)
+          down.printf("%s\n", wget) if down
+          print [author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5, wget].to_csv
         end
       end
     end
