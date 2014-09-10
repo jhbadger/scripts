@@ -41,7 +41,7 @@ ZFile.new(opts.input).each do |row|
           size = sprintf("%4.2f", size.to_f/1024/1024)
           url = "http://libgen.org/get.php?md5=#{md5}"
           outFile = author.gsub(" ","_")+"-"+title.gsub(" ","_")+"."+format
-          outFile.tr!("():/\,","")
+          outFile.tr!("\"'():/\,","")
           wget = sprintf("wget \"%s\" -O %s", url, outFile)
           down.printf("%s\n", wget) if down
           print [author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5, wget].to_csv
