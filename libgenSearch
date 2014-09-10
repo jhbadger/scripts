@@ -37,7 +37,7 @@ ZFile.new(opts.input).each do |row|
         author, title, volume, ed, year, publisher, language, dewey, libcon, suze, format, md5 = row
       end
       if format == opts.format || opts.format=="any"
-        if eval(opts.field) =~/#{opts.search}/i && (language =~/#{opts.language}/i || language == "any")
+        if eval(opts.field) =~/#{opts.search}/i && (language =~/#{opts.language}/i || opts.language == "any")
           size = sprintf("%4.2f", size.to_f/1024/1024)
           print [author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5].to_csv
           if down
