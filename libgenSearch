@@ -11,7 +11,7 @@ opts = Trollop::options do
   opt :field, "search field (title, author, year)", :default=>"title"
   opt :format, "format (pdf, epub, mobi, djvu)", :default=>"any"
   opt :search, "search info", :type=>:string, :required=>true
-  opt :language, "language", :default=>"English"
+  opt :language, "language", :default=>"any"
   opt :download, "print download script to file", :type=>:string
 end
 
@@ -49,7 +49,7 @@ ZFile.new(opts.input).each do |row|
         url = "http://libgen.org/get.php?md5=#{md5}"
         outFile = author.gsub(" ","_")+"-"+title.gsub(" ","_")+"."+format
         outFile.tr!("\"'():/\,","")
-        wget = sprintf("wget \"%s\" -O %s", url, outFile)
+        wget = sprintf("wget -c \"%s\" -O %s", url, outFile)
         down.printf("%s\n", wget) if down
         print [author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5, wget].to_csv
       end
