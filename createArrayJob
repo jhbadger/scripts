@@ -16,7 +16,7 @@ out.printf("#!/usr/bin/env ruby\n")
 out.printf("$VERBOSE = nil\n")
 out.printf("data = %s\n", opts.input)
 out.printf("num = ENV[\"SGE_TASK_ID\"].to_i - 1\n")
-out.printf("system(\"%s \#{%s\} > \#{File.basename(%s)\}.out\")\n", opts.cmd, "data[num]", "data[num]")
+out.printf("system(\"%s \#{%s\}\")\n", opts.cmd, "data[num]", "data[num]")
 out.close
 File.chmod(0755, opts.name + ".com")
 STDERR << "There are " << opts.input.size << " files...\n"

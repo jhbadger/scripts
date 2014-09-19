@@ -41,12 +41,6 @@ else
 end
 
 
-class Bio::Fastq
-  def to_s
-    Bio::Sequence::AA.new(seq).to_fasta(definition, 60)
-  end
-end
-
 printed = Hash.new
 ARGV.each do |fasta|
   Bio::FlatFile.new(opt.format, ZFile.new(fasta)).each do |seq|

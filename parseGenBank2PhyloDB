@@ -9,11 +9,13 @@ require 'digest/sha1'
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
+  opt :definition, "use definition as organism name"
   opt :input, "genbank file(s) to process", :type=>:strings, :required=>true
   opt :prefix, "prefix for merged file", :type=>:string, :default=>"all"
   opt :locus, "include locus tag"
+  opt :homd, "Process homd data"
   opt :separate, "separate files for each accession"
-  opt :flag, "phylodb category flag", :type=>:integer, :default=> 0
+  opt :flag, "phylodb category flag", :type=>:integer, :default=> nil
   opt :phylodb, "output tab files for uploading to phylodb"
   opt :seguid, "print seqguid in header"
 end
@@ -55,16 +57,25 @@ end
 
 
 # return sequence from genbank range
-def getSequence(seq, locations)
+def getSequence(seq, complement, locations)
   subseq = ""
   locations.each do |loc|
     if (loc.strand == 1)
-      subseq +=  seq[(loc.from - 1)..(loc.to - 1)]
+      s1 = loc.from - 1
+      s2 = loc.to - 1
+      s = seq
     elsif (loc.strand == -1)
-      subseq += Bio::Sequence::NA.new(seq[(loc.from - 1)..(loc.to - 1)]).complement.seq
+      s1 = seq.length - loc.from
+      s2 = seq.length - loc.to
+      s = complement
     else
       STDERR.printf("Error: I don't know how to handle #{locations}\n")
       exit(1)
+    end
+    s1, s2 = s2, s1 if s1 > s2
+    subseq += s[s1..s2]
+    if subseq.length == 0
+      STDERR << "Problem with " << loc << "\n"
     end
   end
   return subseq
@@ -98,6 +109,7 @@ opts.input.each do |gb|
     if (organism == "")
       organism = genome.definition.split(" ")[0].to_s + " " + genome.definition.split(" ")[1].to_s
     end
+    organism = genome.definition if opts.definition
     acc = genome.accession || ""
     acc = genome.locus.entry_id || "" if acc == ""
     if (genome.definition =~/Contig (scaffold[0-9]*)/)
@@ -105,6 +117,9 @@ opts.input.each do |gb|
     end
     if (acc.index("scaffold:")) # EnsEmbl format
       acc = acc.gsub("scaffold:","").split(":")[0..1].join("_")
+    end
+    if opts.homd
+      acc = genome.fetch("LOCUS").split(" ").first
     end
     orfname = "ORF0000"
     rnaname = "RNA0000"
@@ -116,7 +131,8 @@ opts.input.each do |gb|
     gene_location = nil
     gene_strand = nil
     product = ""
-    dna = genome.seq
+    dna = genome.seq.seq
+    complement = genome.seq.complement.seq
     next if (dna.length == 0) # skip empty records
     if (opts.separate)
       pep = File.new(acc + ".pep", "w")
@@ -180,7 +196,7 @@ opts.input.each do |gb|
             translation = qual.value
           end
         end
-        seq = getSequence(dna, feature.locations)
+        seq = getSequence(dna, complement, feature.locations)
         if (cds_name.nil?) # give it an orf name if none exist
           cds_name = orfname
           orfname.succ!
@@ -189,17 +205,23 @@ opts.input.each do |gb|
           translation = Bio::Sequence::NA.new(seq).translate.seq
         end
         key = cds_name + "-" + acc
+        
 	if (opts.seguid)
 	   header = translation.seguid + " "
 	else
 	   header= ""
         end
-	header += key + " <<" + product.to_s + ">> {" + organism + "}"
+        key = feature.to_hash["locus_tag"].first if opts.locus
+	header += key + " \<\<" + product.to_s + "\>\> {" + organism + "}"
 	header += " " + taxon_id.to_s if taxon_id
-        header += " " + feature.to_hash["locus_tag"].first if opts.locus
   	header += " " + flag_string(opts.flag) if opts.flag
-        pep.print Bio::Sequence::AA.new(translation).to_fasta(header, 60)
-        cds.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
+        header = key + " " + organism if opts.homd
+        if translation.length > 0 
+          pep.print Bio::Sequence::AA.new(translation).to_fasta(header, 60)
+        end
+        if seq.length > 0
+          cds.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
+        end
         if opts.phylodb
           protTbl.print [key, key.split("-").last, product.to_s, translation, 
             taxon_id.to_s, opts.flag.to_s, translation.seguid].join("\t") + "\n"
@@ -231,15 +253,15 @@ opts.input.each do |gb|
           locus = rnaname
           rnaname.succ!
         end
-	      key = locus.to_s + "-" + acc.to_s
-	      header = key + " " + product.to_s + " {" + organism + "}"
-	      seq = getSequence(dna, feature.locations)
-	      if (product =~/rRNA|ribosomal/i || locus =~/rRNA/i)
-	        out = rna
+        key = locus.to_s + "-" + acc.to_s
+        header = key + " " + product.to_s + " {" + organism + "}"
+        seq = getSequence(dna, complement, feature.locations)
+        if (product =~/rRNA|ribosomal/i || locus =~/rRNA/i)
+          out = rna
           if product =~/([0-9]* S)/
             product = $1
           end
-	        rrnas += 1
+          rrnas += 1
           if opts.phylodb
             rrnaTbl.print [key, key.split("-").last, product, seq.upcase].join("\t") + "\n"
           end
@@ -247,11 +269,11 @@ opts.input.each do |gb|
           out = trna
           trnas += 1
         end
-	      out.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
-	      ent.print key + "\t" + locus + "\t" + feature.locations.first.from.to_s +
-	      "\t" + feature.locations.first.to.to_s + "\t" + 
-	      feature.locations.first.strand.to_s + "\t" + product.to_s + "\n"
-	      product = ""
+        out.print Bio::Sequence::AA.new(seq).to_fasta(header, 60)
+        ent.print key + "\t" + locus + "\t" + feature.locations.first.from.to_s +
+          "\t" + feature.locations.first.to.to_s + "\t" + 
+          feature.locations.first.strand.to_s + "\t" + product.to_s + "\n"
+        product = ""
       end
     end
     taxonomy = genome.taxonomy.chop
