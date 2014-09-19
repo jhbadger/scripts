@@ -8,7 +8,7 @@ require 'ZFile'
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :input, "input csv file", :required=>true, :type=>:string
+  opt :input, "input csv file(s)", :required=>true, :type=>:strings
   opt :field, "search field (title, author, year)", :default=>"title"
   opt :format, "format (pdf, epub, mobi, djvu)", :default=>"any"
   opt :search, "search info", :type=>:string, :required=>true
@@ -27,32 +27,34 @@ else
   down = nil
 end
 
-ZFile.new(opts.input).each do |row|
-  subfile = true if first && row=~/^Author/
-  first = false if first
-  if row =~/#{opts.search}/i
-    begin
-      row = CSV.parse(row.gsub('\"', '""')).first
-    rescue
-      row = []
-    end
-    rownum,title,volume,unknown,unknown,author,year,ed,publisher,unknown,pages,language,unknown,unknown,unknown,isbn,unknown,unknown,unknown,unknown,dewey,libcon,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,size,format,md5 = row
-    if subfile
-      author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5, wget = row
-    end
-    if format == opts.format || opts.format=="any"
-      if eval(opts.field) =~/#{opts.search}/i && (language =~/#{opts.language}/i || opts.language == "any")
-        if !subfile
-          size = sprintf("%4.2f", size.to_f/1024/1024)
-        else
+opts.input.each do |csv|
+  ZFile.new(csv).each do |row|
+    subfile = true if first && row=~/^Author/
+    first = false if first
+    if row =~/#{opts.search}/i
+      begin
+        row = CSV.parse(row.gsub('\"', '""')).first
+      rescue
+        row = []
+      end
+      rownum,title,volume,unknown,unknown,author,year,ed,publisher,unknown,pages,language,unknown,unknown,unknown,isbn,unknown,unknown,unknown,unknown,dewey,libcon,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,unknown,size,format,md5 = row
+      if subfile
+        author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5, wget = row
+      end
+      if format == opts.format || opts.format=="any"
+        if eval(opts.field) =~/#{opts.search}/i && (language =~/#{opts.language}/i || opts.language == "any")
+          if !subfile
+            size = sprintf("%4.2f", size.to_f/1024/1024)
+          else
           size = size.to_f
+          end
+          url = "http://libgen.org/get.php?md5=#{md5}"
+          outFile = author.gsub(" ","_")+"-"+title.gsub(" ","_")+"."+format
+          outFile.tr!("\"'():/\,","")
+          wget = sprintf("wget -q -c \"%s\" -O %s", url, outFile)
+          down.printf("%s\n", wget) if down
+          print [author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5, wget].to_csv
         end
-        url = "http://libgen.org/get.php?md5=#{md5}"
-        outFile = author.gsub(" ","_")+"-"+title.gsub(" ","_")+"."+format
-        outFile.tr!("\"'():/\,","")
-        wget = sprintf("wget -c \"%s\" -O %s", url, outFile)
-        down.printf("%s\n", wget) if down
-        print [author, title, volume, ed, year, publisher, language, dewey, libcon, size, format, md5, wget].to_csv
       end
     end
   end

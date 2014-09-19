@@ -31,7 +31,7 @@ File.new(opts.gff).each do |line|
     start, stop, frame = start.to_i, stop.to_i, frame.to_i
     if attribute.tr("\"","") =~/(proteinId |transcript_id |ID=)([^;]*);/
       ename = $2
-      ename = ename + ":exon:" + ec.to_s
+      ename = ename + ":exon:" + ec.to_s if !ename.index(":exon:")
       ec += 1
       pid = ename.split(":exon").first
       exons[contig][pid] = Hash.new if !exons[contig][pid]

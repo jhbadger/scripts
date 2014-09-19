@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'newick'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file of taxa", :required=>true, :type=>:string
+  opt :tree, "tree file", :required=>true, :type=>:string
+  opt :rank, "classify file", :required=>true, :type=>:string
+end
+
+tree = NewickTree.fromFile(opts.tree)
+
+
+ranks = Hash.new
+scores = Hash.new
+File.new(opts.rank).each do |line|
+  if line.index(";")
+    name, strand, kingdom, kper, phylum, phyper, cl, clper, order, ordper, 
+    family, famper, genus, gper = line.tr("\"","").chomp.split(";")
+    ranks[name] = [kingdom, phylum, cl, order, family, genus]
+    scores[name] = [kper.to_i, phyper.to_i, clper.to_i, ordper.to_i,
+                    famper.to_i, gper.to_i]
+  end
+end
+
+def classify(names, ranks, scores)
+  tax = [""] * 6
+  tscores = [0] * 6
+  names.each do |name|
+    name = name.split("_").first if !ranks[name]
+    if ranks[name]
+      6.times do |i|
+        if scores[name][i] > tscores[i]
+          tscores[i] = scores[name][i]
+          tax[i] = ranks[name][i]
+        end
+      end
+    end
+  end
+  [tax, tscores]
+end
+
+File.new(opts.input).each do |line|
+  name = line.chomp
+  rels = [tree.relatives(name).flatten[1]] 
+  tax, tscores = classify(rels, ranks, scores)
+  printf("%s\t%s\t%s\n", name, tax.join(";"), tscores.join(";"))
+end
+
+
+
+
