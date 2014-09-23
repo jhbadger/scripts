@@ -13,7 +13,7 @@ opts = Trollop::options do
   opt :evalue, "evalue cutoff", :default=>0.1, :type=>:float
 end
 
-def processBlast(blast, names, hitName, hitVal, evalue)
+def processBlast(blast, names, hitName, hitVal, hitIdent, evalue)
   names[blast] = []
   Bio::Blast::Default::Report.open(blast, "r").each do |query|
     qname = query.query_def.split(" ").first
@@ -23,19 +23,20 @@ def processBlast(blast, names, hitName, hitVal, evalue)
       evalue = hit.evalue
       coverage = hit.overlap / (0.01 * query.query_len)
       identity = hit.identity / (0.01 * hit.overlap)
-      if evalue > evalue
+      if hit.evalue > evalue
         hitName[qname] = "xxx"
         hitVal[qname] = "xxx"
       else
         hitName[qname] = hname
         hitVal[qname] = hit.evalue
+        hitIdent[qname] = identity
       end
       break
     end
   end
 end
 
-def processBtab(blast, names, hitName, hitVal, evalue)
+def processBtab(blast, names, hitName, hitVal, hitIdent, evalue)
   names[blast] = []
   Btab.new(blast).each do |query|
     names[blast].push(query.name)
@@ -46,11 +47,12 @@ def processBtab(blast, names, hitName, hitVal, evalue)
     else
       hitName[query.name] = match.name
       hitVal[query.name] = match.evalue
+      hitIdent[queru.name] = match.identity
     end
   end
 end
 
-def processM8(blast, names, hitName, hitVal, evalue)
+def processM8(blast, names, hitName, hitVal, hitIdent, evalue)
   names[blast] = []
   oldQuery = nil
   File.new(blast).each do |line|
@@ -65,6 +67,7 @@ def processM8(blast, names, hitName, hitVal, evalue)
       else
         hitName[query] = subject
         hitVal[query] = ev
+        hitIdent[query] = percentid
       end
       oldQuery=query
     end
@@ -75,17 +78,18 @@ blast1, blast2 = opts.input
 
 hitName = Hash.new
 hitVal = Hash.new
+hitIdent = Hash.new
 names = Hash.new
 
 if blast1 =~/btab/
-  processBtab(blast1, names, hitName, hitVal, opts.evalue)
-  processBtab(blast2, names, hitName, hitVal, opts.evalue)
+  processBtab(blast1, names, hitName, hitVal, hitIdent, opts.evalue)
+  processBtab(blast2, names, hitName, hitVal, hitIdent, opts.evalue)
 elsif blast1 =~/m8/
-  processM8(blast1, names, hitName, hitVal, opts.evalue)
-  processM8(blast2, names, hitName, hitVal, opts.evalue)
+  processM8(blast1, names, hitName, hitVal, hitIdent, opts.evalue)
+  processM8(blast2, names, hitName, hitVal, hitIdent, opts.evalue)
 else
-  processBlast(blast1, names, hitName, hitVal, opts.evalue)
-  processBlast(blast2, names, hitName, hitVal, opts.evalue)
+  processBlast(blast1, names, hitName, hitVal, hitIdent, opts.evalue)
+  processBlast(blast2, names, hitName, hitVal, hitIdent, opts.evalue)
 end
 
 names[blast1].sort.each do |name|
@@ -94,6 +98,7 @@ names[blast1].sort.each do |name|
   else
     bestR = "no"
   end
-  printf("%s\t%s\t%s\t%s\t%s\n", name, hitName[name], hitVal[name],
-	 hitVal[hitName[name]], bestR)  
+  printf("%s\t%s\t%s\t%s\t%s\t%s\n", name, hitName[name], hitVal[name],
+	 hitVal[hitName[name]], bestR, hitIdent[hitName[name]])  
 end
+

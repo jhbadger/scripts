@@ -1,0 +1,11 @@
+#!/usr/bin/env ruby
+
+count = 0
+tot = 0
+
+STDIN.each do |line|
+  tot += line.to_f
+  count += 1
+end
+
+printf("%8.3f\n",tot/count)
