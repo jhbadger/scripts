@@ -119,7 +119,7 @@ end
 
 db.query(query).each do |row|
   seguid, seq_name, seq, ann, species, strain, taxon_id, flag, desc = row
-  species += " " + strain if strain.to_s != ""
+  species += " " + strain if strain.to_s != "" && !species.include?(strain.to_s)
   header = seguid + " " + seq_name + " \<\<" + ann.to_s + "\>\> {" + species + "} " + taxon_id.to_s
   header = seq_name + " \<\<" + ann.to_s + "\>\> {" + species + \
 "} " + taxon_id.to_s if opts.usename
