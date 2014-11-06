@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+$VERBOSE=nil
+VER = "1.2"
+DATE = "02/26/2014"
+
+require 'ostruct'
+require 'trollop'
+require 'yajl'
+require 'ZFile'
+
+$:.unshift File.dirname(File.expand_path($0)).gsub("bin", "lib") # include lib directory in load path
+
+require "apis_lib"
+require "Newick"
+require "ZFile"
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+   banner File.basename($0) << " " << VER << " " << DATE
+   opt :inputs, "read from file(s) rather than STDIN", :type => :strings, :required=>true  
+end
+
+opts.inputs.each do |input|
+  sname = input.split("_apis").first
+  JsonStreamer.new(ZFile.new(input)).each do |this|
+    tstring = this["tree"]
+    name = this["name"]
+    if name.index(":")
+      newname = name.gsub(":","")
+      tstring.gsub!(name, newname)
+      name = newname
+    end
+    if tstring && tstring != "NO_TREE"
+      tree = NewickTree.new(tstring)
+      rel = tree.relatives(name).first.first
+      print [sname, this["name"], rel].join("\t")+"\n"
+    end
+  end
+end
+
+
