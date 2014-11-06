@@ -89,32 +89,27 @@ inList += ")"
 
 
 if opts.transcripts
-  query = "SELECT p.seguid, p.name, t.seq, annotation, species, strain, c.taxon_id, p.protein_flag, description FROM proteins AS p "
-  query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
-  query += "LEFT JOIN transcripts AS t on t.name = p.name "
+  query = "SELECT p.seguid, p.name, t.seq, annotation, species, strain, c.taxon_id, p.protein_flag, description FROM proteins AS p, contigs as c, transcripts as t WHERE c.name = p.contig_name AND t.name = p.name "
 elsif opts.rna
-  query = "SELECT r.name, r.name, r.seq, annotation, species, strain, c.taxon_id, description FROM rrnas AS r "
-  query += "LEFT JOIN contigs AS c on c.name = r.contig_name "
+  query = "SELECT r.name, r.name, r.seq, annotation, species, strain, c.taxon_id, description FROM rrnas AS r, contigs AS c WHERE c.name = r.contig_name "
 elsif opts.molecule
-  query = "SELECT name, name, seq, form, species, strain, taxon_id, contig_flag, description FROM contigs AS c "
+  query = "SELECT name, name, seq, form, species, strain, taxon_id, contig_flag, description FROM contigs AS c WHERE c.name = c.name "
 elsif opts.seguid
-  query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag, description FROM proteins AS p "
-  query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
+  query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag, description FROM proteins AS p, contigs AS c WHERE c.name = p.contig_name "
 else
-  query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag, description FROM proteins AS p "
-  query += "LEFT JOIN contigs AS c on c.name = p.contig_name "
+  query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag, description FROM proteins AS p, contigs AS c WHERE c.name = p.contig_name "
 end
 
 if opts.species
-  query += "WHERE species IN #{inList}"
+  query += "AND species IN #{inList}"
 elsif opts.seguid
-  query += "WHERE seguid IN #{inList}"
+  query += "AND seguid IN #{inList}"
 elsif opts.contig
-  query += "WHERE c.name IN #{inList}"
+  query += "AND c.name IN #{inList}"
 elsif opts.taxonid || opts.taxonomy
-  query += "WHERE c.taxon_id IN #{inList}"
+  query += "AND c.taxon_id IN #{inList}"
 else
-  query += "WHERE p.name IN #{inList}"
+  query += "AND p.name IN #{inList}"
 end
 
 db.query(query).each do |row|
