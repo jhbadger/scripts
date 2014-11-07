@@ -78,16 +78,6 @@ if opts.taxonomy
   ids = newids.uniq
 end
 
-
-
-inList = "("
-ids.each do |id|
-  inList += "'" + id.quote + "',"
-end
-inList.chop!
-inList += ")"
-
-
 if opts.transcripts
   query = "SELECT p.seguid, p.name, t.seq, annotation, species, strain, c.taxon_id, p.protein_flag, description FROM proteins AS p, contigs as c, transcripts as t WHERE c.name = p.contig_name AND t.name = p.name "
 elsif opts.rna
@@ -100,30 +90,37 @@ else
   query = "SELECT p.seguid, p.name, p.seq, annotation, species, strain, c.taxon_id, p.protein_flag, description FROM proteins AS p, contigs AS c WHERE c.name = p.contig_name "
 end
 
-if opts.species
-  query += "AND species IN #{inList}"
-elsif opts.seguid
-  query += "AND seguid IN #{inList}"
-elsif opts.contig
-  query += "AND c.name IN #{inList}"
-elsif opts.taxonid || opts.taxonomy
-  query += "AND c.taxon_id IN #{inList}"
-else
-  query += "AND p.name IN #{inList}"
-end
+while !ids.empty?
+  q = query.dup
+  iset = ids.pop(10000)
+  inList = "('" + iset.join("','") + "')"
+  if opts.species
+    q += "AND species IN #{inList}"
+  elsif opts.seguid
+    q += "AND seguid IN #{inList}"
+  elsif opts.contig
+    q += "AND c.name IN #{inList}"
+  elsif opts.taxonid || opts.taxonomy
+    q += "AND c.taxon_id IN #{inList}"
+  else
+    q += "AND p.name IN #{inList}"
+  end
 
-db.query(query).each do |row|
-  seguid, seq_name, seq, ann, species, strain, taxon_id, flag, desc = row
-  species += " " + strain if strain.to_s != "" && !species.include?(strain.to_s)
-  header = seguid + " " + seq_name + " \<\<" + ann.to_s + "\>\> {" + species + "} " + taxon_id.to_s
-  header = seq_name + " \<\<" + ann.to_s + "\>\> {" + species + \
+  db.close
+  db = Mysql.new(opts.host, "access", "access", opts.database)
+  db.query(q).each do |row|
+    seguid, seq_name, seq, ann, species, strain, taxon_id, flag, desc = row
+    species += " " + strain if strain.to_s != "" && !species.include?(strain.to_s)
+    header = seguid + " " + seq_name + " \<\<" + ann.to_s + "\>\> {" + species + "} " + taxon_id.to_s
+    header = seq_name + " \<\<" + ann.to_s + "\>\> {" + species + \
 "} " + taxon_id.to_s if opts.usename
-  header += " " + desc if opts.desc
-  header += " " + flag_string(flag) if flag
-  begin
-    print seq.to_fasta(header, 60)
-  rescue
-    STDERR << "No sequence for " << seq_name << ". Skipping...\n"
+    header += " " + desc if opts.desc
+    header += " " + flag_string(flag) if flag
+    begin
+      print seq.to_fasta(header, 60)
+    rescue
+      STDERR << "No sequence for " << seq_name << ". Skipping...\n"
+    end
   end
 end
 
