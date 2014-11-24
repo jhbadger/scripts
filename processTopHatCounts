@@ -1,0 +1,100 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :pt2, "pt2 counts file(s)", :type=>:strings
+  opt :pt3, "pt3 counts file(s)", :type=>:strings
+  opt :ann, "pt2-pt3 ann", :type=>:string, :required=>true
+  opt :rpkm, "include rpkms"
+end
+
+def loadCounts(ver, files)
+  counts = Hash.new
+  lengths = Hash.new
+  files.each do |sample|
+    name = File.basename(sample).split("_counts").first
+    counts[name] = Hash.new
+    File.new(sample).each do |line|
+      gene, chr, start, stop, strand, len, count = line.chomp.split("\t")
+      if line !~/^#/ && gene != "Geneid"
+        counts[name][gene] = count.to_i
+        lengths[gene] = len.to_i
+      end
+    end
+  end
+  [counts, lengths]
+end
+
+def loadAnn(file)
+  lines = []
+  File.new(file).each do |line|
+    lines.push(line.chomp)
+  end
+  lines
+end
+
+def calcRPKMs(counts, lens)
+  rpkms = Hash.new
+  counts.keys.each do |sample|
+    totalReads = counts[sample].values.reduce(:+) / 1e6
+    rpkms[sample] = Hash.new
+    counts[sample].keys.each do |gene|
+      len = lens[gene]/1000.0
+      val = counts[sample][gene].to_f/(len*totalReads)
+      val = (val*100).to_i/100.0
+      rpkms[sample][gene] = val
+    end
+  end
+  rpkms
+end
+
+
+
+pt2 = Hash.new
+pt3 = Hash.new
+pt2rpkm = Hash.new
+pt3rpkm = Hash.new
+
+pt2, pt2len = loadCounts("pt2", opts.pt2) if opts.pt2
+pt3, pt3len  = loadCounts("pt3", opts.pt3) if opts.pt3
+ann = loadAnn(opts.ann)
+pt2rpkm = calcRPKMs(pt2, pt2len) if opts.rpkm && opts.pt2
+pt3rpkm = calcRPKMs(pt3, pt3len) if opts.rpkm && opts.pt3
+
+hlen = nil
+pt2maxpos = nil
+pt3maxpos = nil
+pt2maxrpkmpos = nil
+pt3maxrpkmpos = nil
+ann.each do |line|
+  out = line.chomp.split("\t")
+  hlen = out.length if !hlen
+  if line=~/^pt2/
+    out += (pt2.keys + ["pt2_max"]) if opts.pt2
+    out += (pt3.keys + ["pt3_max"]) if opts.pt3
+    out += (pt2.keys.collect{|x| x + "_rpkm"} + ["pt2_rpkm_max"]) if opts.pt2 && opts.rpkm
+    out += (pt3.keys.collect{|x| x + "_rpkm"} + ["pt3_rpkm_max"]) if opts.pt3 && opts.rpkm
+    pt2maxpos = out.index("pt2_max")
+    pt3maxpos = out.index("pt3_max")
+    pt2maxrpkmpos = out.index("pt2_rpkm_max")
+    pt3maxrpkmpos = out.index("pt3_rpkm_max")
+  else
+    pt2num, pt3num = line.split("\t")
+    out += [""]*(hlen-out.length) if out.length < hlen # pad out short lines
+    out += pt2.keys.collect{|x| pt2[x][pt2num]} if opts.pt2
+    out[pt2maxpos] = pt2.keys.collect{|x| pt2[x][pt2num]}.max if opts.pt2
+    out += pt3.keys.collect{|x| pt3[x][pt3num]} if opts.pt3
+    out[pt3maxpos] = pt3.keys.collect{|x| pt3[x][pt3num]}.max if opts.pt3
+    out += pt2rpkm.keys.collect{|x| pt2rpkm[x][pt2num]} if opts.pt2 && opts.rpkm
+    out[pt2maxrpkmpos] = pt2rpkm.keys.collect{|x| pt2rpkm[x][pt2num]}.max if  opts.pt2 && opts.rpkm
+    out += pt3rpkm.keys.collect{|x| pt3rpkm[x][pt3num]} if opts.pt3 && opts.rpkm
+    out[pt3maxrpkmpos] = pt3rpkm.keys.collect{|x| pt3rpkm[x][pt3num]}.max if  opts.pt3 && opts.rpkm
+  end
+  print out.join("\t") + "\n"
+end
+
+
+

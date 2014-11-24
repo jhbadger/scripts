@@ -15,10 +15,10 @@ opts = Trollop::options do
       :default=>"/home/jbadger/EVOL/Pfam/Pfam-AB.hmm", :type => :string
   opt :input, "FASTA input file(s)", :required => true, :type => :strings
   opt :maxlocal, "maximum number of simultaneous local processes", :default=>4
-  opt :options, "hmmscan options", :default => "--cut_tc -Z 15930"
   opt :project, "JCVI project number if not local", :type => :string
   opt :sizejob, "number of sequences per grid job", 
       :type=>:integer, :default=>10000
+  opt :trusted_cutoffs, "Use trusted cutoffs"
   opt :queue, "grid queue to use", :type=>:string, :default => "medium" 
 end
 
@@ -44,7 +44,8 @@ opts.input.each do |file|
     next
   end
   if !File.exists?(outName + ".tbl")
-    hmm = "#{opts.command} #{opts.options} "
+    hmm = opts.command + " "
+    hmm += "--cut_tc " if opts.trusted_cutoffs 
     hmm += "--tblout hmmscan_input.$SGE_TASK_ID.tbl "
     hmm += "--domtblout hmmscan_input.$SGE_TASK_ID.dom #{opts.database} "
     grid = Grid.new(hmm, opts.project, "16G", opts.queue)
