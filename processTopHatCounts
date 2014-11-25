@@ -16,7 +16,7 @@ def loadCounts(ver, files, order)
   counts = Hash.new
   lengths = Hash.new
   nicks = Hash.new
-  if !order
+  if order.empty?
     samples = files
   else
     samples = []
@@ -29,7 +29,7 @@ def loadCounts(ver, files, order)
     end
   end
   samples.each do |sample|
-    if order
+    if !order.empty?
       name = nicks[sample]
     else
       name = File.basename(sample).split("_counts").first
