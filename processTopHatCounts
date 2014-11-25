@@ -9,13 +9,31 @@ opts = Trollop::options do
   opt :pt3, "pt3 counts file(s)", :type=>:strings
   opt :ann, "pt2-pt3 ann", :type=>:string, :required=>true
   opt :rpkm, "include rpkms"
+  opt :sample_order, "use sample order file", :type=>:string
 end
 
-def loadCounts(ver, files)
+def loadCounts(ver, files, order)
   counts = Hash.new
   lengths = Hash.new
-  files.each do |sample|
-    name = File.basename(sample).split("_counts").first
+  nicks = Hash.new
+  if !order
+    samples = files
+  else
+    samples = []
+    order.keys.each do |nick|
+      match = files.grep(/#{nick}/)
+      if match
+        samples.push(match.first)
+        nicks[match.first] = nick
+      end
+    end
+  end
+  samples.each do |sample|
+    if order
+      name = nicks[sample]
+    else
+      name = File.basename(sample).split("_counts").first
+    end
     counts[name] = Hash.new
     File.new(sample).each do |line|
       gene, chr, start, stop, strand, len, count = line.chomp.split("\t")
@@ -51,15 +69,26 @@ def calcRPKMs(counts, lens)
   rpkms
 end
 
+def loadOrder(samples)
+  order = Hash.new
+  File.new(samples).each do |line|
+    name, nick = line.chomp.split("\t")
+    order[nick] = name
+  end
+  order
+end
 
 
 pt2 = Hash.new
 pt3 = Hash.new
 pt2rpkm = Hash.new
 pt3rpkm = Hash.new
+order = Hash.new
 
-pt2, pt2len = loadCounts("pt2", opts.pt2) if opts.pt2
-pt3, pt3len  = loadCounts("pt3", opts.pt3) if opts.pt3
+
+order = loadOrder(opts.sample_order) if opts.sample_order
+pt2, pt2len = loadCounts("pt2", opts.pt2, order) if opts.pt2
+pt3, pt3len  = loadCounts("pt3", opts.pt3, order) if opts.pt3
 ann = loadAnn(opts.ann)
 pt2rpkm = calcRPKMs(pt2, pt2len) if opts.rpkm && opts.pt2
 pt3rpkm = calcRPKMs(pt3, pt3len) if opts.rpkm && opts.pt3
@@ -72,7 +101,7 @@ pt3maxrpkmpos = nil
 ann.each do |line|
   out = line.chomp.split("\t")
   hlen = out.length if !hlen
-  if line=~/^pt2/
+  if line=~/^pt/
     out += (pt2.keys + ["pt2_max"]) if opts.pt2
     out += (pt3.keys + ["pt3_max"]) if opts.pt3
     out += (pt2.keys.collect{|x| x + "_rpkm"} + ["pt2_rpkm_max"]) if opts.pt2 && opts.rpkm
@@ -82,7 +111,13 @@ ann.each do |line|
     pt2maxrpkmpos = out.index("pt2_rpkm_max")
     pt3maxrpkmpos = out.index("pt3_rpkm_max")
   else
-    pt2num, pt3num = line.split("\t")
+    if opts.pt2 && opts.pt3
+      pt2num, pt3num = line.split("\t")
+    elsif opts.pt2 && ! opts.pt3
+      pt2num, pt3num = line.split("\t").first, nil
+    else
+      pt2num, pt3num = nil, line.split("\t").first
+    end
     out += [""]*(hlen-out.length) if out.length < hlen # pad out short lines
     out += pt2.keys.collect{|x| pt2[x][pt2num]} if opts.pt2
     out[pt2maxpos] = pt2.keys.collect{|x| pt2[x][pt2num]}.max if opts.pt2
