@@ -9,10 +9,21 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "fasta file", :required=>true, :type=>:string
   opt :pattern, "pattern to match", :required=>true, :type=>:string
+  opt :gaps, "ignore gaps"
+  opt :highlight, "highlight matches in lower case"
   opt :verse, "show sequences not matching motif"
 end
 
 pat = opts.pattern.tr("NnX",".").upcase
+if opts.gaps
+  npat = ""
+  pat.length.times do |i|
+    npat += pat[i]+"-*"
+  end
+  pat = npat
+end
+
+
 pat.gsub!("V","[G|A|C]")
 pat.gsub!("B","[G|T|C]")
 pat.gsub!("H","[A|T|C]")
@@ -30,6 +41,10 @@ Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
   if !found && opts.verse
     printf("%s\n", seq.entry_id)
   elsif found && !opts.verse
-    printf("%s\t%s\t%d\n", seq.entry_id, $1, found+1)
+    if !opts.highlight
+      printf("%s\t%s\t%d\n", seq.entry_id, $1, found+1)
+    else
+      print Bio::Sequence.new(s.gsub($1,$1.downcase)).to_fasta(seq.definition,60)
+    end
   end
 end
