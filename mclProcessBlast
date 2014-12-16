@@ -6,16 +6,19 @@ require 'ZFile'
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :alias, "alias file", :required=>true, :type=>:string
+  opt :alias, "alias file", :type=>:string
   opt :input, "blast M8 file", :required=>true, :type=>:string
   opt :fasta, "fasta file", :required=>true, :type=>:string
   opt :mcl, "run mcl after processing"
+  opt :threshold, "blast threshold", :type=>:float, :default=>1.0
 end
 
-ali = Hash.new
-File.new(opts.alias).each do |line|
-  num, tax, abbr = line.chomp.split("\t")
-  ali[num.to_i] = abbr
+if opts.ali
+  ali = Hash.new
+  File.new(opts.alias).each do |line|
+    num, tax, abbr = line.chomp.split("\t")
+    ali[num.to_i] = abbr
+  end
 end
 
 STDERR << "Processing Fasta...\n"
@@ -26,11 +29,15 @@ ZFile.new(opts.fasta).each do |line|
     name = $1
     species[name] = []
     num = line.split(" ")[-2].to_i
-    if ali[num]      
-      species[name].push(ali[num])
+    if opts.ali
+      if ali[num]      
+        species[name].push(ali[num])
+      else
+        STDERR << "Missing alias for " << seq.definition << "\n"
+        exit(1)
+      end
     else
-      STDERR << "Missing alias for " << seq.definition << "\n"
-      exit(1)
+      species[name] = [name]
     end
   end
 end
@@ -42,8 +49,9 @@ ZFile.new(opts.input).each do |line|
   fields = line.chomp.split("\t")
   q = fields[0]
   s = fields[1]
-  score = fields[11] 
-  if score
+  score = fields[11]
+  evalue = fields[10].to_f
+  if score && evalue <= opts.threshold
     score = score.to_f
     scores[q] = Hash.new if !scores[q]
     scores[q][s] = score if !scores[q][s] || score > scores[q][s]
@@ -61,7 +69,11 @@ scores.keys.each do |q|
     scores[q].keys.each do |s|
       species[s].each do |ssp|
         ratio = scores[q][s]/maxScore[q]
-        out.printf("%s|%s\t%s|%s\t%8.4f\n", qsp, q, ssp, s, ratio)
+        if opts.ali
+          out.printf("%s|%s\t%s|%s\t%8.4f\n", qsp, q, ssp, s, ratio)
+        else
+          out.printf("%s\t%s\t%8.4f\n", q, s, ratio)
+        end
       end
     end
   end
