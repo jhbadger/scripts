@@ -1,13 +1,14 @@
 #!/usr/bin/env ruby 
 
 require 'trollop'
+require 'ZFile'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :pt2, "pt2 counts file(s)", :type=>:strings
   opt :pt3, "pt3 counts file(s)", :type=>:strings
-  opt :ann, "pt2-pt3 ann", :type=>:string, :required=>true
+  opt :ann, "pt2-pt3 ann", :type=>:string, :default=>"/usr/local/projects/PLANKTON/illumina_aallen/jbadger/metatranscript/ann/pt2_pt3_ann.tsv"
   opt :rpkm, "include rpkms"
   opt :sample_order, "use sample order file", :type=>:string
 end
@@ -32,10 +33,10 @@ def loadCounts(ver, files, order)
     if !order.empty?
       name = nicks[sample]
     else
-      name = File.basename(sample).split("_counts").first
+      name = File.basename(sample).split("_counts").first.split(".cas").first.split("_contigs").first
     end
     counts[name] = Hash.new
-    File.new(sample).each do |line|
+    ZFile.new(sample).each do |line|
       gene, chr, start, stop, strand, len, count = line.chomp.split("\t")
       if line !~/^#/ && gene != "Geneid"
         counts[name][gene] = count.to_i
@@ -88,6 +89,7 @@ order = Hash.new
 
 order = loadOrder(opts.sample_order) if opts.sample_order
 pt2, pt2len = loadCounts("pt2", opts.pt2, order) if opts.pt2
+
 pt3, pt3len  = loadCounts("pt3", opts.pt3, order) if opts.pt3
 ann = loadAnn(opts.ann)
 pt2rpkm = calcRPKMs(pt2, pt2len) if opts.rpkm && opts.pt2
