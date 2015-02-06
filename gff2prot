@@ -2,6 +2,7 @@
 
 require 'rubygems'
 require 'bio'    
+require 'ZFile'
 require 'trollop'
 
 ARGV.push("--help") if ARGV.empty?
@@ -21,7 +22,7 @@ strand = Hash.new
 ec = 1
 
 STDERR << "Parsing gff...\n"
-File.new(opts.gff).each do |line|
+ZFile.new(opts.gff).each do |line|
   contig, source, feature, start, stop, score, strandl, frame, attribute = line.chomp.split("\t") 
   if feature == opts.ftarget
     pid = nil
@@ -53,7 +54,7 @@ end
 
 if !opts.bed
   STDERR << "Extracting sequence...\n"
-  Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
     exonList = exons[seq.entry_id]
     if exonList
       exonList.keys.sort.each do |pid|

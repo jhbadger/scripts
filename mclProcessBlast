@@ -82,6 +82,14 @@ out.close
 
 if opts.mcl
   STDERR << "Running clustering...\n"
-  clusters = File.basename(mcl, ".mcl") + ".clusters"
-  system("mcl #{mcl} --abc -o #{clusters}")
+  clusters = File.basename(mcl, ".mcl") + "_" + opts.threshold.to_s + ".tsv"
+  out = File.new(clusters,"w")
+  out.print ["Cluster Num", "Size", "Members"].join("\t")+"\n"
+  entry = "CLUSTER0001"
+  `mcl #{mcl} --abc -o -`.split("\n").each do |line|
+    members = line.chomp.split("\t").join("\t")
+    out.print [entry, members.split(" ").size, members].join("\t")+"\n"
+    entry.succ!
+  end
+  out.close
 end
