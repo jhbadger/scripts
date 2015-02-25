@@ -1,4 +1,5 @@
 #!/usr/bin/env ruby 
+# -*- coding: utf-8 -*-
 
 require 'trollop'
 
@@ -10,6 +11,10 @@ def required_programs(array)
         exit(1)
       end
   end
+end
+
+def pNum(page, name)
+  page.split(name)[1].split(".")[0]
 end
 
 required_programs ["pdf2htmlEX"]
@@ -31,6 +36,9 @@ opts.input.each do |pdf|
   File.unlink("fancy.min.css") if File.exists?("fancy.min.css")
   File.unlink("pdf2htmlEX.min.js") if File.exists?("pdf2htmlEX.min.js")
   File.unlink("compatibility.min.js") if File.exists?("compatibility.min.js")
+  File.unlink("#{name}.html") if File.exists?("#{name}.html")
+  File.unlink("#{name}.outline") if File.exists?("#{name}.outline")
+  File.unlink("pdf2htmlEX-64x64.png") if File.exists?("pdf2htmlEX-64x64.png")
   Dir.glob("*.page").each do |page|
     out = File.new(page.sub(".page",".xhtml"), "w")
     out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
@@ -63,10 +71,81 @@ opts.input.each do |pdf|
   if !File.exists?("META-INF/container.xml")
     out = File.new("META-INF/container.xml", "w")
     out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
-    out.printf("<display_options>\n<platform name=\"*\">\n")
-    out.printf("<option name=\"fixed-layout\">true</option>\n")
-    out.printf("<option name=\"specified-fonts\">true</option>\n")
-    out.printf("</platform>\n</display_options>\n")
+    out.printf("<container xmlns=\"urn:oasis:names:tc:opendocument:xmln")
+    out.printf("s:container\" version=\"1.0\">\n")
+    out.printf("<rootfiles><rootfile full-path=\"OEBPS/content.opf\" ")
+    out.printf("media-type=\"application/oebps-package+xml\"/>\n")
+    out.printf("</rootfiles>\n</container>")
     out.close
   end
+  if !File.exists?("OEBPS/content.opf")
+    out = File.new("OEBPS/content.opf", "w")
+    out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
+    out.printf("<package xmlns=\"http://www.idpf.org/2007/opf\"\n")
+    out.printf("prefix=\"rendition: http://www.idpf.org/vocab/rendition/#\"")
+    out.printf(" unique-identifier=\"pub-id\" version=\"3.0\">\n")
+    out.printf("<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n")
+    out.printf("<dc:identifier id=\"pub-id\">123456789</dc:identifier>\n")
+    out.printf("<dc:title>The Best Book in the World</dc:title>\n")
+    out.printf("<dc:creator>John Doe</dc:creator>\n")
+    out.printf("<dc:publisher>Big Bang Editions</dc:publisher>\n")
+    out.printf("<dc:language>en</dc:language>\n")
+    out.printf("<dc:description>This book is great.</dc:description>\n")
+    out.printf("</metadata>\n")
+    out.printf("<manifest>\n")
+    pages = Dir.glob("*.xhtml").sort{|a,b| pNum(a, name).to_i<=>pNum(b, name).to_i}
+    pages.each do |page|
+      out.printf("<item id=\"page%d\" href=\"%s\" media-type=\"%s\"/>\n",
+                 pNum(page, name), page, "application/xhtml+xml")
+    end
+    images = Dir.glob("*.jpg").sort{|a,b| pNum(a, "bg").to_i<=>pNum(b,"bg").to_i}
+    images.each do |img|
+      out.printf("<item id=\"image-page%s\" href=\"%s\" media-type=\"%s\"/>\n",
+                 pNum(img, "bg"), img, "image/jpeg")
+    end
+    fonts = Dir.glob("*.woff").sort{|a,b| pNum(a, "f").to_i<=>pNum(b,"f").to_i}
+    fonts.each do |font|
+      out.printf("<item id=\"font%s\" href=\"%s\" media-type=\"%s\"/>\n",
+                 pNum(font, "f"), font, "application/font-woff")
+    end
+    out.printf("<item id=\"%s\" href=\"%s\" media-type=\"%s\"/>\n",
+                 "base-min.css", "base-min-css", "text/css")
+    out.printf("<item id=\"%s.css\" href=\"%s.css\" media-type=\"%s\"/>\n",
+                 name, name, "text/css")
+    out.printf("</manifest>\n")
+    out.printf("<spine>\n")
+    count = 1
+    pages = Dir.glob("*.xhtml").sort{|a,b| pNum(a, name).to_i<=>pNum(b, name).to_i}
+    pages.each do |page|
+      num = pNum(page, name).to_i
+      if count % 2 == 1
+        out.printf("<itemref idref=\"page%s\" properties=\"%s\"/>\n",
+                 pNum(page, name), "page-spread-right")
+      else
+        out.printf("<itemref idref=\"page%s\" properties=\"%s\"/>\n",
+                 pNum(page, name), "page-spread-left")
+      end
+      
+      count += 1
+    end
+    out.printf("</spine>\n")
+    out.printf("</package>\n")
+    out.close
+  end
+  Dir.glob("*.xhtml").each do |xhtml|
+    File.rename(xhtml,"OEBPS/"+xhtml)
+  end
+  Dir.glob("*.jpg").each do |jpg|
+    File.rename(jpg,"OEBPS/"+jpg)
+  end
+  Dir.glob("*.woff").each do |font|
+    File.rename(font,"OEBPS/"+font)
+  end
+  Dir.glob("*.css").each do |css|
+    File.rename(css,"OEBPS/"+css)
+  end
+  system("zip -X -0 #{name}.zip mimetype")
+  system("zip -X -0 #{name}.zip -r META-INF OEBPS -x mimetype")
+  system("rm -rf mimetype META-INF OEBPS")
+  File.rename(name+".zip", name+".epub")
 end
