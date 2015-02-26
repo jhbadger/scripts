@@ -22,130 +22,148 @@ required_programs ["pdf2htmlEX"]
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :input, "pdf file(s)", :required=>true, :type=>:strings
+  opt :input, "pdf file", :required=>true, :type=>:string
+  opt :title, "title", :default=>"My Title"
+  opt :author, "author", :default=>"John Doe"
+  opt :publisher, "publisher", :default=>"Acme Publishing"
+  opt :pubid, "pub id", :default=>"12345"
+  opt :lang, "language of book", :default=>"en"
+  opt :desc, "description", :default=>"This book is awesome."
 end
 
-opts.input.each do |pdf|
-  name = File.basename(pdf,".pdf").tr(" ():/\\","_")
-  cmd =  "pdf2htmlEX --embed-css 0 --embed-font 0 --embed-image 0 "
-  cmd += "--embed-javascript 0 --embed-outline 0 --split-pages 1 "
-  cmd += "--bg-format jpg --hdpi 150 --vdpi 150 --fit-width 1275 "
-  cmd += "--fit-height 1650 --css-filename #{name}.css "
-  cmd += "--correct-text-visibility 1 --no-drm 1 #{pdf}"
-  system(cmd) if !File.exists?(name+".css")
-  File.unlink("fancy.min.css") if File.exists?("fancy.min.css")
-  File.unlink("pdf2htmlEX.min.js") if File.exists?("pdf2htmlEX.min.js")
-  File.unlink("compatibility.min.js") if File.exists?("compatibility.min.js")
-  File.unlink("#{name}.html") if File.exists?("#{name}.html")
-  File.unlink("#{name}.outline") if File.exists?("#{name}.outline")
-  File.unlink("pdf2htmlEX-64x64.png") if File.exists?("pdf2htmlEX-64x64.png")
-  Dir.glob("*.page").each do |page|
-    out = File.new(page.sub(".page",".xhtml"), "w")
-    out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
-    out.printf("<html xmlns:epub=\"http://www.idpf.org/2007/ops\"\n")
-    out.printf("xmlns=\"http://www.w3.org/1999/xhtml\">\n")
-    out.printf("<head><meta charset=\"utf-8\"/>\n")
-    out.printf("<meta name=\"generator\" content=\"pdf2htmlEX\"/>\n")
-    out.printf("<link rel=\"stylesheet\" type=\"text/css\"\n")
-    out.printf("href=\"base.min.css\"/><link rel=\"stylesheet\"\n")
-    out.printf("type=\"text/css\" href=\"#{name}.css\"/>\n")
-    out.printf("<meta name=\"viewport\" ")
-    out.printf("content=\"width=1275, height=1650\"/>\n")
-    out.printf("<title></title></head><body><div id=\"page-container\">\n")
-    File.new(page).each do |line|
-      out.print(line)
-    end
-    out.printf("</div>\n")
-    out.printf("</body>\n")
-    out.printf("</html>\n")
-    out.close
-    File.unlink(page)
+name = File.basename(opts.input,".pdf").tr(" ():/\\","_")
+cmd =  "pdf2htmlEX --embed-css 0 --embed-font 0 --embed-image 0 "
+cmd += "--embed-javascript 0 --embed-outline 0 --split-pages 1 "
+cmd += "--bg-format jpg --hdpi 150 --vdpi 150 --fit-width 612 "
+cmd += "--fit-height 792 --css-filename #{name}.css "
+cmd += "--correct-text-visibility 1 --no-drm 1 #{opts.input}"
+system(cmd) if !File.exists?(name+".css")
+File.unlink("fancy.min.css") if File.exists?("fancy.min.css")
+File.unlink("pdf2htmlEX.min.js") if File.exists?("pdf2htmlEX.min.js")
+File.unlink("compatibility.min.js") if File.exists?("compatibility.min.js")
+File.unlink("#{name}.html") if File.exists?("#{name}.html")
+File.unlink("#{name}.outline") if File.exists?("#{name}.outline")
+File.unlink("pdf2htmlEX-64x64.png") if File.exists?("pdf2htmlEX-64x64.png")
+Dir.glob("*.page").each do |page|
+  out = File.new(page.sub(".page",".xhtml"), "w")
+  out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
+  out.printf("<html xmlns:epub=\"http://www.idpf.org/2007/ops\"\n")
+  out.printf("xmlns=\"http://www.w3.org/1999/xhtml\">\n")
+  out.printf("<head><meta charset=\"utf-8\"/>\n")
+  out.printf("<meta name=\"generator\" content=\"pdf2htmlEX\"/>\n")
+  out.printf("<link rel=\"stylesheet\" type=\"text/css\"\n")
+  out.printf("href=\"base.min.css\"/><link rel=\"stylesheet\"\n")
+  out.printf("type=\"text/css\" href=\"#{name}.css\"/>\n")
+  out.printf("<meta name=\"viewport\" ")
+  out.printf("content=\"width=1275, height=1650\"/>\n")
+  out.printf("<title></title></head><body><div id=\"page-container\">\n")
+  File.new(page).each do |line|
+    out.print(line)
   end
-  if !File.exists?("mimetype")
-    out = File.new("mimetype","w")
-    out.printf("application/epub+zip")
-    out.close
-  end
-  Dir.mkdir("META-INF") if !Dir.exists?("META-INF")
-  Dir.mkdir("OEBPS") if !Dir.exists?("OEBPS")
-  if !File.exists?("META-INF/container.xml")
-    out = File.new("META-INF/container.xml", "w")
-    out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
-    out.printf("<container xmlns=\"urn:oasis:names:tc:opendocument:xmln")
-    out.printf("s:container\" version=\"1.0\">\n")
-    out.printf("<rootfiles><rootfile full-path=\"OEBPS/content.opf\" ")
-    out.printf("media-type=\"application/oebps-package+xml\"/>\n")
-    out.printf("</rootfiles>\n</container>")
-    out.close
-  end
-  if !File.exists?("OEBPS/content.opf")
-    out = File.new("OEBPS/content.opf", "w")
-    out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
-    out.printf("<package xmlns=\"http://www.idpf.org/2007/opf\"\n")
-    out.printf("prefix=\"rendition: http://www.idpf.org/vocab/rendition/#\"")
-    out.printf(" unique-identifier=\"pub-id\" version=\"3.0\">\n")
-    out.printf("<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n")
-    out.printf("<dc:identifier id=\"pub-id\">123456789</dc:identifier>\n")
-    out.printf("<dc:title>The Best Book in the World</dc:title>\n")
-    out.printf("<dc:creator>John Doe</dc:creator>\n")
-    out.printf("<dc:publisher>Big Bang Editions</dc:publisher>\n")
-    out.printf("<dc:language>en</dc:language>\n")
-    out.printf("<dc:description>This book is great.</dc:description>\n")
-    out.printf("</metadata>\n")
-    out.printf("<manifest>\n")
-    pages = Dir.glob("*.xhtml").sort{|a,b| pNum(a, name).to_i<=>pNum(b, name).to_i}
-    pages.each do |page|
-      out.printf("<item id=\"page%d\" href=\"%s\" media-type=\"%s\"/>\n",
-                 pNum(page, name), page, "application/xhtml+xml")
-    end
-    images = Dir.glob("*.jpg").sort{|a,b| pNum(a, "bg").to_i<=>pNum(b,"bg").to_i}
-    images.each do |img|
-      out.printf("<item id=\"image-page%s\" href=\"%s\" media-type=\"%s\"/>\n",
-                 pNum(img, "bg"), img, "image/jpeg")
-    end
-    fonts = Dir.glob("*.woff").sort{|a,b| pNum(a, "f").to_i<=>pNum(b,"f").to_i}
-    fonts.each do |font|
-      out.printf("<item id=\"font%s\" href=\"%s\" media-type=\"%s\"/>\n",
-                 pNum(font, "f"), font, "application/font-woff")
-    end
-    out.printf("<item id=\"%s\" href=\"%s\" media-type=\"%s\"/>\n",
-                 "base-min.css", "base-min-css", "text/css")
-    out.printf("<item id=\"%s.css\" href=\"%s.css\" media-type=\"%s\"/>\n",
-                 name, name, "text/css")
-    out.printf("</manifest>\n")
-    out.printf("<spine>\n")
-    count = 1
-    pages = Dir.glob("*.xhtml").sort{|a,b| pNum(a, name).to_i<=>pNum(b, name).to_i}
-    pages.each do |page|
-      num = pNum(page, name).to_i
-      if count % 2 == 1
-        out.printf("<itemref idref=\"page%s\" properties=\"%s\"/>\n",
-                 pNum(page, name), "page-spread-right")
-      else
-        out.printf("<itemref idref=\"page%s\" properties=\"%s\"/>\n",
-                 pNum(page, name), "page-spread-left")
-      end
-      
-      count += 1
-    end
-    out.printf("</spine>\n")
-    out.printf("</package>\n")
-    out.close
-  end
-  Dir.glob("*.xhtml").each do |xhtml|
-    File.rename(xhtml,"OEBPS/"+xhtml)
-  end
-  Dir.glob("*.jpg").each do |jpg|
-    File.rename(jpg,"OEBPS/"+jpg)
-  end
-  Dir.glob("*.woff").each do |font|
-    File.rename(font,"OEBPS/"+font)
-  end
-  Dir.glob("*.css").each do |css|
-    File.rename(css,"OEBPS/"+css)
-  end
-  system("zip -X -0 #{name}.zip mimetype")
-  system("zip -X -0 #{name}.zip -r META-INF OEBPS -x mimetype")
-  system("rm -rf mimetype META-INF OEBPS")
-  File.rename(name+".zip", name+".epub")
+  out.printf("</div>\n")
+  out.printf("</body>\n")
+  out.printf("</html>\n")
+  out.close
+  File.unlink(page)
 end
+if !File.exists?("mimetype")
+  out = File.new("mimetype","w")
+  out.printf("application/epub+zip")
+  out.close
+end
+Dir.mkdir("META-INF") if !Dir.exists?("META-INF")
+Dir.mkdir("OEBPS") if !Dir.exists?("OEBPS")
+if !File.exists?("META-INF/container.xml")
+  out = File.new("META-INF/container.xml", "w")
+  out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
+  out.printf("<container xmlns=\"urn:oasis:names:tc:opendocument:xmln")
+  out.printf("s:container\" version=\"1.0\">\n")
+  out.printf("<rootfiles><rootfile full-path=\"OEBPS/content.opf\" ")
+  out.printf("media-type=\"application/oebps-package+xml\"/>\n")
+  out.printf("</rootfiles>\n</container>")
+  out.close
+end
+if !File.exists?("OEBPS/content.opf")
+  out = File.new("OEBPS/content.opf", "w")
+  out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
+  out.printf("<package xmlns=\"http://www.idpf.org/2007/opf\"\n")
+  out.printf("prefix=\"rendition: http://www.idpf.org/vocab/rendition/#\"")
+  out.printf(" unique-identifier=\"pub-id\" version=\"3.0\">\n")
+  out.printf("<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n")
+  out.printf("<dc:identifier id=\"pub-id\">#{opts.pubid}</dc:identifier>\n")
+  out.printf("<dc:title>#{opts.title}</dc:title>\n")
+  out.printf("<dc:creator>#{opts.author}</dc:creator>\n")
+  out.printf("<dc:publisher>#{opts.publisher}</dc:publisher>\n")
+  out.printf("<dc:language>#{opts.lang}</dc:language>\n")
+  out.printf("<dc:description>#{opts.desc}</dc:description>\n")
+  out.printf("<meta property=\"rendition:layout\">reflowable</meta>\n")
+  out.printf("</metadata>\n")
+  out.printf("<manifest>\n")
+  pages = Dir.glob("*.xhtml").sort{|a,b| pNum(a, name).to_i<=>pNum(b, name).to_i}
+  pages.each do |page|
+    out.printf("<item id=\"page%d\" href=\"%s\" media-type=\"%s\"/>\n",
+               pNum(page, name), page, "application/xhtml+xml")
+  end
+  images = Dir.glob("*.jpg").sort{|a,b| pNum(a, "bg").to_i<=>pNum(b,"bg").to_i}
+  images.each do |img|
+    out.printf("<item id=\"image-page%s\" href=\"%s\" media-type=\"%s\"/>\n",
+               pNum(img, "bg"), img, "image/jpeg")
+  end
+  fonts = Dir.glob("*.woff").sort{|a,b| pNum(a, "f").to_i<=>pNum(b,"f").to_i}
+  fonts.each do |font|
+    out.printf("<item id=\"font%s\" href=\"%s\" media-type=\"%s\"/>\n",
+               pNum(font, "f"), font, "application/font-woff")
+  end
+  out.printf("<item id=\"%s\" href=\"%s\" media-type=\"%s\"/>\n",
+             "base.min.css", "base.min.css", "text/css")
+  out.printf("<item id=\"%s.css\" href=\"%s.css\" media-type=\"%s\"/>\n",
+             name, name, "text/css")
+  out.printf("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"%s\"",
+             "application/xhtml+xml")
+  out.printf(" properties=\"nav\"/>\n")
+  out.printf("</manifest>\n")
+  out.printf("<spine>\n")
+  count = 1
+  pages = Dir.glob("*.xhtml").sort{|a,b| pNum(a, name).to_i<=>pNum(b, name).to_i}
+  pages.each do |page|
+    num = pNum(page, name).to_i
+    if count % 2 == 1
+      out.printf("<itemref idref=\"page%s\" properties=\"%s\"/>\n",
+                 pNum(page, name), "page-spread-right")
+    else
+      out.printf("<itemref idref=\"page%s\" properties=\"%s\"/>\n",
+                 pNum(page, name), "page-spread-left")
+    end  
+    count += 1
+  end
+  out.printf("</spine>\n")
+  out.printf("</package>\n")
+  out.close
+end
+out = File.new("nav.xhtml","w")
+out.printf("<?xml version='1.0' encoding='UTF-8'?>\n")
+out.printf("<html xmlns:epub=\"http://www.idpf.org/2007/ops\"\n")
+out.printf("xmlns=\"http://www.w3.org/1999/xhtml\">\n")
+out.printf("<head>\n<title>#{opts.title}</title>\n</head>\n")
+out.printf("<body>\n")
+out.printf("</body>\n</html>\n")
+out.close
+system("sed -i -e \"s/\;unicode-bidi:bidi-override//g\" base.min.css")
+File.unlink("base.min.css-e") if File.exists?("base.min.css-e")
+Dir.glob("*.xhtml").each do |xhtml|
+  File.rename(xhtml,"OEBPS/"+xhtml)
+end
+Dir.glob("*.jpg").each do |jpg|
+  File.rename(jpg,"OEBPS/"+jpg)
+end
+Dir.glob("*.woff").each do |font|
+  File.rename(font,"OEBPS/"+font)
+end
+Dir.glob("*.css").each do |css|
+  File.rename(css,"OEBPS/"+css)
+end
+system("zip -X -0 #{name}.zip mimetype")
+system("zip -X -0 #{name}.zip -r META-INF OEBPS -x mimetype")
+system("rm -rf mimetype META-INF OEBPS")
+File.rename(name+".zip", name+".epub")
+
