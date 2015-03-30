@@ -1,0 +1,52 @@
+#!/usr/bin/env python
+
+import argparse
+import matplotlib.pyplot as plt
+from Bio import SeqIO
+import numpy as np
+import os
+
+def calc_mean_qual(fastq):
+    handle = open(fastq,"rU")
+    quals = dict()
+    for seq in SeqIO.parse(handle,"fastq"):
+        qual = seq.letter_annotations["phred_quality"]
+        for i, q in enumerate(qual):
+            if not i in quals:
+                quals[i] = []
+            quals[i].append(q)
+    handle.close()
+    mean = [0]*len(quals.keys())
+    for i in quals.keys():
+        mean[i] = np.mean(quals[i])
+    return mean
+
+
+def plot_mean(means):
+    min = 1000
+    max = 0
+    for name, mean in means.iteritems():
+        plt.plot(range(1,len(mean)+1), mean)
+        if max < np.max(mean):
+            max = np.max(mean)
+        if min > np.min(mean):
+            min = np.min(mean)
+    plt.legend(list(means.keys()), bbox_to_anchor=(1, 1),
+           bbox_transform=plt.gcf().transFigure)
+    plt.xlim(1,len(mean))
+    plt.ylim(min-10, max+15)
+    plt.xlabel("Position")
+    plt.ylabel("Quality")
+    plt.savefig("quality.pdf")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-i", "--input", nargs="*", required=True,
+                    help="input FASTQ file")
+args = parser.parse_args()
+
+means = dict()
+for inp in args.input:
+    name = os.path.basename(inp).split(".fastq")[0]
+    means[name] = calc_mean_qual(inp)
+
+plot_mean(means)
