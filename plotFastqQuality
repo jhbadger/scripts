@@ -4,10 +4,11 @@ import argparse
 import matplotlib.pyplot as plt
 from Bio import SeqIO
 import numpy as np
+import gzip
 import os
 
 def calc_mean_qual(fastq):
-    handle = open(fastq,"rU")
+    handle = gzip.open(fastq)
     quals = dict()
     for seq in SeqIO.parse(handle,"fastq"):
         qual = seq.letter_annotations["phred_quality"]

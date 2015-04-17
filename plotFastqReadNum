@@ -1,0 +1,40 @@
+#!/usr/bin/env python
+
+import argparse
+import matplotlib.pyplot as plt
+from Bio import SeqIO
+import numpy as np
+import collections
+import gzip
+import os
+
+def calc_readnum(fastq):
+    handle = gzip.open(fastq)
+    count = 0
+    for seq in SeqIO.parse(handle,"fastq"):
+        count += 1
+    handle.close()
+    return count
+
+
+def plot_reads(reads):
+    fig = plt.figure()
+    ax = plt.subplot(111)
+    width=0.8
+    ax.bar(range(len(reads.keys())), reads.values(), width=width)
+    ax.set_xticks(np.arange(len(reads.keys())) + width/2)
+    ax.set_xticklabels(reads.keys(), rotation=90)
+    plt.savefig("readcounts.pdf")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-i", "--input", nargs="*", required=True,
+                    help="input FASTQ file")
+args = parser.parse_args()
+
+reads = collections.OrderedDict()
+for inp in args.input:
+    name = os.path.basename(inp).split(".fastq")[0].split("_")[0]
+    print("Counting for %s from %s..." % (name, inp))
+    reads[name] = calc_readnum(inp)
+
+plot_reads(reads)

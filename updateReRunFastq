@@ -1,0 +1,21 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input fastqs", :required=>true, :type=>:strings
+end
+
+opts.input.grep(/r_/).each do |fq|
+  sample = fq.split("r_").first
+  if fq =~/R1/
+    match = opts.input.grep(/#{sample}_/).grep(/R1/)
+  else
+    match = opts.input.grep(/#{sample}_/).grep(/R2/)
+  end
+  printf("rm %s\n", match[0])
+  printf("mv %s %s\n", fq, fq.sub("r_","_"))
+end
+
