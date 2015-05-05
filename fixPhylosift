@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input phylosift tax_summary", :required=>true, :type=>:string
+  opt :fasta, "input fasta", :required=>true, :type=>:string
+end
+
+lines = Hash.new
+
+File.new(opts.input).each do |line|
+  if line !~/^#/
+    name, rest = line.chomp.split(" ", 2)
+    name = name.to_i
+    lines[name] = [] if !lines[name]
+    lines[name].push(rest)
+  end
+end
+
+count = 1
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.fasta)).each do |seq|
+  name = seq.entry_id
+  if lines[count]
+    lines[count].each do |line|
+      print name + " " + line + "\n"
+    end
+  end
+  count += 1
+end
