@@ -1,44 +1,21 @@
-#!/usr/bin/env ruby
+#!/usr/bin/env python
 
-require 'rubygems'
-require 'trollop'
-require 'csv'
+import argparse
+import pandas as pd
 
-ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
-  banner File.basename($0)
-  opt :acsv, "first csv file", :required=>true, :type=>:string
-  opt :bcsv, "second csv file", :required=>true, :type=>:string
-  opt :c1, "column in file 1", :required=>true, :type=>:integer
-  opt :c2, "column in file 2", :required=>true, :type=>:integer
-  opt :outer, "Do an outer join"
-end
+parser = argparse.ArgumentParser()
+parser.add_argument("-f", "--first", required=True, help="first table")
+parser.add_argument("-s", "--second", required=True, help="second table")
+parser.add_argument("-a", "--first_sep", default=",", help="separator on first table")
+parser.add_argument("-b", "--second_sep", default=",", help="separator on second table")
+parser.add_argument("-o", "--on", required=True, help="field to join on")
+parser.add_argument("-m", "--method", default="left", help="method to join, left, right, outer, inner")
+parser.add_argument("-w", "--write", required=True, help="output file")
 
-lines = Hash.new
-headers = nil
-asize = 0
-CSV.foreach(opts.acsv, :headers => true) do |line|
-  headers = line.headers if !headers
-  rowName = line.fields[opts.c1]
-  rowName = line.fields[opts.c1 + 1] if !rowName
-  lines[rowName] = line.fields if rowName
-  asize = line.fields.size if asize == 0
-end
+args = parser.parse_args()
 
+first = pd.read_csv(args.first, sep = args.first_sep)
+second = pd.read_csv(args.second, sep = args.second_sep)
 
-lines2 = Hash.new
-headers2 = nil
-CSV.foreach(opts.bcsv, :headers => true) do |line|
-  headers2 = line.headers if !headers2
-  rowName = line.fields[opts.c2]
-  if lines[rowName]
-    lines[rowName] += line.fields
-  elsif opts.outer
-    lines[rowName] = [nil]*asize + line.fields
-  end
-end
-
-print (headers + headers2).to_csv
-lines.keys.each do |key|
-  print lines[key].to_csv
-end
+joined = pd.merge(first, second, on = args.on, how = args.method, sort=False)
+joined.to_csv(args.write, index=False)
