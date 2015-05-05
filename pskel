@@ -1,0 +1,15 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+parser = argparse.ArgumentParser()
+parser.add_argument("-i", "--input", required=True,
+                    help="name of script to create")
+args = parser.parse_args()
+
+out = open(args.input, "w")
+
+out.write('#!/usr/bin/env python\n\nimport argparse\n\nparser = argparse.ArgumentParser()\nparser.add_argument("-i", "--input", required=True, help="input file")\n')
+out.write('args = parser.parse_args()\n')
+out.close
+os.system("chmod a+x %s" % args.input)
