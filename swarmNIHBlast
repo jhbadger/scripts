@@ -56,8 +56,9 @@ for file in files:
     full_file = os.path.abspath(file)
     out.write("%s -query %s -db %s -max_target_seqs %d "
               % (args.program, full_file, args.database, args.maxhits))
-    out.write("-evalue %e -num_threads %d -o %s\n"
-              % (args.evalue, args.threads, full_file+"."+args.program))
+    out.write('-evalue %e -num_threads %d -out %s -outfmt "%s"\n'
+              % (args.evalue, args.threads, full_file+"."+args.program,
+                 args.format))
 
 out.close()
 
