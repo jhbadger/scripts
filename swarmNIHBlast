@@ -18,6 +18,8 @@ parser.add_argument("-s", "--split", required=True, type=int,
                     help="number of files to split query into")
 parser.add_argument("-t", "--threads", type=int, default=4,
                     help="threads per job (default 4)")
+parser.add_argument("-g", "--gigabytes", type=int, default=16,
+                    help="gigabytes allocated per process (default 16)")
 args = parser.parse_args()
 
 def splitFasta(fasta, num):
@@ -62,5 +64,5 @@ for file in files:
 
 out.close()
 
-print("command to run is swarm -g 9 -t %d -f %s --module %s\n"
-      % (args.threads, args.query+".swarm", "blast/2.2.28+"))
+print("command to run is swarm -g %d -t %d -f %s --module %s\n"
+      % (args.gigabytes, args.threads, args.query+".swarm", "blast/2.2.28+"))
