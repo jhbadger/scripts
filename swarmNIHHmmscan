@@ -1,0 +1,60 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-q", "--query", required=True, help="input query file")
+parser.add_argument("-d", "--database", required=True, help = "blast database")
+parser.add_argument("-e", "--evalue", type=float, default=1e-6,
+                    help = "evalue (default 1e-6)")
+parser.add_argument("-s", "--split", required=True, type=int,
+                    help="number of files to split query into")
+parser.add_argument("-t", "--threads", type=int, default=4,
+                    help="threads per job (default 4)")
+parser.add_argument("-g", "--gigabytes", type=int, default=16,
+                    help="gigabytes allocated per process (default 16)")
+args = parser.parse_args()
+
+def splitFasta(fasta, num):
+    fp = open(fasta)
+    count = 0
+    files = []
+    for line in fp:
+        if line[0]==">":
+            count += 1
+    fp.close()
+    bin = count/num
+    print("Fasta contains %d sequences. So %d per file" % (count, bin))
+    fp = open(fasta)
+    count = 0
+    countBin = 0
+    out = None
+    for line in fp:
+        if line[0] == ">":
+            count += 1
+            if count % bin == 1:
+                countBin += 1
+                if out is not None:
+                    out.close()
+                outFile = fasta + ".%s" % countBin
+                out = open(outFile, "w")
+                files.append(outFile)
+        out.write(line)
+    if out is not None:
+        out.close()
+    fp.close()
+    return(files)
+
+files = splitFasta(args.query, args.split)
+out = open(args.query+".swarm", "w")
+for file in files:
+    full_file = os.path.abspath(file)
+    out.write("hmmscan -E %f --cpu %d --tblout %s %s %s\n" %
+              (args.evalue, args.threads, full_file+".tbl", args.database,
+               full_file))
+
+out.close()
+
+print("command to run is swarm --jobarray -g %d -t %d -f %s --module %s\n"
+      % (args.gigabytes, args.threads, args.query+".swarm", "hmmer/3.1b1"))
