@@ -1,0 +1,58 @@
+#!/usr/bin/env python
+
+import argparse
+import pandas as pd
+import string
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-i", "--input", required=True, help="input tax.summary file")
+parser.add_argument("-m", "--map", required=True, help="map from Amiran to greengenes")
+
+args = parser.parse_args()
+
+if ".csv" in args.input.lower():
+    sep = ","
+else:
+    sep = "\t"
+
+gmap = dict()
+fp = open(args.map)
+for line in fp:
+    sp, gg, rest = line.split("\t",2)
+    gmap[sp] = int(gg)
+fp.close()
+
+data = pd.read_csv(args.input, sep)
+if " taxon" not in data.columns.values:
+    data.index = data["Sample"]
+    data = data.transpose()
+else:
+    data = data.drop(['taxlevel', ' rankID', ' daughterlevels', ' total'], 
+                     axis=1)
+    data.index = data[' taxon']
+    data = data.drop(' taxon', axis=1)
+    
+
+notSpecies = filter(lambda x: "s__" not in x, data.index)
+data = data.drop(notSpecies)
+unnamed = filter(lambda x:'Unnamed' in x, data.columns)
+if len(unnamed) > 0:
+    data = data.drop(unnamed, axis=1)
+
+counts = dict()
+
+for row in data.iterrows():
+    name, items = row
+    num = 0
+    tid = gmap[name]
+    if tid not in counts:
+        counts[tid] = [0]*len(data.columns)
+    for item in items:
+        counts[tid][num] += item
+        num += 1
+
+print("#OTU ID\t" + string.join(data.columns,'\t'))
+for tid in counts.keys():
+    print(str(tid) + '\t' + '\t'.join(map(str,counts[tid])))
+
+
