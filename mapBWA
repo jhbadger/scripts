@@ -8,36 +8,23 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "reads to map", :required=>true, :type=>:strings
   opt :reference, "reference to map to", :required=>true, :type=>:string
-  opt :project, "grid project number", :type=>:string
-  opt :queue, "grid queue", :default=>"default", :type=>:string
 end
 
-makefile = ENV['HOME'] + "/lib/makefiles/bwa.makefile"
 bwa = `which bwa`.chomp
 
-if !File.exists?(makefile)
-	STDERR << makefile << " not found!\n"
-	exit(1)
-end
-
-reads = opts.input.dup
-while(!reads.empty?)
-	r1 = reads.shift
-	r2 = reads.shift
-	lib1 = r1.split("_R1").first
-	lib2 = r2.split("_R2").first
-	if lib1 != lib2
-		STDERR << r1 << " and " << r2 << " do not share a common library!\n"
-		exit(1)
-	else
-        cmd = "make -f #{makefile} GENOME=#{opts.reference} LIB=#{lib1} BWA=#{bwa}"
-        if (opts.project)
-			l = "memory=12G"
-			l = opts.queue + "," + l if opts.queue != "default"
-			qsub = "qsub -P #{opts.project} -l #{l} -cwd \"#{cmd}\""
-			print qsub + "\n"
-		else
-			print cmd + "\n"
-		end
-	end
+while(!opts.input.empty?)
+  r1 = opts.input.shift
+  r2 = opts.input.shift
+  s1 = r1+"_"+File.basename(opts.reference)+".sai"
+  s2 = r2+"_"+File.basename(opts.reference)+".sai"
+  sam = r1+".sam"
+  if !File.exists?(s1)
+    system("#{bwa} aln #{opts.reference} #{r1} > #{s1}")
+  end
+  if !File.exists?(s2)
+    system("#{bwa} aln #{opts.reference} #{r2} > #{s2}")
+  end
+  if !File.exists?(sam)
+    system("#{bwa} sampe #{opts.reference} #{s1} #{s2} #{r1} #{r2} > #{sam}")
+  end
 end
