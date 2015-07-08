@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input fastq file(s)", :required=>true, :type=>:strings
+  opt :window, "sliding window", :default=>5
+  opt :quality, "minimum quality", :default=>20
+  opt :len, "minimum length", :default=>28
+  opt :execute, "execute command rather than printing it" 	
+end
+
+trim = `which trimmomatic`.chomp
+
+if opts.execute
+  run = method(:system)
+else
+  def println(string)
+    print(string+"\n")
+  end
+  run = method(:println)
+end
+
+run.call("cd #{ENV["PWD"]}")
+
+files = opts.input.join(' ')
+outs = opts.input.collect{|x| x.sub(".f","_paired.f")+" "+x.sub(".f","_unpaired.f")}.join(" ")
+topts = "SLIDINGWINDOW:#{opts.window}:#{opts.quality} LEADING:#{opts.quality} "
+topts += "TRAILING:#{opts.quality} MINLEN:#{opts.len}" 
+cmd = "#{trim} PE #{files} #{outs} #{topts}"
+run.call(cmd)

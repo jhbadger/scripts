@@ -64,5 +64,5 @@ for file in files:
 
 out.close()
 
-print("command to run is swarm -g %d -t %d -f %s --module %s\n"
+print("command to run is swarm --jobarray -g %d -t %d -f %s --module %s\n"
       % (args.gigabytes, args.threads, args.query+".swarm", "blast/2.2.28+"))
