@@ -8,9 +8,21 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "reads to map", :required=>true, :type=>:strings
   opt :reference, "reference to map to", :required=>true, :type=>:string
+  opt :execute, "execute commands"	
 end
 
 bwa = `which bwa`.chomp
+
+if opts.execute
+  run = method(:system)
+else
+  def println(string)
+    print(string+"\n")
+  end
+  run = method(:println)
+end
+
+run.call("cd #{ENV["PWD"]}")
 
 while(!opts.input.empty?)
   r1 = opts.input.shift
@@ -19,12 +31,12 @@ while(!opts.input.empty?)
   s2 = r2+"_"+File.basename(opts.reference)+".sai"
   sam = r1+".sam"
   if !File.exists?(s1)
-    system("#{bwa} aln #{opts.reference} #{r1} > #{s1}")
+    run.call("#{bwa} aln #{opts.reference} #{r1} > #{s1}")
   end
   if !File.exists?(s2)
-    system("#{bwa} aln #{opts.reference} #{r2} > #{s2}")
+    run.call("#{bwa} aln #{opts.reference} #{r2} > #{s2}")
   end
   if !File.exists?(sam)
-    system("#{bwa} sampe #{opts.reference} #{s1} #{s2} #{r1} #{r2} > #{sam}")
+    run.call("#{bwa} sampe #{opts.reference} #{s1} #{s2} #{r1} #{r2} > #{sam}")
   end
 end
