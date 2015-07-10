@@ -32,8 +32,8 @@ else:
     data.index = data[' taxon']
     data = data.drop(' taxon', axis=1)
     
+notSpecies = filter(lambda x: "s__" not in str(x), data.index.tolist())
 
-notSpecies = filter(lambda x: "s__" not in x, data.index)
 data = data.drop(notSpecies)
 unnamed = filter(lambda x:'Unnamed' in x, data.columns)
 if len(unnamed) > 0:
@@ -41,18 +41,27 @@ if len(unnamed) > 0:
 
 counts = dict()
 
+tid = 0
+error = False
 for row in data.iterrows():
     name, items = row
     num = 0
-    tid = gmap[name]
+    if name in gmap:
+        tid = gmap[name]
+    else:
+        print("Missing: %s" % name)
+        error = True
+        next
+
     if tid not in counts:
         counts[tid] = [0]*len(data.columns)
     for item in items:
-        counts[tid][num] += item
+        counts[tid][num] += int(item)
         num += 1
 
-print("#OTU ID\t" + string.join(data.columns,'\t'))
-for tid in counts.keys():
-    print(str(tid) + '\t' + '\t'.join(map(str,counts[tid])))
+if not error:
+    print("#OTU ID\t" + string.join(data.columns,'\t'))
+    for tid in counts.keys():
+        print(str(tid) + '\t' + '\t'.join(map(str,counts[tid])))
 
 

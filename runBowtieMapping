@@ -70,18 +70,24 @@ if !File.exists?(unmapout) && File.exists?(humout)
     end
   end
   out = File.new(unmapout, "w")
-  seen = Hash.new
+  prev = ""
+  first = true
   File.new(humout).each do |line|
-    seq, l, hit, d, d, d, d, d, d, s = line.chomp.split("\t")
-    if hit == "*" && !phimap[seq]
-      if !seen[seq]
-        name = seq+"/1"
-      else
-        name = seq+"/2"
+    if line !~/^@/
+      seq, l, hit, d, d, d, d, d, d, s = line.chomp.split("\t")
+      if hit == "*" && !phimap[seq]
+        if prev==seq
+          out.printf("N"+s)
+        else
+          out.print("\n") if !first
+          out.printf(">%s\n%s",seq,s)
+          first = false
+        end
       end
-      out.printf(">%s\n%s\n",name,s)
-      seen[seq] = true
+      prev = seq
     end
   end
+  out.print("\n")
+  out.close
 end
 
