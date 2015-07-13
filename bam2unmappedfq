@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-i", "--input", required=True, help="input BAM (files)", nargs="*")
+args = parser.parse_args()
+
+for arg in args.input:
+    name = os.path.splitext(os.path.basename(arg))[0]
+    out = name + "_unmapped.fastq"
+    cmd = "samtools view -b -f 4 %s " % arg
+    cmd += " | samtools bam2fq - > %s" % out
+    if not os.path.exists(out):
+        os.system(cmd)

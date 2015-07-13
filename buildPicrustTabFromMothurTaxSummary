@@ -5,8 +5,10 @@ import pandas as pd
 import string
 
 parser = argparse.ArgumentParser()
+parser.add_argument("-c", action='store_true')
 parser.add_argument("-i", "--input", required=True, help="input tax.summary file")
 parser.add_argument("-m", "--map", required=True, help="map from Amiran to greengenes")
+
 
 args = parser.parse_args()
 
@@ -59,7 +61,7 @@ for row in data.iterrows():
         counts[tid][num] += int(item)
         num += 1
 
-if not error:
+if args.c or not error:
     print("#OTU ID\t" + string.join(data.columns,'\t'))
     for tid in counts.keys():
         print(str(tid) + '\t' + '\t'.join(map(str,counts[tid])))
