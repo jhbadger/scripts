@@ -6,15 +6,11 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input fastq file(s)", :required=>true, :type=>:strings
+  opt :paired, "fastq are paired"
   opt :reference, "bowtie reference", :required=>true, :type=>:string
-  opt :phix, "bowtie phix", :required=>true, :type=>:string
-  opt :window, "sliding window", :default=>5
-  opt :quality, "minimum quality", :default=>20
-  opt :len, "minimum length", :default=>28
   opt :execute, "execute command rather than printing it" 	
 end
 
-trim = File.expand_path(`which trimmomatic`.chomp)
 bowtie = File.expand_path(`which bowtie2`.chomp)
 
 if opts.execute
@@ -26,68 +22,21 @@ else
   run = method(:println)
 end
 
+printf("#!/bin/bash\n") if !opts.execute
+
 run.call("cd #{ENV["PWD"]}")
 
-files = opts.input.join(' ')
-outs = opts.input.collect{|x| x.sub(".f","_paired.f")+" "+x.sub(".f","_unpaired.f")}.join(" ")
-topts = "SLIDINGWINDOW:#{opts.window}:#{opts.quality} LEADING:#{opts.quality} "
-topts += "TRAILING:#{opts.quality} MINLEN:#{opts.len}" 
-cmd = "#{trim} PE #{files} #{outs} #{topts}"
-
-if !File.exists?(outs.split(" ").first)
-  run.call(cmd)
-end
-
-phix = File.expand_path(opts.phix)
-phiout = opts.input.grep(/_1/).first.split("_1").first+"_phix.sam"
-
-cmd = bowtie + " -x #{phix} -1 #{opts.input[0]} -2 #{opts.input[1]}"
-cmd += " > #{phiout}"
-
-
-if !File.exists?(phiout)
-  run.call(cmd)
-end
-
 reference = File.expand_path(opts.reference)
-humout = opts.input.grep(/_1/).first.split("_1").first+"_human.sam"
 
-cmd = bowtie + " -x #{reference} -1 #{opts.input[0]} -2 #{opts.input[1]}"
-cmd += " > #{humout}"
-
-if !File.exists?(humout)
-  run.call(cmd)
-end
-
-unmapout = opts.input.grep(/_1/).first.split("_1").first+"_nonhuman.fa"
-
-if !File.exists?(unmapout) && File.exists?(humout)
-  phimap = Hash.new
-  File.new(phiout).each do |line|
-    seq, l, hit  = line.chomp.split("\t")
-    if hit =~/^gi/
-      phimap[seq] = true
-    end
+while !opts.input.empty?
+  fq = opts.input.shift
+  if opts.paired
+    fq2 = opts.input.shift
+    cmd = bowtie + " -x #{reference} -1 #{fq} -2 #{fq2} > #{fq}.bam"
+  else
+    cmd = bowtie + " -x #{reference} -U #{fq} > #{fq}.bam"
   end
-  out = File.new(unmapout, "w")
-  prev = ""
-  first = true
-  File.new(humout).each do |line|
-    if line !~/^@/
-      seq, l, hit, d, d, d, d, d, d, s = line.chomp.split("\t")
-      if hit == "*" && !phimap[seq]
-        if prev==seq
-          out.printf("N"+s)
-        else
-          out.print("\n") if !first
-          out.printf(">%s\n%s",seq,s)
-          first = false
-        end
-      end
-      prev = seq
-    end
+  if !File.exists?(fq+".bam")
+    run.call(cmd)
   end
-  out.print("\n")
-  out.close
 end
-
