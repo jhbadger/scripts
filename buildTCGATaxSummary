@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+require 'sqlite3'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :metadata, "metadata.tsv", :required=>true, :type=>:string
+  opt :ncbi, "ncbi sqlite db", :required=>true, :type=>:string
+end
+
+db = SQLite3::Database.new(opts.ncbi)
+
+def recurseTax(tid, db, rows=[])
+  ranks = ["kingdom", "phylum", "class", "order", 
+           "family", "genus", "species"]
+  sql = "SELECT name, parent, rank FROM taxonomy WHERE taxon_id=#{tid}"
+  name, parent, rank = db.get_first_row(sql)
+  if rank == "superkingdom"
+      rank = "kingdom"
+  end
+  if ranks.include?(rank)
+    rows.push(rank[0]+"__"+name.tr("[]().","").tr(" ","_"))
+  end
+  if !parent || parent<=1
+    rows
+  else
+    recurseTax(parent, db, rows)
+  end 
+end
+
+samples = Hash.new
+CSV.foreach(opts.metadata, options={:col_sep=>"\t", :headers=>true}) do |row|
+  samples[row["Analysis_Id"]]=row["Sample"]
+end
+
+counts = Hash.new
+levs = Hash.new
+usedSamples = Hash.new
+opts.input.each do |file|
+  name = File.basename(file, ".kraken")
+  sample = samples[name]
+  usedSamples[sample] = true if sample !~/VALIDATION/
+  File.new(file).each do |line|
+    c, seq, tid = line.chomp.split("\t")
+    tid = tid.to_i
+    if tid > 1
+      levs[tid] = recurseTax(tid, db) if !levs[tid]
+      levs[tid].each do |lev|
+        counts[lev] = Hash.new if ! counts[lev]
+        counts[lev][sample] = 0 if !counts[lev][sample]
+        counts[lev][sample] += 1
+      end
+    end
+  end
+end
+
+header = ["taxlevel"," rankID", " taxon", " daughterlevels", " total"]
+header += usedSamples.keys.sort
+print header.to_csv(:col_sep=>"\t")
+counts.keys.sort.each do |key|
+  lcounts = usedSamples.keys.sort.collect{|x|counts[key][x].to_i}
+  row=["","",key,"", lcounts.reduce(:+)]
+  row += lcounts
+  print row.to_csv(:col_sep=>"\t")
+end
