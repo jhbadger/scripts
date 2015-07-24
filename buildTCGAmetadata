@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input summary.tsv", :required=>true, :type=>:string
+end
+
+def makePid(partid, pids)
+  if pids[partid]
+    pids[partid]
+  elsif pids.empty?
+    pids[partid] = "p001"
+  else
+    pids[partid] = pids.values.last.succ
+  end
+  pids[partid]
+end
+
+
+pids = Hash.new
+print ["Sample", "Patient", "Type", "Library_Type", "Center", "Analysis_Id"].to_csv(:col_sep=>"\t") 
+CSV.foreach(opts.input, options ={:headers=>true, :col_sep=>"\t"}) do |row|
+  pid = makePid(row["participant_id"], pids)
+  aid = row["analysis_id"]
+  lib = row["library_type"]
+  cent = row["center"]
+  stype = row["sample_type"]
+  sample = pid+"_"+stype+"_"+lib
+  outrow = [sample, pid, stype, lib, cent, aid]
+  print outrow.to_csv(:col_sep=>"\t")
+end
