@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+import os.path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-i", "--input", required=True, nargs="*",
+                    help="input file(s)")
+parser.add_argument("-w", "--window", type=int, default=5,
+                    help="window size (default 5)")
+parser.add_argument("-q", "--quality", type=int, default=20,
+                    help="min quality (default 20)")
+parser.add_argument("-l", "--length", type=int, default=28,
+                    help="min length (default 28)")
+parser.add_argument("-t", "--threads", type=int, default=4,
+                    help="threads per job (default 4)")
+parser.add_argument("-g", "--gigabytes", type=int, default=8,
+                    help="gigabytes allocated per process (default 8)")
+args = parser.parse_args()
+
+def which(name):
+    for path in os.getenv("PATH").split(os.path.pathsep):
+        full_path = path + os.sep + name
+        if os.path.exists(full_path):
+            return(full_path)
+            
+trim = which("trimmomatic")
+
+out = open("trimmomatic.swarm", "w")
+for file in args.input:
+    full_file = os.path.abspath(file)
+    out_file = full_file.replace("fastq", "trimmed.fastq").replace(".bz2","")
+    out.write("%s SE -threads %d %s %s SLIDINGWINDOW:%d:%d MINLEN:%d\n" 
+              % (trim, args.threads, full_file, out_file, args.window, 
+                 args.quality, args.length))
+
+out.close()
+
+print("command to run is swarm -g %d -t %d -f %s\n"
+      % (args.gigabytes, args.threads, "trimmomatic.swarm"))
