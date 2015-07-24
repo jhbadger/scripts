@@ -37,6 +37,9 @@ File.new(opts.input).each do |line|
     cmd = "kraken -d #{opts.kraken} #{out2} | egrep '^C' > #{krak}"
     STDERR << "Running kraken for #{fid}...\n"
     system("srun --mem=8g #{cmd}") if !File.exists?(krak)
+    bz2 = out2+".bz2"
+    cmd = "bzip2 #{out2}"
+    system(cmd) if !File.exists?(bz2)
     FileUtils.rm_rf(fid) if Dir.exists?(fid)
     FileUtils.rm(fid+".gto") if File.exists?(fid+".gto")
     FileUtils.rm(out) if File.exists?(out)
