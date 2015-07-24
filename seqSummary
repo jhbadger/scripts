@@ -17,6 +17,7 @@ opts = Trollop::options do
   opt :maximum, "exclude seqs greater than length", :type=>:integer
   opt :total, "run all sequences in each file as one", :default=>false
   opt :fastq, "use fastq format", :default=>false
+  opt :start, "only count first sequences", :type=>:integer
 end
 
 if (opts.csv)
@@ -62,8 +63,9 @@ opts.input.each do |file|
       tgc +=  gc
       tat += at
       tam += ambig
-      count += 1
     end
+    count += 1
+    break if opts.start && count==opts.start
   end
   stream.close
   if (opts.total)

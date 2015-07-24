@@ -13,11 +13,22 @@ opts = Trollop::options do
   opt :noambig, "remove N's, X's", :default=>false
   opt :remove, "remove alignment", :default=>false
   opt :linelen, "line Length", :default=>60, :type=>:integer
+  opt :fastq, "read in fastq"
 end
 
-Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+if opts.fastq
+  form = Bio::Fastq
+else
+  form = Bio::FastaFormat
+end
+
+Bio::FlatFile.new(form, ZFile.new(opts.input)).each do |seq|
   seq.seq.gsub!(/-|\./,"") if opts.remove
   seq.seq.gsub!(/N|n|X|x/,"") if opts.noambig
-  seq.definition = seq.entry_id if !opts.header
-  print seq.seq.upcase.to_fasta(seq.definition, opts.linelen)
+  if !opts.header || opts.fastq
+    header = seq.entry_id 
+  else
+    header = seq.definition
+  end
+  print seq.seq.upcase.to_fasta(header, opts.linelen)
 end
