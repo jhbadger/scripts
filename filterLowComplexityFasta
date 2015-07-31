@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+
+Bio::FlatFile.new(Bio::FastaFormat, STDIN).each do |seq|
+  c = seq.seq.gsub(/[a-z]/,"")
+  print seq if c.length >= seq.seq.length / 1.5
+end

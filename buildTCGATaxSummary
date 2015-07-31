@@ -10,6 +10,7 @@ opts = Trollop::options do
   opt :input, "input file(s)", :required=>true, :type=>:strings
   opt :metadata, "metadata.tsv", :required=>true, :type=>:string
   opt :ncbi, "ncbi sqlite db", :required=>true, :type=>:string
+  opt :clark, "read clark format rather than kraken"
 end
 
 db = SQLite3::Database.new(opts.ncbi)
@@ -41,11 +42,22 @@ counts = Hash.new
 levs = Hash.new
 usedSamples = Hash.new
 opts.input.each do |file|
-  name = File.basename(file, ".kraken")
+  if opts.clark
+    name = File.basename(file, ".clarkl")
+  else
+    name = File.basename(file, ".kraken")
+  end
   sample = samples[name]
   usedSamples[sample] = true if sample !~/VALIDATION/
+  seq = nil
+  tid = nil
   File.new(file).each do |line|
-    c, seq, tid = line.chomp.split("\t")
+    next if line=~/^Object/
+    if opts.clark
+      seq, score, tid = line.chomp.split(",")
+    else
+      c, seq, tid = line.chomp.split("\t")
+    end
     tid = tid.to_i
     if tid > 1
       levs[tid] = recurseTax(tid, db) if !levs[tid]

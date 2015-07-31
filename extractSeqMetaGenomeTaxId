@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'bio'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :taxon, "taxon id(s)", :required=>true, :type=>:integers
+  opt :separator, "field separator", :required=>true, :type=>:string
+  opt :seqcol, "field of seqid", :required=>true, :type=>:integer
+  opt :tcol, "field of taxon id", :requured=>true, :type=>:integer
+end
+
+opts.input.each do |file|
+  name = file.split(".")[0]
+  fasta = name + "_unmapped.trimmed.fasta.bz2"
+  get = Hash.new
+  File.new(file).each do |line|
+    fields = line.chomp.split(opts.separator)
+    seqname, tax = fields[opts.seqcol], fields[opts.tcol]
+    tax = tax.to_i
+    opts.taxon.each do |taxon|
+      if tax == taxon
+        get[seqname] = true
+      end
+    end
+  end
+  if !get.empty?
+    Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fasta)).each do |seq|
+      print seq if get[seq.entry_id]
+    end
+  end
+end
