@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby 
+
+require 'bio'    
+require 'trollop'
+require 'ZFile'
+require 'sqlite3'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:strings
+  opt :ncbi, "ncbi sqlite db", :required=>true, :type=>:string
+end
+
+db = SQLite3::Database.new(opts.ncbi)
+
+tids = Hash.new
+
+opts.input.each do |fa|
+  seen = Hash.new
+  clark = fa.split("_unmapped")[0]+".clarkl"
+  out = File.new(clark.gsub(".clarkl",".cclarkl"), "w")
+  File.new(clark).each do |line|
+    if line=~/^Object_ID/
+      out.print line
+    else
+      seq, s, tid = line.chomp.split(",")
+      if !tids[tid]
+        tids[tid] = db.get_first_value("SELECT name FROM taxonomy WHERE taxon_id=#{tid}").gsub(" ","_").tr("()/.","")
+      end
+      seen[seq] = line 
+    end
+  end
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(fa)).each do |seq|
+    if seen[seq.entry_id]
+      s, s2, tid = seen[seq.entry_id].chomp.split(",")
+      out.print seen[seq.entry_id]
+      x = seq.to_s
+      system("echo \"#{x.chomp}\" >> #{tids[tid]}.fa")
+    end
+  end
+  out.close
+end
