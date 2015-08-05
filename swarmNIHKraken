@@ -1,0 +1,57 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-q", "--query", required=True, nargs="*",
+                    help="input query file(s)")
+parser.add_argument("-d", "--database", required=True, 
+                    help = "kraken database")
+parser.add_argument("-t", "--threads", type=int, default=4,
+                    help="threads per job (default 4)")
+parser.add_argument("-g", "--gigabytes", type=int, default=16,
+                    help="gigabytes allocated per process (default 16)")
+args = parser.parse_args()
+
+def splitFasta(fasta, num):
+    fp = open(fasta)
+    count = 0
+    files = []
+    for line in fp:
+        if line[0]==">":
+            count += 1
+    fp.close()
+    bin = count/num
+    print("Fasta contains %d sequences. So %d per file" % (count, bin))
+    fp = open(fasta)
+    count = 0
+    countBin = 0
+    out = None
+    for line in fp:
+        if line[0] == ">":
+            count += 1
+            if count % bin == 1:
+                countBin += 1
+                if out is not None:
+                    out.close()
+                outFile = fasta + ".%s" % countBin
+                out = open(outFile, "w")
+                files.append(outFile)
+        out.write(line)
+    if out is not None:
+        out.close()
+    fp.close()
+    return(files)
+
+out = open("kraken.swarm", "w")
+
+for file in args.query:
+    full_file = os.path.abspath(file)
+    out_file = full_file.split("_")[0]+".kraken"
+    out.write("kraken --threads %d --only-classified-output --db %s -output %s %s\n" % (args.threads, args.database, out_file, full_file))
+
+out.close()
+
+print("command to run is swarm -g %d -t %d -f %s\n"
+      % (args.gigabytes, args.threads, "kraken.swarm"))

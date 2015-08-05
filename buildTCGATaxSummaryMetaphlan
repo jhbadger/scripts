@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :metadata, "metadata.tsv", :required=>true, :type=>:string
+  opt :num, "normalizing number", :default=>100000
+  opt :csv, "output standard normalized csv"
+end
+
+samples = Hash.new
+CSV.foreach(opts.metadata, options={:col_sep=>"\t", :headers=>true}) do |row|
+  samples[row["Analysis_Id"]]=row["Sample"]
+end
+
+counts = Hash.new
+levs = Hash.new
+usedSamples = Hash.new
+opts.input.each do |file|
+  if File::Stat.new(file).size > 50
+    name = File.basename(file, "_metaphlan.complex.trimmed.fasta.metaphlan")
+    sample = samples[name]
+    usedSamples[sample] = true if sample !~/VALIDATION/
+    File.new(file).each do |line|
+      if line =~/__/
+        taxon, per = line.chomp.split("\t")
+        count = (per.to_f*opts.num/100.0).to_i
+        lev = taxon.split("|").last
+        counts[lev] = Hash.new if ! counts[lev]
+        counts[lev][sample] = count
+      end
+    end
+  end
+end
+
+
+if opts.csv
+  header = ["Sample", "Patient", "Sample_Type", "Library_Type"]
+  header += counts.keys.sort
+  print header.to_csv
+  usedSamples.keys.sort.each do |key|
+    row = [key] + key.split("_")
+    row += counts.keys.sort.collect{|x| counts[x][key].to_i}
+    print row.to_csv
+  end
+else
+  header = ["taxlevel"," rankID", " taxon", " daughterlevels", " total"]
+  header += usedSamples.keys.sort
+  print header.to_csv(:col_sep=>"\t")
+  counts.keys.sort.each do |key|
+    lcounts = usedSamples.keys.sort.collect{|x|counts[key][x].to_i}
+    row=["","",key,"", lcounts.reduce(:+)]
+    row += lcounts
+    print row.to_csv(:col_sep=>"\t")
+  end
+end

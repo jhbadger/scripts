@@ -36,7 +36,7 @@ opts.input.each do |fa|
       s, s2, tid = seen[seq.entry_id].chomp.split(",")
       out.print seen[seq.entry_id]
       x = seq.to_s
-      system("echo \"#{x.chomp}\" >> #{tids[tid]}.fa")
+      system("echo \"#{x.chomp}\" >> #{fa}_#{tids[tid]}.fa")
     end
   end
   out.close
