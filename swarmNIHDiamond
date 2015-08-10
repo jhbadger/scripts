@@ -1,0 +1,72 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+import bz2
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-q", "--query", required=True, nargs="*",
+                    help="input query file(s)")
+parser.add_argument("-p", "--program", required=True, help="program (blastp, blastx)")
+parser.add_argument("-d", "--database", required=True, help = "diamond database")
+parser.add_argument("-l", "--local", default=100, type=int,
+                    help="gigabytes of local space to allocate (default 100)")
+parser.add_argument("-s", "--split", required=True, type=int,
+                    help="number of files to split query into")
+parser.add_argument("-t", "--threads", type=int, default=4,
+                    help="threads per job (default 4)")
+parser.add_argument("-g", "--gigabytes", type=int, default=4,
+                    help="gigabytes allocated per process (default 4)")
+args = parser.parse_args()
+
+def splitFasta(fasta, num):
+    if ".bz2" in fasta:
+        fp = bz2.BZ2File(fasta)
+    else:
+        fp = open(fasta)
+    count = 0
+    files = []
+    for line in fp:
+        if line[0]==">":
+            count += 1
+    fp.close()
+    bin = 1 + count/num
+    print("Fasta contains %d sequences. So %d per file" % (count, bin))
+    if ".bz2" in fasta:
+        fp = bz2.BZ2File(fasta)
+    else:
+        fp = open(fasta)
+    count = 0
+    countBin = 0
+    out = None
+    for line in fp:
+        if line[0] == ">":
+            count += 1
+            if count % bin == 1:
+                countBin += 1
+                if out is not None:
+                    out.close()
+                outFile = os.path.basename(fasta) + ".%s" % countBin
+                out = open(outFile, "w")
+                files.append(outFile)
+        out.write(line)
+    if out is not None:
+        out.close()
+    fp.close()
+    return(files)
+
+out = open("diamond.swarm", "w")
+for query in args.query:
+    files = splitFasta(query, args.split)
+    for file in files:
+        full_file = os.path.abspath(file)
+        match = full_file + ".match"
+        out.write("diamond %s -p %d ---q %s -d %s -t %s -a %s ; "
+                  % (args.program, args.threads, full_file, 
+                     args.database, "/lscratch/$SLURM_JOBID", match))
+        out.write("diamond view -a %s -o %s; rm %s %s\n" 
+                  % (match + ".daa", full_file + ".m8", match + ".daa", full_file))
+
+out.close()
+print("command to run is swarm -g %d -t %d -f %s --gres=lscratch:%d\n"
+      % (args.gigabytes, args.threads,"diamond.swarm", args.local))
