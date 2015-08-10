@@ -1,0 +1,18 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "command", :required=>true, :type=>:string
+end
+name = File.basename(opts.input.split(" ").first)
+
+out = File.new(name+".sh","w")
+out.printf("#!/bin/bash\n")
+out.printf("cd %s\n", ENV["PWD"])
+out.printf("%s\n", opts.input)
+out.close
+system("chmod a+x #{name}.sh")
+
