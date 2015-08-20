@@ -21,15 +21,19 @@ out = open("diamond.swarm", "w")
 for query in args.query:
     full_file = os.path.abspath(query)
     match = full_file + ".match"
+    erase = False
     if "bz2" in full_file:
         out.write("bzcat %s > %s; " % (full_file, full_file.split(".bz2")[0]))
         full_file = full_file.split(".bz2")[0]
+        erase = True
     out.write("diamond %s -p %d ---q %s -d %s -t %s -a %s ; "
                  % (args.program, args.threads, full_file, 
                     args.database, "/lscratch/$SLURM_JOBID", match))
-    out.write("diamond view -a %s -o %s; rm %s\n" 
+    out.write("diamond view -a %s -o %s; rm %s" 
                  % (match + ".daa", full_file + ".m8", match + ".daa"))
-
+    if erase:
+        out.write(" %s" % full_file)
+    out.write("\n")
 out.close()
 print("command to run is swarm -g %d -t %d -f %s --gres=lscratch:%d\n"
       % (args.gigabytes, args.threads,"diamond.swarm", args.local))
