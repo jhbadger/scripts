@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input count_table", :required=>true, :type=>:string
+  opt :sample, "input count_table", :required=>true, :type=>:string
+end
+
+samples = Hash.new
+File.new(opts.sample).each do |line|
+  lib, sample = line.chomp.split("\t")
+  samples[lib] = sample
+end
+
+counts = Hash.new
+CSV.foreach(opts.input, :headers=>true, :col_sep=>"\t").each do |row|
+  seq = nil
+  row.each do |field|
+    key, value = field
+    if key=="Representative_Sequence"
+      seq = value
+      counts[seq]=Hash.new if !counts[seq]
+    elsif samples[key]
+      counts[seq][samples[key]]=0 if !counts[seq][samples[key]]
+      counts[seq][samples[key]] += value.to_i
+    end
+  end
+end
+slist = counts[counts.keys.first].keys
+print (["Representative_Sequence","total"]+slist).to_csv(:col_sep=>"\t")
+counts.keys.each do |key|
+  row = [key]+[counts[key].values.reduce(:+)]
+  row += slist.collect{|x| counts[key][x]}
+  print row.to_csv(:col_sep=>"\t") if row[1]>0
+end

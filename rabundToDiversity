@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input rabund file(s)", :required=>true, :type=>:strings
+  opt :level, "clustering level", :default=>0.03
+end
+
+def Margalef(s, n)
+  return (s-1)/Math.log(n)
+end
+
+def Chao1(s, counts)
+  n1 = counts.count(1)
+  n2 = counts.count(2)
+  numer = n1*(n1 - 1)
+  denom = 2*(n2 + 1)
+  return s + (numer/denom.to_f)
+end
+
+print ["","OTUS", "Seqs", "Margalef", "Chao1"].to_csv(:col_sep=>"\t")
+opts.input.each do |file|
+  name = File.basename(file.split("list.").last,".rabund")
+  File.new(file).each do |line|
+    fields = line.chomp.split("\t")
+    level = fields.shift.to_f
+    num = fields.shift.to_i
+    if level == opts.level
+      counts = fields.collect{|x| x.to_i}
+      count = counts.reduce(:+)
+      margalef = Margalef(num, count).round(1)
+      chao1 = Chao1(num, counts).round(1)
+      print [name, num, count, margalef, chao1].to_csv(:col_sep=>"\t")
+    end
+  end
+end
