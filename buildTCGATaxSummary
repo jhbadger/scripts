@@ -11,6 +11,7 @@ opts = Trollop::options do
   opt :metadata, "metadata.tsv", :required=>true, :type=>:string
   opt :ncbi, "ncbi sqlite db", :required=>true, :type=>:string
   opt :clark, "read clark format rather than kraken"
+  opt :lca, "read lca format rather than kraken"
 end
 
 db = SQLite3::Database.new(opts.ncbi)
@@ -44,6 +45,9 @@ usedSamples = Hash.new
 opts.input.each do |file|
   if opts.clark
     name = File.basename(file, ".clarkl")
+    name = File.basename(file, ".cclarkl") if name == File.basename(file)
+  elsif opts.lca
+    name = File.basename(file,".lca").split(/_[0-9]+/)[0]
   else
     name = File.basename(file, ".kraken")
   end
@@ -55,6 +59,8 @@ opts.input.each do |file|
     next if line=~/^Object/
     if opts.clark
       seq, score, tid = line.chomp.split(",")
+    elsif opts.lca
+      seq, tid, tx = line.chomp.split("\t")
     else
       c, seq, tid = line.chomp.split("\t")
     end

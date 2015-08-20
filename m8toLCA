@@ -1,0 +1,97 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'sqlite3'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input m8 file(s)", :required=>true, :type=>:strings
+  opt :bit, "bit score cutoff", :default=>35
+  opt :ncbi, "ncbi sqlite db", :required=>true, :type=>:string
+end
+
+db = SQLite3::Database.new(opts.ncbi)
+
+def recurseTax(tid, taxinfo, rows=[], tids=[])
+  ranks = ["kingdom", "phylum", "class", "order", 
+           "family", "genus", "species"]
+  if rows.empty?
+    rows = ["k__None","p__None","c__None","o__None","f__None", 
+            "g__None", "s__None"]
+    tids = [0, 0, 0, 0, 0, 0, 0]
+  end
+  name, parent, rank = taxinfo[tid]
+  if rank == "superkingdom"
+    rank = "kingdom"
+  end
+  if ranks.include?(rank)
+    num = rows.index {|x| x[0] == rank[0]}
+    rows[num] = rank[0]+"__"+name.tr("[]().","").tr(" ","_")
+    tids[num] = tid
+  end
+  if !parent || parent<=1
+    [rows, tids]
+  else
+    recurseTax(parent, taxinfo, rows, tids)
+  end
+end 
+
+
+def computeLCA(mrows, mtids)
+  contid = nil
+  conname = nil
+  0.upto(6) do |i|
+    match = mtids[0][i]
+    mismatch = false
+    mtids.each do |tids|
+      if tids[i] != match
+        mismatch = true
+        break
+      end
+    end
+    if mismatch
+      break
+    else
+      contid = mtids[0][i]
+      conname = mrows[0][i]
+    end
+  end
+  return [contid, conname]
+end
+
+taxinfo = Hash.new
+STDERR << "Loading taxonomy database...\n"
+db.query("SELECT taxon_id, name, parent, rank FROM taxonomy").each do |row|
+  taxinfo[row.shift] = row
+end
+
+opts.input.each do |file|
+  STDERR << "Classifying #{file}...\n"
+  mrows = []
+  mtids = []
+  oldq = ""
+  out = File.new(File.basename(file).split(".")[0]+"_#{opts.bit}.lca","w")
+  ZFile.new(file).each do |line|
+    query, target, percent, alignlen, matches, gaps, qstart, qend,
+    tstart, tend, evalue, score = line.chomp.split("\t")
+    score = score.to_i
+    if oldq != query
+      if !mrows.empty?
+        ctid, cname = computeLCA(mrows, mtids)
+        out.printf("%s\t%d\t%s\n", query, ctid, cname) if !ctid.nil?
+        mrows = []
+        mtids = []
+      end
+    end
+    if score >= opts.bit
+      tid = target.split("_").first.to_i
+      rows, tids =  recurseTax(tid, taxinfo)
+      mrows.push(rows)
+      mtids.push(tids)
+    end
+    oldq = query
+  end
+  out.close
+end

@@ -1,0 +1,64 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input rsem files", :required=>true, :type=>:strings
+  opt :metadata, "metadata file", :required=>true, :type=>:string
+  opt :sample_map, "file sample map", :required=>true, :type=>:string
+  opt :gene_info, "gene info file", :required=>true, :type=>:string
+end
+
+samples = Hash.new
+patients = Hash.new
+tpbarcode = Hash.new
+CSV.foreach(opts.metadata, options={:col_sep=>"\t", :headers=>true}) do |row|
+  samples[row["Sample"]] = row.to_hash
+  patients[row["TCGA_Barcode"].split("-")[2]] = row["Patient"]
+  tpbarcode[row["TCGA_Barcode"]] = true if row["Type"]=="TP"
+end
+
+geneinfo = Hash.new
+CSV.foreach(opts.gene_info, options={:col_sep=>"\t"}) do |row|
+  geneinfo[row.first.to_i] = row[1..3]
+end
+
+files = Hash.new
+CSV.foreach(opts.sample_map, options={:col_sep=>"\t", :headers=>true}) do |row|
+  if tpbarcode[row["barcode(s)"]] 
+    files[row["filename"]] = row["barcode(s)"].split("-")[2]
+  end
+end
+
+exp = Hash.new
+opts.input.each do |file|
+  code = files[File.basename(file)]
+  patient = patients[code]
+  if patient
+    File.new(file).each do |line|
+      id, value = line.chomp.split(" ")
+      id = id.split("|").last.to_i
+      if geneinfo[id]
+        exp[id] = Hash.new if !exp[id]
+        if exp[id][patient]
+          STDERR << "Duplicated info for #{id} #{patient}\n"
+        end
+        exp[id][patient] = value.to_f
+      end
+    end
+  end
+end
+
+header = ["","Location", "Symbol", "Annotation", "Mean Expression"] + 
+         patients.values.sort
+print header.to_csv
+exp.keys.sort.each do |key|
+  row=[key]+geneinfo[key]
+  values = patients.values.sort.collect{|x| exp[key][x].to_f}
+  mean = values.reduce(:+)/values.length
+  row += [mean] + values
+  print row.to_csv
+end
