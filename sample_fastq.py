@@ -26,5 +26,5 @@ def write_random_records(fqa, fqb, N=100000):
     print >>sys.stderr, "wrote to %s, %s" % (suba.name, subb.name)
 
 if __name__ == "__main__":
-    N = 100 if len(sys.argv) < 4 else int(sys.argv[3])
+    N = int(sys.argv[3])
     write_random_records(sys.argv[1], sys.argv[2], N)
