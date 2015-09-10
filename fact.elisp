@@ -1,0 +1,7 @@
+#!/usr/bin/env emacs --script
+
+(require 'cl)
+
+(defun fact (x) (if (< x 2) 1 (* x (fact (- x 1)))))
+
+(princ (fact (string-to-number (first argv))))
