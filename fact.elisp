@@ -1,4 +1,5 @@
-#!/usr/bin/emacs --script
+#!/bin/sh
+":"; exec emacs --script "$0" "$@" # -*- mode: emacs-lisp; lexical-binding: t; -*-
 
 (require 'cl)
 
