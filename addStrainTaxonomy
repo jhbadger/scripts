@@ -1,0 +1,87 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input taxonomy", :required=>true, :type=>:string
+  opt :level, "taxonomic levels", :default=>7
+end
+
+
+def process(fields)
+  strain = nil
+  words = fields[6].gsub("s__","").count("_")
+  if words == 0
+    process(fields[0..5]+["s__"+fields[5].gsub("g__","")+"_"+fields[6].gsub("s__","").downcase])
+  elsif words == 1 && fields.size == 7
+    strain = fields[6].gsub("s__","str__")
+    process(fields+[strain])
+  elsif words > 1 && fields.size == 7
+    if fields[6] =~/(_strain_|_isolate_|_clone_|_isolate-|_primary_endosymbiont_of_)/
+      species, str = fields[6].split(/#{$1}/)
+      fields[6] = species
+      strain = "str__"+species.gsub("s__","")+"_"+str
+    else
+      genus, species, str = fields[6].gsub("s__","").split("_",3)
+      fields[6] = "s__"+genus+"_"+species
+      strain = "str__"+fields[6].gsub("s__","")+"_"+str
+    end
+    process(fields+[strain])
+  else
+    fields
+  end
+end
+
+strains = Hash.new
+ids = []
+File.new(opts.input).each do |line|
+  ids.push(line.split("\t").first.to_i)
+  line.gsub!("_complete","")
+  line.gsub!("_ribosomal_RNA_small_subunit","")
+  line.gsub!(/((rRNA|rRNA_Partial)_[0-9]+_nt)/,"")
+  line.gsub!("g__Faecalitalea","g__Mycobacterium")
+  line.gsub!("g__Mycobacterium_abscessus","g__Mycobacterium")
+  line.gsub!("16S_rRNA_","")
+  line.gsub!("_rRNA_sequence","")
+  line.gsub!("_23S_rRNA_3'_end","")
+  line.gsub!("_gene_for","")
+  line.gsub!("environmental_candidate_division_","")
+  line.gsub!("candidate_division_","")
+  line.gsub!("g__Enterobacteriaceae;s__Endosymbiont_Sitophilus",
+             "g__Sodalis;s__Endosymbiont_Sitophilus")
+  fields = line.chomp.split(";")[0..opts.level - 1]
+  if fields[6] =~ /Caulobacter/ && fields[5] !~/Caulobacter/
+    fields[6] = fields[6].sub("Caulobacter", fields[5].gsub("g__",""))
+  end
+  if fields[5] =~ /Mycobacterium/ && fields[4] !~/Mycobacterium/
+    fields[5] = fields[5].sub("Mycobacterium", fields[4].gsub("g__",""))
+  end
+  if fields[6] =~ /s__Uncultured_candidate/
+    fields[6] = fields[6].sub("s__Uncultured_candidate", fields[5].gsub("g__",""))
+  end
+  if fields[6] =~/s__Endosymbiont_of_/
+    fields[6] = fields[6].gsub("Endosymbiont_of_","Endosymbiont_")
+  end
+  fixed = process(fields).join(";")
+  fixed.gsub!("s__Fusobacterium_nucleatum_subsp_vincentii","s__Fusobacterium_nucleatum")
+  fixed.gsub!("g__f__Erysipelotrichaceae","g__Erysipelotrichaceae")
+  strain = fixed.split(";").last
+  strains[strain] = [] if !strains[strain]
+  strains[strain].push(fixed)
+end
+
+lines = Hash.new
+strains.keys.each do |strain|
+  suffix = "_1"
+  strains[strain].each do |line|
+    substr = strain.gsub("str__","substr__")+suffix
+    lines[line.split("\t").first.to_i]= line+";"+substr
+    suffix.succ!
+  end
+end
+
+ids.each do |id|
+  print lines[id]+"\n"
+end
