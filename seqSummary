@@ -20,11 +20,15 @@ opts = Trollop::options do
   opt :start, "only count first sequences", :type=>:integer
 end
 
-if (opts.csv)
-  print ["Name", "Sequences", "Avg. Length", "% Ambiguous bases", "%GC"].to_csv
+if opts.csv
+  names = ["Name", "Sequences", "Avg. Length", "% Ambiguous bases", "%GC"]
+  if opts.fastq
+    names.push("Avg. Quality")
+  end
+  print names.to_csv
 end
 
-if (opts.fastq)
+if opts.fastq
   format = Bio::Fastq
 else
   format = Bio::FastaFormat
@@ -35,9 +39,11 @@ opts.input.each do |file|
   tgc = 0
   tat = 0
   tam = 0
+  tq = 0
   count  = 0
   min = 1e99
   max = 0
+  qualities = []
   stream = ZFile.new(file)
   Bio::FlatFile.new(format, stream).each do |seq|
     next if opts.minimum && seq.seq.length < opts.minimum
@@ -45,16 +51,27 @@ opts.input.each do |file|
     gc =  seq.seq.count("GCgc")
     at =  seq.seq.count("ATUatu")
     ambig = seq.seq.count("NRYWSnryws")
+    if opts.fastq
+      qualities.push(seq.qualities.reduce(:+)/seq.qualities.length)
+    end
     max = seq.seq.length if seq.seq.length > max
     min = seq.seq.length if seq.seq.length < min
-    if (!opts.total)
+    if !opts.total
       gcper = ((gc*100.0) / (gc + at)).round
       amper = ((ambig*100.0)/seq.seq.length).round
-      if (opts.csv)
-        print [seq.definition, 1, seq.length, amper, gcper].to_csv
+      if opts.csv
+        vals = [seq.definition, 1, seq.length, amper, gcper]
+        if opts.fastq
+          vals.push(qualities.reduce(:+)/qualities.length)
+        end
+        print vals.to_csv
       else
         printf("---%s---\n", seq.definition)
         printf("Length: %d (%.1f megabases)\n", seq.seq.length, seq.seq.length / 1.0e6)
+        if opts.fastq
+          printf("Average quality: %d\n",
+                 qualities.reduce(:+)/qualities.length)
+        end
         printf("%% Ambiguous %d%%\n", amper)
         printf("GC:     %d%%\n", gcper)
       end
@@ -63,23 +80,31 @@ opts.input.each do |file|
       tgc +=  gc
       tat += at
       tam += ambig
+      tq += qualities.reduce(:+)/qualities.length if opts.fastq
     end
     count += 1
     break if opts.start && count==opts.start
   end
   stream.close
-  if (opts.total)
+  if opts.total
     avg = (tLen/count.to_f).round
     gcper = ((tgc*100.0) / (tgc + tat)).round
     amper = (100*tam/tLen.to_f).round
-    if (opts.csv)
-      print [file, count, avg, amper, gcper].to_csv
+    if opts.csv
+      vals = [file, count, avg, amper, gcper]
+      if opts.fastq
+        vals.push(tq/count)
+      end
+      print vals.to_csv
     else
       printf("---%s---\n", file)
       printf("Sequences: %d\n", count)
       printf("Length: %d (%.1f megabases)\n", tLen, tLen / 1.0e6)
       printf("Minimum length: %d Maximum length: %d\n", min, max)
       printf("Average length: %d (%.1f megabases)\n", avg, avg / (count*1.0e6))
+      if opts.fastq
+        printf("Average quality: %d\n", tq/count)
+      end
       printf("%% Ambiguous: %d%\n", amper)
       printf("GC:     %d bp %d%%\n", tgc, gcper)
     end
