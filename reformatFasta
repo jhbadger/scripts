@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby 
 
 require 'rubygems'
-require 'bio'    
+require 'bio'
 require 'trollop'
 require 'ZFile'
 
@@ -26,7 +26,7 @@ Bio::FlatFile.new(form, ZFile.new(opts.input)).each do |seq|
   seq.seq.gsub!(/-|\./,"") if opts.remove
   seq.seq.gsub!(/N|n|X|x/,"") if opts.noambig
   if !opts.header || opts.fastq
-    header = seq.entry_id 
+    header = seq.entry_id
   else
     header = seq.definition
   end
