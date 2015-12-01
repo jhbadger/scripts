@@ -10,11 +10,11 @@ function parse_commandline()
         "ann"
         help = "rap orf counts annotation file"
         required = true
-        arg_type = String
+        arg_type = AbstractString
          "bed"
         help = "bed file of gene positions"
         required = true
-        arg_type = String
+        arg_type = AbstractString
     end
     
     return parse_args(s)
@@ -22,7 +22,7 @@ end
 
 function loadGeneLengths(bed)
     println(STDERR, "Loading gene lengths...")
-    geneLengths = Dict{String,Int}()
+    geneLengths = Dict{AbstractString,Int}()
     fp = open(bed)
     for line in eachline(fp)
         contig, start, stop, exon, score, strand = split(chomp(line), '\t')
