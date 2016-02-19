@@ -19,6 +19,7 @@ opts = Trollop::options do
   opt :valid, "only report valid ranks"
   opt :len, "report taxonomy length"
   opt :verbose, "verbose messaging"
+  opt :prefix, "include rank prefixes"
 end
 
 tax = Hash.new
@@ -52,17 +53,49 @@ def isValid?(rank)
   ["kingdom","phylum","class","order","family","genus","species"].index(rank)
 end
 
-def recurseTaxonomy(tax, current, used, valid, verbose, count = 0)
+def recurseTaxonomy(tax, current, used, valid, verbose, prefix, count = 0)
+  if current == 6085
+    current = 6087 # Hydra magnipapillata is now Hydra vulgaris
+  elsif current == 111792
+    current = 1513193 # Infectious hypodermal and hematopoietic necrosis virus is now Dipteran brevidensovirus
+  elsif current == 123771
+    current = 999287 # Madracis mirabilis is now Madracis auretenra
+  elsif current == 164037
+    current = 1714273 # Thermus thermophilus phage IN93
+  elsif current == 191585
+    current = 191586 # Synedra acus
+  elsif current == 204379
+    current = 1499518 # Pseudopterogorgia bipinnata => Antillogorgia bipinnata
+  elsif current == 269483
+    current = 1450944 # Burkholderia sp. IBa383
+  elsif current == 312062
+    current = 1397670 # Tomato leaf curl Karnataka betasatellite
+  elsif current == 328672
+    current = 69577 # Banana streak virus
+  elsif current == 508765
+    current = 935198  # Clostridium botulinum B str. Eklund 17B
+  elsif current == 668994
+    current = 1714272 # Thermus thermophilus bacteriophage P23-77
+  elsif current == 999953
+    current = 5702    # Trypanosoma brucei brucei
+  end
   name, parent, rank = tax[current]
   used[current] = true
   if (current == 1 || name.nil? || name == "Bacteria" || name == "Eukaryota" || name == "Viruses" || name == "Archaea" || count > 50)
+    begin
+      name = "k__"+ name if prefix
+    rescue
+      STDERR.printf("Error: %s", current)
+      exit(1)
+    end
     [name]
   else
+    name = rank[0]+"__"+ name if prefix
     if !valid || isValid?(rank)
       print [current, name, parent, rank, 1].join("\t") + "\n" if verbose
-      recurseTaxonomy(tax, parent, used, valid, verbose, count + 1).to_a + [name]
+      recurseTaxonomy(tax, parent, used, valid, verbose, prefix, count + 1).to_a + [name]
     else
-      recurseTaxonomy(tax, parent, used, valid, verbose, count + 1).to_a
+      recurseTaxonomy(tax, parent, used, valid, verbose, prefix, count + 1).to_a
     end
   end
 end
@@ -79,7 +112,8 @@ else
 end
 
 ids.each do |id|
-  tx = recurseTaxonomy(tax, id.to_i, used, opts.valid, opts.verbose)
+  tx = recurseTaxonomy(tax, id.to_i, used, opts.valid, opts.verbose,
+                       opts.prefix)
   print tx.length.to_s + "\t" if opts.len
   print [id,tx.join(";")].join("\t") + "\n"
 end
