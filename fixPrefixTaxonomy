@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+ranks = ["k","p","c","o","f","g","s"]
+
+File.new(opts.input).each do |line|
+  tid, tax = line.chomp.split("\t")
+  tax = tax.split(";")
+  if tax[1] =~/k__/
+    tax[1].sub!("k__","p__")
+    if tax[2] =~/p__/
+      tax.delete(tax[2])
+    end
+  end
+  if tax.length < 7
+    missing = []
+    ranks.size.times do |i|
+      if tax.grep(/#{ranks[i]}__/).empty?
+        missing.push(i)
+      end
+    end
+    missing.each do |i|
+      if i == 6
+        tax[i] = tax[5].sub("g__","s__")+"_sp."
+      else
+        tax.insert(i,tax[i].sub(tax[i][0], ranks[i]))
+      end
+    end
+  end
+  printf("%d\t%s\n", tid, tax.join(";").gsub(" ","_").tr("[]()",""))
+end
