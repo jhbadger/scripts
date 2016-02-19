@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input pathoscope file(s)", :required=>true, :type=>:strings
+  opt :taxonomy, "taxonomy of pathoscope organisms", :required=>true, :type=>:string
+  opt :normalize, "normalize to a standard number per sample", :type=>:integer
+end
+
+tax = Hash.new
+File.new(opts.taxonomy).each do |line|
+  tid, tx = line.chomp.split("\t")
+  tax[tid.to_i] = tx.split(";")
+end
+
+counts = Hash.new
+names = []
+opts.input.each do |tsv|
+  name = File.basename(tsv).split("_").first
+  names.push(name)
+  CSV.foreach(tsv, :headers=>true, :col_sep=>"\t", :skip_lines=>/^Total/) do |row|
+    counts["Root"] = Hash.new if !counts["Root"]
+    counts["Root"][name] = 0 if !counts["Root"][name]
+    if row["Genome"] =~/taxid:([0-9]*)/
+      tid = $1.to_i
+      num = row["Final Best Hit Read Numbers"].to_i
+      counts["Root"][name] += num
+      tax[tid].each do |rank|
+        counts[rank] = Hash.new if !counts[rank]
+        counts[rank][name] = 0 if !counts[rank][name]
+        counts[rank][name] += num
+      end
+    end
+  end
+end
+
+ranks = ["Root","k__","p__","c__","o__","f__","g__","s__"]
+header = []
+ranks.each do |rank|
+  header += counts.keys.grep(/^#{rank}/).sort
+end
+print (["Sample"]+header).join("\t")+"\n"
+names.each do |name|
+  row=[name]
+  if opts.normalize
+    factor = counts["Root"][name].to_f/opts.normalize
+  else
+    factor = nil
+  end
+  header.each do |field|
+    num = counts[field][name].to_i
+    num = (num/factor).to_i if (opts.normalize)
+    row.push(num)
+  end
+  print row.join("\t")+"\n"
+end
