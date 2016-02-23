@@ -42,7 +42,7 @@ if args.printval:
 for seq in SeqIO.parse(handle, "fastq"):
     ct = CT(str(seq.seq), 3)
     if args.printval:
-        print seq.seq+"\t"+str(ct)
+        print(seq.seq+"\t"+str(ct))
     elif ct >= args.threshold:
-        print seq.format("fastq").rstrip("\n\r")
+        print(seq.format("fastq").rstrip("\n\r"))
 handle.close()
