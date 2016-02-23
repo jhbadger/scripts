@@ -37,7 +37,7 @@ else:
     handle = open(args.input)
 
 if args.printval:
-    print "seq\tct"
+    print("seq\tct")
     
 for seq in SeqIO.parse(handle, "fastq"):
     ct = CT(str(seq.seq), 3)
