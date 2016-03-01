@@ -1,15 +1,9 @@
 #!/usr/bin/env ruby
 
-if (ARGV.size != 1)
-  STDERR.printf("usage: %s hmmer-file\n", $0)
-  exit(1)
-end
-
-file = ARGV.shift
 species = Hash.new
 start = false
 seqs = Hash.new
-File.new(file).each {|line|
+STDIN.each {|line|
   if (line =~ /^#|\/\//)
     start = true
     next

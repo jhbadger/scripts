@@ -14,6 +14,7 @@ opts = Trollop::options do
   opt :remove, "remove alignment", :default=>false
   opt :linelen, "line Length", :default=>60, :type=>:integer
   opt :fastq, "read in fastq"
+  opt :cut, "cut header at symbol", :type=>:string
 end
 
 if opts.fastq
@@ -30,5 +31,6 @@ Bio::FlatFile.new(form, ZFile.new(opts.input)).each do |seq|
   else
     header = seq.definition
   end
+  header = header.split(opts.cut).first if opts.cut
   print seq.seq.upcase.to_fasta(header, opts.linelen)
 end

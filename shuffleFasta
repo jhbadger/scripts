@@ -1,0 +1,21 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+seqs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  seqs[seq.entry_id] = seq
+end
+
+entries = seqs.keys.shuffle
+
+entries.each do |entry|
+  print seqs[entry]
+end

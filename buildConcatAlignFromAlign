@@ -1,7 +1,6 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
-require 'bio'    
+require 'bio'
 require 'trollop'
 
 ARGV.push("--help") if ARGV.empty?
@@ -9,16 +8,8 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "Input alignment file(s)", :required=>true, :type=>:strings
   opt :phylip, "use PHYLIP format for input"
-  opt :amphora2, "fix amphora2 style headers"
 end
 
-def fix_amphora2(key)
-  if key =~/-NC/
-    key = key.split("-").last
-  elsif key=~/_[0-9]*$/
-    key = key.split("_")[0..-2].join("_")
-  end
-end
 
 if opts.phylip
   Alignment = Bio::Phylip::PhylipFormat
@@ -26,40 +17,27 @@ else
   Alignment = Bio::Alignment::MultiFastaFormat
 end
 
-keys = Alignment.new(File.read(opts.input.first)).alignment.keys
-
-keys = keys.collect{|x| fix_amphora2(x)} if (opts.amphora2)
-
-bad = []
-multi = Hash.new
-keys.each do |key|
-  multi[key] = ""
+keys = []
+opts.input.each do |file|
+  aln = Alignment.new(File.read(file)).alignment
+  keys += aln.keys
 end
+keys = keys.sort.uniq
 
+multi = Hash.new
 opts.input.each do |file|
   aln = Alignment.new(File.read(file)).alignment
   seen = Hash.new
-  aln.keys.each do |key|
-    if (opts.amphora2)
-      goodkey = fix_amphora2(key)
+  keys.each do |key|
+    multi[key] = "" if !multi[key]
+    if aln.keys.include?(key)
+      multi[key] += aln[key]
     else
-      goodkey = key
-    end
-    if (keys.include?(goodkey))
-      multi[goodkey] += aln[key]
-      seen[goodkey] = true
-    else
-      #STDERR << goodkey << " not in keys. Removing...\n"
-      bad.push(goodkey)
+      multi[key] += "-" * aln[aln.keys.first].length
     end
   end
-  missing = keys - seen.keys
-  STDERR << missing.length << " from " << file << "\n"
-  keys -= missing
 end
 
-finalkeys = keys - bad
-
-finalkeys.each do |key|
+keys.each do |key|
   print Bio::Sequence::AA.new(multi[key]).to_fasta(key, 60)
 end
