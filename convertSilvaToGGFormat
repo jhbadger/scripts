@@ -1,0 +1,18 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+File.new(opts.input).each do |line|
+  id, tax = line.chomp.split(" ", 2)
+  prefices = ["k__","p__","c__","o__","f__","g__","s__"]
+  if tax=~/Bacteria|Archaea/ && tax !~/uncultured|unknown/i && tax.split(";").length == 7
+    tax = tax.split(";").collect{|x| prefices.shift + x.gsub(" ","_")}.join(";")
+    printf("%s\t%s\n", id, tax)
+  end
+end
