@@ -15,49 +15,65 @@ parser.add_argument("-e", "--evalue", type=float, default=1e-6,
 parser.add_argument("-m", "--maxhits", type=int, default=5,
                     help="max hits per query (default 5)")
 parser.add_argument("-s", "--split", required=True, type=int,
-                    help="number of files to split query into")
+                    help="number of sequences per file to split")
+parser.add_argument("-o", "--short",
+                    help="optimize for short sequences")
 parser.add_argument("-t", "--threads", type=int, default=4,
                     help="threads per job (default 4)")
 parser.add_argument("-g", "--gigabytes", type=int, default=16,
                     help="gigabytes allocated per process (default 16)")
 args = parser.parse_args()
 
+def batch_iterator(iterator, batch_size) :
+    """Returns lists of length batch_size.
+
+    This can be used on any iterator, for example to batch up
+    SeqRecord objects from Bio.SeqIO.parse(...), or to batch
+    Alignment objects from Bio.AlignIO.parse(...), or simply
+    lines from a file handle.
+
+    This is a generator function, and it returns lists of the
+    entries from the supplied iterator.  Each list will have
+    batch_size entries, although the final list may be shorter.
+    """
+    entry = True #Make sure we loop once
+    while entry :
+        batch = []
+        while len(batch) < batch_size :
+            try :
+                entry = next(iterator)
+            except StopIteration :
+                entry = None
+            if entry is None :
+                #End of file
+                break
+            batch.append(entry)
+        if batch :
+            yield batch
+
 def splitFasta(fasta, num):
-    fp = open(fasta)
-    count = 0
+    from Bio import SeqIO
     files = []
-    for line in fp:
-        if line[0]==">":
-            count += 1
-    fp.close()
-    bin = count/num
-    print("Fasta contains %d sequences. So %d per file" % (count, bin))
-    fp = open(fasta)
-    count = 0
-    countBin = 0
-    out = None
-    for line in fp:
-        if line[0] == ">":
-            count += 1
-            if count % bin == 1:
-                countBin += 1
-                if out is not None:
-                    out.close()
-                outFile = fasta + ".%s" % countBin
-                out = open(outFile, "w")
-                files.append(outFile)
-        out.write(line)
-    if out is not None:
-        out.close()
-    fp.close()
-    return(files)
+    record_iter = SeqIO.parse(open(fasta),"fasta")
+    for i, batch in enumerate(batch_iterator(record_iter, num)) :
+        filename = fasta + "." + str(i+1)
+        handle = open(filename, "w")
+        count = SeqIO.write(batch, handle, "fasta")
+        handle.close()
+        print("Wrote %i records to %s" % (count, filename))
+        files.append(filename)
+    return files
 
 files = splitFasta(args.query, args.split)
 out = open(args.query+".swarm", "w")
 for file in files:
     full_file = os.path.abspath(file)
+    if args.short:
+        program = args.program + " -word_size=7 -reward=1 -penalty=-3 -qcov_hsp_perc=100"
+    else:
+        program = args.program
     out.write("%s -query %s -db %s -max_target_seqs %d "
-              % (args.program, full_file, args.database, args.maxhits))
+              % (program, full_file, args.database, args.maxhits))
     out.write('-evalue %e -num_threads %d -out %s -outfmt "%s"\n'
               % (args.evalue, args.threads, full_file+"."+args.program,
                  args.format))
