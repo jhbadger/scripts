@@ -1,6 +1,5 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
 require 'bio'
 require 'trollop'
 
@@ -11,6 +10,7 @@ opts = Trollop::options do
   opt :pattern, "pattern to match", :required=>true, :type=>:string
   opt :gaps, "ignore gaps"
   opt :highlight, "highlight matches in lower case"
+  opt :revcomp, "reverse complement pattern"
   opt :verse, "show sequences not matching motif"
 end
 
@@ -23,6 +23,9 @@ if opts.gaps
   pat = npat
 end
 
+if opts.revcomp
+  pat = Bio::Sequence::NA.new(pat).reverse_complement.seq.upcase
+end
 
 pat.gsub!("V","[G|A|C]")
 pat.gsub!("B","[G|T|C]")
