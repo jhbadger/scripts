@@ -1,67 +1,44 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
 require 'bio'
-require 'optparse'
-require 'ostruct'
-require 'ZFile'   
+require 'ZFile'
+require 'trollop'
 
-opt = OpenStruct.new
-opt.file = nil
-opt.inverse = nil
-opt.unique = false
-opt.format == Bio::FastaFormat
-o = OptionParser.new
-o.banner << " expression fasta [...fasta...]"
-o.on("-f ", "--file ", String, 
-        "read list of ids to search from file") {|f| opt.file = f} 
-o.on("-u", "--unique", "only returm sequence once") {opt.unique = true} 
-o.on("-q", "--fastq", "use fastq format") {opt.format = Bio::Fastq}  
-o.on("-v", "--inverse", "return lines not matching expression") {opt.inverse = true}
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
-end
-if (ARGV.size < 2 && opt.file.nil?)
-  STDERR << o
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :file, "Read patterns from file", :type=>:string
+  opt :pattern, "pattern to match header", :type=>:string
+  opt :fastq, "Read fastq format rather than fasta"
+  opt :inverse, "Return things not matching"
 end
 
-seen = Hash.new
-if (opt.file)
-  express = false
-  File.new(opt.file).each do |line|
-    seen[line.chomp.split(" ").first] = true
-  end
+if opts.fastq
+  form = Bio::Fastq
 else
-  express = ARGV.shift
+  form = Bio::FastaFormat
 end
 
+if opts.file
+  pattern = ""
+  File.new(opts.file).each do |line|
+    pattern += line.chomp+"|"
+  end
+  pattern.chop!
+else
+  pattern = opts.pattern
+end
 
-printed = Hash.new
-ARGV.each do |fasta|
-  Bio::FlatFile.new(opt.format, ZFile.new(fasta)).each do |seq|
-    sname = seq.definition.split(" ").first
-    next if (opt.unique && printed[sname])
-    if (express)
-      if (!opt.inverse)
-        print seq if seq.definition =~/#{express}/
-        printed[sname]=true
-      else
-        print seq if seq.definition !~ /#{express}/
-        printed[sname]=true
-      end
-    else
-      if (!opt.inverse)
-        print seq if (seen[sname])
-        printed[sname]=true
-      else
-        print seq if (!seen[sname])
-        printed[sname]=true
-      end
-    end
+if !pattern
+  STDERR << File.basename($0)+": Search pattern required\n"
+  exit(1)
+end
+
+Bio::FlatFile.new(form, ZFile.new(opts.input)).each do |seq|
+  if seq.definition =~/#{pattern}/
+    print seq if !opts.inverse
+  else
+    print seq if opts.inverse
   end
 end
