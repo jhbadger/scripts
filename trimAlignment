@@ -1,9 +1,7 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
 require 'bio'
 require 'trollop'
-
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
