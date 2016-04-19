@@ -1,0 +1,125 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :consensus, "Consensus to use",:default=>0.9
+  opt :primlen, "Primer length", :default=>20
+  opt :test, "fasta to test against", :required=>true, :type=>:string
+  opt :maxambig, "Maximum number of ambigous bases in primer", :default=>2
+  opt :minhit, "Minimum hit fraction of primer", :default=>0.75
+  opt :exclude, "optional fasta of false positives to exxclude", :type=>:string
+end
+
+alignment = Hash.new
+
+STDERR << "Loading alignment...\n"
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  alignment[seq.entry_id] = seq.seq.upcase.chars.to_a
+end
+
+test = Hash.new
+STDERR << "Loading test seqs...\n"
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  test[seq.entry_id] = seq.seq.upcase
+end
+
+exclude = Hash.new
+if opts.exclude
+  STDERR << "Loading exclude seqs...\n"
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.exclude)).each do |seq|
+    exclude[seq.entry_id] = seq.seq.upcase
+  end
+end
+
+def consensus(alignment, threshold)
+  STDERR << "Computing consensus...\n"
+  len = alignment.values.first.length
+  tint = threshold*alignment.keys.size
+  cons = [nil]*len
+  0.upto(len) do |i|
+    counts = {'A'=>0,'G'=>0,'C'=>0,'T'=>0, '.'=> 0, '-'=>0}
+    alignment.keys.each do |key|
+      nuc = alignment[key][i]
+      counts[nuc] += 1 if nuc=~/A|G|C|T|\.|-/
+    end
+    if counts['A'] >= tint
+      cons[i] = 'A'
+    elsif counts['G'] >= tint
+      cons[i] = 'G'
+    elsif counts['C'] >= tint
+      cons[i]= 'C'
+    elsif counts['T'] >= tint
+      cons[i] = 'T'
+    elsif counts['G'] + counts['T'] >= tint
+      cons[i] = 'K'
+    elsif counts['G'] + counts['C'] >= tint
+      cons[i] = 'S'
+    elsif counts['A'] + counts['T'] >= tint
+      cons[i] = 'W'
+    elsif counts['A'] + counts['C'] >= tint
+      cons[i] = 'M'
+    elsif counts['C'] + counts['T'] >= tint
+      cons[i] = 'Y'
+    elsif counts['A'] + counts['G'] >= tint
+      cons[i] = 'R'
+    elsif counts['G'] + counts['A'] + counts['C'] >= tint
+      cons[i] = 'V'
+    elsif counts['G'] + counts['T'] + counts['C'] >= tint
+      cons[i] = 'B'
+    elsif counts['A'] + counts['T'] + counts['C'] >= tint
+      cons[i] = 'H'
+    elsif counts['G'] + counts['A'] + counts['T'] >= tint
+      cons[i] = 'D'
+    else
+      cons[i] = 'N'
+    end
+  end
+  cons.join
+end
+
+def deg2regexp(pat)
+  npat = pat.gsub("V","[G|A|C]")
+  npat = npat.gsub("B","[G|T|C]")
+  npat = npat.gsub("H","[A|T|C]")
+  npat = npat.gsub("D","[G|A|T]")
+  npat = npat.gsub("K","[G|T]")
+  npat = npat.gsub("S","[G|C]")
+  npat = npat.gsub("W","[A|T]")
+  npat = npat.gsub("M","[A|C]")
+  npat = npat.gsub("Y","[C|T]")
+  npat = npat.gsub("R","[A|G]")
+  npat = npat.gsub("N","[A|C|G|T]")
+  npat
+end
+
+
+def primersearch(consensus, test, len, maxambig, minhits, exclude)
+  primers = Hash.new
+  0.upto(consensus.length) do |i|
+    primer = consensus[i..(i+len-1)]
+    if primer.length == len && primer.count("VBHDKSNWMYR") <= maxambig
+      hits = 0
+      exhits = 0
+      test.keys.each do |key|
+        hits += 1 if test[key] =~/#{deg2regexp(primer)}/
+      end
+      exclude.keys.each do |key|
+        exhits += 1 if exclude[key] =~/#{deg2regexp(primer)}/
+      end
+      hitf = 1.0*hits/test.keys.length
+      if hitf >= minhits && exhits == 0
+        printf("%d %s %3.2f\n", i+1, primer, hitf)
+      end
+    end
+  end
+end
+
+cons = consensus(alignment, opts.consensus)
+primersearch(cons, test, opts.primlen, opts.maxambig, opts.minhit, exclude)
+

@@ -2,6 +2,7 @@
 
 require 'bio'
 require 'trollop'
+require 'ZFile'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
@@ -12,6 +13,7 @@ opts = Trollop::options do
   opt :highlight, "highlight matches in lower case"
   opt :revcomp, "reverse complement pattern"
   opt :verse, "show sequences not matching motif"
+  opt :slow, "use slow matching allowing gaps"
 end
 
 pat = opts.pattern.tr("NnX",".").upcase
@@ -38,16 +40,43 @@ pat.gsub!("M","[A|C]")
 pat.gsub!("Y","[C|T]")
 pat.gsub!("R","[A|G]")
 
-Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+def slow_match(seq,pat)
+  j = 0
+  pos = nil
+  match = ""
+  0.upto(seq.length) do |i|
+    p match
+    if seq[i] != "." && seq[i] != "-"
+      if seq[i] == pat[j]
+        pos = i if pos.nil?
+        j += 1
+      else
+        j = 0
+        match = ""
+        pos = nil
+      end
+      break if j==pat.length
+    end
+    match += seq[i].to_s
+  end
+  [pos, match]
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
   s = seq.seq.upcase
-  found = s.index(/(#{pat})/)
+  if opts.slow
+    found, match = slow_match(s, pat)
+  else
+    found = s.index(/(#{pat})/)
+    match = $1
+  end
   if !found && opts.verse
     printf("%s\n", seq.entry_id)
   elsif found && !opts.verse
     if !opts.highlight
-      printf("%s\t%s\t%d\n", seq.entry_id, $1, found+1)
+      printf("%s\t%s\t%d\n", seq.entry_id, match, found+1)
     else
-      print Bio::Sequence.new(s.gsub($1,$1.downcase)).to_fasta(seq.definition,60)
+      print Bio::Sequence.new(s.gsub(match,match.downcase)).to_fasta(seq.definition,60)
     end
   end
 end

@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "findPrimer output", :required=>true, :type=>:string
+  opt :mintemp, "minimum melting temperature", :default=>58.0
+  opt :maxtemp, "maximum melting temperature", :default=>66.0
+  opt :minlen, "minimum amplicon length", :default=>200
+  opt :maxlen, "maximum amplicon length", :default=>300
+end
+
+def deg2regexp(pat)
+  npat = pat.gsub("V","[G|A|C]")
+  npat = npat.gsub("B","[G|T|C]")
+  npat = npat.gsub("H","[A|T|C]")
+  npat = npat.gsub("D","[G|A|T]")
+  npat = npat.gsub("K","[G|T]")
+  npat = npat.gsub("S","[G|C]")
+  npat = npat.gsub("W","[A|T]")
+  npat = npat.gsub("M","[A|C]")
+  npat = npat.gsub("Y","[C|T]")
+  npat = npat.gsub("R","[A|G]")
+  npat
+end
+
+def tm(seq, salt=0.050)
+  gc = seq.upcase.count("GC")
+  gc += seq.upcase.count("S")
+  gc += seq.upcase.count("V")*0.667
+  gc += seq.upcase.count("B")*0.667
+  gc += seq.upcase.count("M")*0.5
+  gc += seq.upcase.count("R")*0.5
+  gc += seq.upcase.count("Y")*0.5
+  gc += seq.upcase.count("K")*0.5
+  gc += seq.upcase.count("H")*0.333
+  n = seq.length*1.0
+  tm = 102.0 + (41*gc/n) - (820/n) + 16.6*Math.log10(salt)
+  (tm*10).to_i/10.0
+end
+
+primers = []
+loc = []
+hits = []
+File.new(opts.input).each do |line|
+  pos, primer, hit = line.chomp.split(" ")
+  temp = tm(primer)
+  pos = pos.to_i
+  if temp >= opts.mintemp && temp <= opts.maxtemp
+    primers.push(primer)
+    loc.push(pos)
+    hits.push(hit)
+  end
+end
+
+primers.length.times do |i|
+  primers.length.times do |j|
+    len = loc[j] - loc[i]
+    if len >= opts.minlen && len <= opts.maxlen
+      rc = Bio::Sequence::NA.new(primers[j]).reverse_complement.seq.upcase
+      printf("%s %s %s %d %f %f\n", "prim"+loc[i].to_s+loc[j].to_s,
+             primers[i], rc, len, hits[i], hits[j])
+    end
+  end
+end

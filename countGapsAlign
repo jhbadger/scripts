@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :mingaps, "min gaps to count", :default=>0
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  gaps = seq.seq.count("-.")
+  printf("%s\t%d\n", seq.entry_id, gaps) if gaps >= opts.mingaps
+end
