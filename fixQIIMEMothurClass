@@ -1,0 +1,21 @@
+#!/usr/bin/env ruby 
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+File.new(opts.input).each do |line|
+  if line.index("\\_")
+    line = line.split("\\_").first
+    line = line.chop.chop
+  end
+  if line.index("str__")
+    line = line.split("str__").first
+    line = line.chop.chop
+  end
+  print line + "\n"
+end
