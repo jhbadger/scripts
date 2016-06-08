@@ -1,0 +1,85 @@
+#!/usr/bin/env ruby
+
+require 'sexpistol'
+require 'readline'
+
+module MiniLisp
+  class Environment
+    def initialize(parent = nil)
+      @parent = parent
+      @table = {}
+    end
+    def find(name)
+      return @table[name] if @table.has_key?(name)
+      return nil if @parent.nil?
+      return @parent.find(name)
+    end
+    def define(name, value)
+      @table[name] = value
+    end
+  end
+  class Interpreter
+    attr_accessor :base_environment,
+                  :current_environment
+    def initialize
+      @base_environment = @current_environment = MiniLisp::Environment.new
+    end
+    def run(program)
+      expressions = Sexpistol.new.parse_string(program)
+      result = nil
+      expressions.each do |expression|
+        result = evaluate(expression)
+      end
+      return result
+    end
+    def evaluate(expression)
+      return @current_environment.find(expression) if expression.is_a? Symbol
+      return expression unless expression.is_a? Array
+      if expression[0] == :define
+        return @current_environment.define expression[1],
+                                           evaluate(expression[2])
+      elsif expression[0] == :native_function
+        return eval expression[1]
+      else # function call
+        function = evaluate(expression[0])
+        arguments = expression.slice(1, expression.length)
+        return function.call(arguments, self)
+      end
+    end
+  end
+end
+
+Interpreter = MiniLisp::Interpreter.new
+Interpreter.run('(define +
+ (native_function "Proc.new() do |arguments, interpreter|
+                 arguments.inject(0) {|sum, x| sum += interpreter.evaluate(x)};
+                end"))')
+
+Interpreter.run('(define -
+  (native_function "
+    Proc.new() do |arguments, interpreter|
+      tmp = arguments.map {|item| interpreter.evaluate(item)}
+      tmp.inject {|sum, n| sum - n}
+    end
+  "))')
+
+Interpreter.run('(define *
+ (native_function "Proc.new() do |arguments, interpreter|
+                 arguments.inject(1) {|sum, x| sum *= interpreter.evaluate(x)};
+                end"))')
+
+Interpreter.run('(define /
+  (native_function "
+    Proc.new() do |arguments, interpreter|
+      tmp = arguments.map {|item| interpreter.evaluate(item)}
+      tmp.inject {|sum, n| sum / n}
+    end
+  "))')
+
+loop do
+  line = Readline::readline('> ')
+  break if line.nil? || line == 'quit'
+  Readline::HISTORY.push(line)
+  result = Interpreter.run(line)
+  print result.to_s+"\n"
+end
