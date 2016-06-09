@@ -183,11 +183,51 @@ Interpreter.run(%q!
     end
   "))!)
 
+Interpreter.run(%q!(define quote 
+  (native_function "
+    Proc.new() do |arguments, interpreter|
+      arguments[0]
+    end
+  "))!)
+
+Interpreter.run(%q!(define cons
+  (native_function "
+    Proc.new() do |arguments, interpreter|
+      arg_1 = interpreter.evaluate(arguments[0])
+      arg_2 = interpreter.evaluate(arguments[1]).dup
+      if arg_2.is_a? Array
+        arg_2.unshift arg_1
+      else
+        [arg_1, arg_2]
+      end
+    end
+  "))!)
+
+Interpreter.run(%q!(define car
+  (native_function "
+    Proc.new() do |argument, interpreter|
+      list = interpreter.evaluate(argument[0])
+      list[0]
+    end
+  "))!)
+
+Interpreter.run(%q!(define cdr
+  (native_function "
+    Proc.new() do |argument, interpreter|
+      list = interpreter.evaluate(argument[0])
+      list.slice(1, list.length)
+    end
+  "))!)
 
 loop do
   line = Readline::readline('> ')
   break if line.nil? || line == 'quit'
   Readline::HISTORY.push(line)
-  result = Interpreter.run(line)
-  print result.to_s+"\n"
+  begin
+    result = Interpreter.run(line)
+    print result.to_s+"\n"
+  rescue
+    print $!
+    print "\n"
+  end
 end
