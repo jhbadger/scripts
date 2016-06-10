@@ -23,8 +23,7 @@ class Rlisp
       @env.merge!(operator => lambda { |*args| args.inject(&operator) })
     end
 
-    run("(define range (lambda (x y)
-(if (< x y) (cons x (range (+ 1 x) y)) (list))))")
+    run("(define (range x y) (if (< x y) (cons x (range (+ 1 x) y)) (list)))")
 
     comp = proc{ |s| @env.keys.grep( /^#{Regexp.escape(s)}/) }
 
@@ -82,11 +81,12 @@ class Rlisp
   def eval(exp, env = @env)
     if exp.is_a? Numeric
       exp
+    elsif exp.is_a? Proc
+      Proc.to_source
     elsif exp[0] == '"'
       exp.to_s
     elsif exp.is_a? Symbol
       if exp[0] == "."
-        
       else
         env[exp]
       end
@@ -98,7 +98,13 @@ class Rlisp
       eval(exp, env)
     elsif exp[0] == :define
       _, var, e = exp
-      env[var] = eval(e, env)
+      if (var.is_a? Array)
+        name = var.shift
+        env[name] = lambda { |*args|
+          self.eval(e, env.merge(Hash[var.zip(args)])) }
+      else
+        env[var] = eval(e, env)
+      end
     elsif exp[0] == :lambda
       _, params, e = exp
       lambda { |*args| self.eval(e, env.merge(Hash[params.zip(args)])) }
