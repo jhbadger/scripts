@@ -7,24 +7,29 @@ class Rlisp
 
   def initialize(ext = {})
     @env = {
-      :true  => -> (*list) { true },
-      :false => -> (*list) { false },
       :list  => -> (*list) { Array(list) },
       :null? => -> (list) { list.empty? },
-      :min   => -> (*list) { list.min },
-      :max   => -> (*list) { list.max },
-      :car   => -> (*list) { list[0] },
-      :cdr   => -> (*list) { list.drop 1 },
+      :min   => -> (list) { list.min },
+      :max   => -> (list) { list.max },
+      :car   => -> (list) { list[0] },
+      :cdr   => -> (list) { list.drop 1 },
       :cons  => -> (e, cell) { [e] + cell },
       :map => -> (fn, list) {list.map {|x| fn.call x}},
-      :reduce => -> (fn, list) {list.reduce(&fn)}
+      :reduce => -> (fn, *args) {if args.size == 1;args[0].reduce(&fn);
+      else;args[1].reduce(args[0], &fn);end}
     }.merge(ext)
 
     OPERATORS.inject({}) do |scope, operator|
       @env.merge!(operator => lambda { |*args| args.inject(&operator) })
     end
 
-    run("(define range (lambda (x y) (if (< x y) (cons x (range (+ 1 x) y)) (list))))")
+    run("(define range (lambda (x y)
+(if (< x y) (cons x (range (+ 1 x) y)) (list))))")
+
+    comp = proc{ |s| @env.keys.grep( /^#{Regexp.escape(s)}/) }
+
+    Readline.completion_append_character = " "
+    Readline.completion_proc = comp
   end
 
   def run(code)
@@ -77,8 +82,14 @@ class Rlisp
   def eval(exp, env = @env)
     if exp.is_a? Numeric
       exp
+    elsif exp[0] == '"'
+      exp.to_s
     elsif exp.is_a? Symbol
-      env[exp]
+      if exp[0] == "."
+        
+      else
+        env[exp]
+      end
     elsif exp[0] == :quote
       exp[1]
     elsif exp[0] == :if
