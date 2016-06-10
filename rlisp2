@@ -16,7 +16,8 @@ class Rlisp
       :car   => -> (*list) { list[0] },
       :cdr   => -> (*list) { list.drop 1 },
       :cons  => -> (e, cell) { [e] + cell },
-      :map => -> (fn, list) {list.map {|x| fn.call x}}
+      :map => -> (fn, list) {list.map {|x| fn.call x}},
+      :reduce => -> (fn, list) {list.reduce(&fn)}
     }.merge(ext)
 
     OPERATORS.inject({}) do |scope, operator|
