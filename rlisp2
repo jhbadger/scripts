@@ -16,13 +16,16 @@ class Rlisp
       :car   => -> (*list) { list[0] },
       :cdr   => -> (*list) { list.drop 1 },
       :cons  => -> (e, cell) { [e] + cell },
+      :map => -> (fn, list) {list.map {|x| fn.call x}}
     }.merge(ext)
 
     OPERATORS.inject({}) do |scope, operator|
       @env.merge!(operator => lambda { |*args| args.inject(&operator) })
     end
+
+    run("(define range (lambda (x y) (if (< x y) (cons x (range (+ 1 x) y)) (list))))")
   end
-  
+
   def run(code)
     self.eval parse(code)
   end
@@ -43,7 +46,7 @@ class Rlisp
     return if tokens.empty?
 
     token = tokens.shift
-
+    
     if '(' == token
       list = []
 
@@ -71,16 +74,12 @@ class Rlisp
   end
 
   def eval(exp, env = @env)
-    p exp
-    if exp == :"'"
-      exp.drop 1
-      print "hi"
-    elsif exp.is_a? Numeric
+    if exp.is_a? Numeric
       exp
     elsif exp.is_a? Symbol
       env[exp]
     elsif exp[0] == :quote
-      exp[1..-1]
+      exp[1]
     elsif exp[0] == :if
       _, test, conseq, alt = exp
       exp = eval(test, env) ? conseq : alt
@@ -112,6 +111,7 @@ class Rlisp
     end
   end
 end
+
 
 rlisp = Rlisp.new
 rlisp.repl
