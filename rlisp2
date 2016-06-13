@@ -155,6 +155,8 @@ __END__
 (define reduce (ruby (fn *args) "if args.size == 1;args[0].reduce &fn;else;args[1].reduce args[0],&fn;end"))
 (define succ (ruby (x) "x.succ"))
 (define class (ruby (x) "x.class"))
+(define methods (ruby (x) "x.methods"))
+(define send (ruby (x *args) "if (args.size == 1);x.send(args[0]);end")) 
 (define max (ruby (list) "list.max"))
 (define min (ruby (list) "list.min"))
 (define (range x y) (if (< x y) (cons x (range (+ 1 x) y)) (list)))
