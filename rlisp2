@@ -91,9 +91,10 @@ class Rlisp
     elsif exp.is_a? String
       exp
     elsif exp.is_a? Symbol
-      if exp[0] == "."
-      else
+      if env[exp]
         env[exp]
+      elsif Kernel.eval("defined? #{exp.to_s}")
+        Kernel.eval(exp.to_s)
       end
     elsif exp[0] == :quote
       exp[1]
@@ -156,7 +157,8 @@ __END__
 (define succ (ruby (x) "x.succ"))
 (define class (ruby (x) "x.class"))
 (define methods (ruby (x) "x.methods"))
-(define send (ruby (x *args) "if (args.size == 1);x.send(args[0]);end")) 
+(define send (ruby (x *args) "x.send *args"))
+(define require (ruby (lib) "require lib"))
 (define max (ruby (list) "list.max"))
 (define min (ruby (list) "list.min"))
 (define (range x y) (if (< x y) (cons x (range (+ 1 x) y)) (list)))
