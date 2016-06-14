@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 
 require 'readline'
+require 'sexpistol'
 
 class Rlisp
   OPERATORS = %i[== != < <= > >= + - * /]
@@ -22,82 +23,29 @@ class Rlisp
     Readline.completion_proc = comp
   end
 
+  def find(symbol, env)
+    if env[symbol]
+      env[symbol]
+    elsif Kernel.eval "defined? #{symbol.to_s}"
+      Kernel.eval symbol.to_s
+    else
+      nil
+    end
+  end
+  
   def run(code)
-    self.eval parse(code)
+    eval(parse(code).first)
   end
 
   def parse(program)
-    read_from_tokens(tokenize(program))
-  end
-
-  def tokenize(chars)
-    chars
-      .gsub(/\s\s+/, ' ')
-      .gsub('(', ' ( ')
-      .gsub(')', ' ) ')
-      .gsub("'", " ' ")
-      .gsub(":", " : ")
-      .gsub('"', ' " ')
-      .split(' ')
-  end
-
-  def read_from_tokens(tokens)
-    return if tokens.empty?
-
-    quoted = false
-    token = tokens.shift
-    if token == "'" || token == ":"
-      quoted = true
-      token = tokens.shift
-    end
-    if '(' == token
-      list = []
-      while tokens.first != ')'
-        list << read_from_tokens(tokens)
-      end
-      tokens.shift
-      list = [:quote, list] if quoted
-      list
-    elsif '"' == token
-      string = ""
-      while tokens.first != '"'
-        string += " " if string != ""
-        string += tokens.shift.to_s 
-      end
-      tokens.shift
-      string
-    elsif ')' == token
-      raise 'unexpected )'
-    else
-      if quoted
-        [:quote, atom(token)]
-      else
-        atom(token)
-      end
-    end
-  end
-
-  def atom(token)
-    if token[/\.\d+/]
-      token.to_f
-    elsif token[/\d+/]
-      token.to_i
-    else
-      token.to_sym
-    end
+    Sexpistol.new.parse_string(program)
   end
 
   def eval(exp, env = @env)
-    if exp.is_a? Numeric
-      exp
-    elsif exp.is_a? String
+    if exp.is_a?(Numeric) || exp.is_a?(String)
       exp
     elsif exp.is_a? Symbol
-      if env[exp]
-        env[exp]
-      elsif Kernel.eval("defined? #{exp.to_s}")
-        Kernel.eval(exp.to_s)
-      end
+      find(exp, env)
     elsif exp[0] == :quote
       exp[1]
     elsif exp[0] == :if
@@ -169,6 +117,7 @@ __END__
 (define map (ruby (fn list) "list.map {|x| fn.call x}"))
 (define reduce (ruby (fn *args) "if args.size == 1;args[0].reduce &fn;else;args[1].reduce args[0],&fn;end"))
 (define succ (ruby (x) "x.succ"))
+(define pred (ruby (x) "x.pred"))
 (define class (ruby (x) "x.class"))
 (define methods (ruby (x) "x.methods"))
 (define send (ruby (x *args) "x.send *args"))
@@ -177,4 +126,4 @@ __END__
 (define (range x y) (if (< x y) (cons x (range (+ 1 x) y)) (list)))
 (define (positive? x) (> x 0))
 (define (negative? x) (< x 0))
-(define getf (ruby (list key) "loc=list.flatten.index key;if loc;list.flatten[loc+1];else;nil;end"))
+(define length (ruby (x) "x.length"))
