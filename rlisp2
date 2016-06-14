@@ -32,13 +32,9 @@ class Rlisp
       nil
     end
   end
-  
-  def run(code)
-    eval(parse(code).first)
-  end
 
-  def parse(program)
-    Sexpistol.new.parse_string(program)
+  def run(code)
+    eval(Sexpistol.new.parse_string(code).first)
   end
 
   def eval(exp, env = @env)
