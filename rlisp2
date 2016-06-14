@@ -7,7 +7,7 @@ class Rlisp
 
   def initialize(ext = {})
     @quit = false
-    @env = Hash.new
+    @env = {:true=>true, :false=>false}
 
     OPERATORS.inject({}) do |scope, operator|
       @env.merge!(operator => lambda { |*args| args.inject(&operator) })
@@ -15,7 +15,8 @@ class Rlisp
     DATA.each do |line|
       run(line)
     end
-    specials = [:quote, :define, :quit, :lambda, :if]
+    specials = [:quote, :define, :quit, :lambda, :if, :require, :defun,
+                :true, :false]
     comp = proc{ |s| (@env.keys + specials).grep( /^#{Regexp.escape(s)}/)}
     Readline.completion_append_character = " "
     Readline.completion_proc = comp
@@ -35,6 +36,7 @@ class Rlisp
       .gsub('(', ' ( ')
       .gsub(')', ' ) ')
       .gsub("'", " ' ")
+      .gsub(":", " : ")
       .gsub('"', ' " ')
       .split(' ')
   end
@@ -44,7 +46,7 @@ class Rlisp
 
     quoted = false
     token = tokens.shift
-    if "'" == token
+    if token == "'" || token == ":"
       quoted = true
       token = tokens.shift
     end
@@ -111,6 +113,10 @@ class Rlisp
       else
         env[var] = eval(e, env)
       end
+    elsif exp[0] == :defun
+      _, name, var, e = exp
+      env[name] = lambda { |*args|
+        self.eval(e, env.merge(Hash[var.zip(args)])) }
     elsif exp[0] == :lambda
       _, params, e = exp
       lambda { |*args| self.eval(e, env.merge(Hash[params.zip(args)])) }
@@ -121,9 +127,8 @@ class Rlisp
     elsif exp[0] == :require
       _, e = exp
       e.shift
-      good = false
-      e.each {|x| error=require x.to_s}
-      !good
+      e.each {|x| require x.to_s}
+      true
     elsif exp[0] == :quit
       @quit = true
     else
@@ -169,3 +174,4 @@ __END__
 (define (range x y) (if (< x y) (cons x (range (+ 1 x) y)) (list)))
 (define (positive? x) (> x 0))
 (define (negative? x) (< x 0))
+(define getf (ruby (list key) "loc=list.flatten.index key;if loc;list.flatten[loc+1];else;nil;end"))
