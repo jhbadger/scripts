@@ -7,7 +7,7 @@ class Rlisp
 
   def initialize(ext = {})
     @quit = false
-    @env = {:true=>true, :false=>false}
+    @env = {:true=>true, :false=>false, :nil=>nil}
 
     OPERATORS.inject({}) do |scope, operator|
       @env.merge!(operator => lambda { |*args| args.inject(&operator) })
@@ -16,7 +16,7 @@ class Rlisp
       run(line)
     end
     specials = [:quote, :define, :quit, :lambda, :if, :require, :defun,
-                :true, :false]
+                :defvar, :true, :false, :nil]
     comp = proc{ |s| (@env.keys + specials).grep( /^#{Regexp.escape(s)}/)}
     Readline.completion_append_character = " "
     Readline.completion_proc = comp
@@ -113,6 +113,9 @@ class Rlisp
       else
         env[var] = eval(e, env)
       end
+    elsif exp[0] == :defvar
+      _, var, e = exp
+      env[var] = eval(e, env)
     elsif exp[0] == :defun
       _, name, var, e = exp
       env[name] = lambda { |*args|
