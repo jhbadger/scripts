@@ -14,8 +14,7 @@ class Rlisp
       @env.merge!(operator => lambda { |*args| args.inject(&operator) })
     end
     run(DATA.read)
-    specials = [:quote, :define, :quit, :lambda, :if, :require, :defun,
-                :defvar, :true, :false, :nil]
+    specials = []
     comp = proc{ |s| (@env.keys + specials).grep( /^#{Regexp.escape(s)}/)}
     Readline.completion_append_character = " "
     Readline.completion_proc = comp
@@ -70,9 +69,8 @@ class Rlisp
       _, params, e = exp
       lambda { |*args| self.eval(e, env.merge(Hash[params.zip(args)])) }
     elsif exp[0] == :ruby
-      _, params, e = exp
-      procstring = "->(#{params.collect{|x| x.to_s}.join(',')}) {#{e}}"
-      Kernel.eval(procstring)
+      _, e = exp
+      Kernel.eval("lambda{#{e}}")
     elsif exp[0] == :require
       _, e = exp
       e.shift
@@ -122,24 +120,24 @@ rlisp = Rlisp.new
 rlisp.repl
 
 __END__
-(define list (ruby (*list) "Array(list)"))
-(define car (ruby (list) "list.first"))
-(define cdr (ruby (list) "list.drop 1"))
-(define null? (ruby (list) "list.empty?"))
-(define cons (ruby (e cell) "[e] + cell"))
-(define map (ruby (fn list) "list.map {|x| fn.call x}"))
-(define reduce (ruby (fn *args) "if args.size == 1;args[0].reduce &fn;else;args[1].reduce args[0],&fn;end"))
-(define succ (ruby (x) "x.succ"))
-(define pred (ruby (x) "x.pred"))
-(define class (ruby (x) "x.class"))
-(define methods (ruby (x) "x.methods"))
-(define send (ruby (x *args) "x.send *args"))
-(define max (ruby (list) "list.max"))
-(define min (ruby (list) "list.min"))
+(define list (ruby "|*list| Array(list)"))
+(define car (ruby "|list| list.first"))
+(define cdr (ruby "|list| list.drop 1"))
+(define null? (ruby "|list| list.empty?"))
+(define cons (ruby "|x, list| [x] + list"))
+(define map (ruby "|fn, list| list.map {|x| fn.call x}"))
+(define reduce (ruby "|fn, *args| if args.size == 1;args[0].reduce &fn;else;args[1].reduce args[0],&fn;end"))
+(define succ (ruby "|x| x.succ"))
+(define pred (ruby "|x| x.pred"))
+(define class (ruby "|x| x.class"))
+(define methods (ruby "|x| x.methods"))
+(define send (ruby "|x,*args| x.send *args"))
+(define max (ruby "|list| list.max"))
+(define min (ruby "|list| list.min"))
 (define (range x y) (if (< x y) (cons x (range (+ 1 x) y)) (list)))
 (define (positive? x) (> x 0))
 (define (negative? x) (< x 0))
-(define length (ruby (x) "x.length"))
-(define print (ruby(x) "print x;x"))
+(define length (ruby "|x| x.length"))
+(define print (ruby "|x| print x;x"))
 (define (= x y) (== x y))
 
