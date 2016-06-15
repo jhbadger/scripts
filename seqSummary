@@ -60,7 +60,7 @@ opts.input.each do |file|
       gcper = ((gc*100.0) / (gc + at)).round
       amper = ((ambig*100.0)/seq.seq.length).round
       if opts.csv
-        vals = [seq.definition, 1, seq.length, amper, gcper]
+        vals = [seq.definition, 1, seq.seq.length, amper, gcper]
         if opts.fastq
           vals.push(qualities.reduce(:+)/qualities.length)
         end
