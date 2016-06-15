@@ -4,7 +4,7 @@ require 'readline'
 require 'sexpistol'
 
 class Rlisp
-  OPERATORS = %i[== != < <= > >= + - * /]
+  OPERATORS = %i[% == != < <= > >= + - * ** /]
 
   def initialize(ext = {})
     @quit = false
@@ -27,7 +27,7 @@ class Rlisp
     elsif Kernel.eval "defined? #{symbol.to_s}"
       Kernel.eval symbol.to_s
     else
-      nil
+      raise "Undefined symbol: #{symbol}"
     end
   end
 
@@ -90,16 +90,26 @@ class Rlisp
   def repl(prompt = '> ')
     while !@quit
       line = ""
+      input = nil
       currentPrompt = prompt
       begin
         line += " " if line != ""
-        line += Readline::readline(currentPrompt).to_s
+        input = Readline::readline(currentPrompt)
+        line += input.to_s
         Readline::HISTORY.push(line)
         currentPrompt = "... "
-      end until line.count('(') == line.count(')')
+      end until line.count(')') >= line.count('(')
       begin
         result = run(line)
-        print result.to_s+"\n" if !@quit
+        @quit = true if input.nil?
+        if !@quit
+          if result.nil? && input != ""
+            print "nil"
+          else
+            print result
+          end
+        end
+        print("\n")
       rescue Exception => e
         p e
       end
@@ -130,3 +140,6 @@ __END__
 (define (positive? x) (> x 0))
 (define (negative? x) (< x 0))
 (define length (ruby (x) "x.length"))
+(define print (ruby(x) "print x;x"))
+(define (= x y) (== x y))
+
