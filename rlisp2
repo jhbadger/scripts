@@ -13,9 +13,7 @@ class Rlisp
     OPERATORS.inject({}) do |scope, operator|
       @env.merge!(operator => lambda { |*args| args.inject(&operator) })
     end
-    DATA.each do |line|
-      run(line)
-    end
+    run(DATA.read)
     specials = [:quote, :define, :quit, :lambda, :if, :require, :defun,
                 :defvar, :true, :false, :nil]
     comp = proc{ |s| (@env.keys + specials).grep( /^#{Regexp.escape(s)}/)}
@@ -34,11 +32,15 @@ class Rlisp
   end
 
   def run(code)
-    eval(Sexpistol.new.parse_string(code).first)
+    result = nil
+    Sexpistol.new.parse_string(code).each do |sexp|
+      result = eval(sexp)
+    end
+    return result
   end
 
   def eval(exp, env = @env)
-    if exp.is_a?(Numeric) || exp.is_a?(String)
+    if exp.is_a? Numeric or exp.is_a? String
       exp
     elsif exp.is_a? Symbol
       find(exp, env)
@@ -87,9 +89,14 @@ class Rlisp
 
   def repl(prompt = '> ')
     while !@quit
-      line = Readline::readline(prompt)
-      break if line.nil?
-      Readline::HISTORY.push(line)
+      line = ""
+      currentPrompt = prompt
+      begin
+        line += " " if line != ""
+        line += Readline::readline(currentPrompt).to_s
+        Readline::HISTORY.push(line)
+        currentPrompt = "... "
+      end until line.count('(') == line.count(')')
       begin
         result = run(line)
         print result.to_s+"\n" if !@quit
