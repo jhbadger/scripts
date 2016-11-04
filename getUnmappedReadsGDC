@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :strategy, "experimental strategy", :default=>"WXS"
+  opt :token, "gdc download token", :type=>:string, :required=>true
+end
+
+CSV.foreach(opts.input, :col_sep=>"\t", :headers=>true) do |line|
+  if line["experimental_strategy"] == opts.strategy
+    output = line["patient_barcode"] + "_" + line["tissue.definition"]
+    output += "_" + line["experimental_strategy"] + ".bam"
+    output = output.gsub(" ","").gsub("PrimarysolidTumor","Tumor")
+    output = output.gsub("BloodDerivedNormal", "Blood")
+    unmapped = output.gsub(".bam", "_Unmapped.bam")
+    if !File.exists?(unmapped)
+      cmd = "gdc-client download " + line["file_id"]
+      cmd += " -t " + opts.token
+      STDOUT << "Downloading #{output}...\n"
+      system(cmd)
+      system("mv #{line["file_id"]}/*.bam #{output}")
+      system("rm -r #{line["file_id"]}")
+      STDOUT << "Producing #{unmapped}...\n"
+      system("samtools view -b -f 4 #{output} > #{unmapped}")
+      system("rm #{output}")
+      exit(1)
+    end
+  end
+end

@@ -23,6 +23,8 @@ class Rlisp
   def find(symbol, env)
     if env[symbol]
       env[symbol]
+    elsif symbol[0] == ";"
+      "comment"
     elsif Kernel.eval "defined? #{symbol.to_s}"
       Kernel.eval symbol.to_s
     else
@@ -33,6 +35,7 @@ class Rlisp
   def run(code)
     result = nil
     Sexpistol.new.parse_string(code).each do |sexp|
+      p sexp
       result = eval(sexp)
     end
     return result
@@ -45,6 +48,9 @@ class Rlisp
       find(exp, env)
     elsif exp[0] == :quote
       exp[1]
+    elsif exp[0] == :ruby
+      _, e = exp
+      Kernel.eval("lambda{#{e}}")
     elsif exp[0] == :if
       _, test, conseq, alt = exp
       exp = eval(test, env) ? conseq : alt
@@ -68,9 +74,6 @@ class Rlisp
     elsif exp[0] == :lambda
       _, params, e = exp
       lambda { |*args| self.eval(e, env.merge(Hash[params.zip(args)])) }
-    elsif exp[0] == :ruby
-      _, e = exp
-      Kernel.eval("lambda{#{e}}")
     elsif exp[0] == :require
       _, e = exp
       e.shift
@@ -79,9 +82,9 @@ class Rlisp
     elsif exp[0] == :quit
       @quit = true
     else
-      code = eval(exp[0], env)
-      args = exp[1..-1].map{ |arg| eval(arg, env) }
-      code.(*args)
+      fn = eval(exp.shift, env)
+      args = exp.map{ |arg| eval(arg, env) }
+      fn.(*args)
     end
   end
 
