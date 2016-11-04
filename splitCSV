@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :num, "number of lines/file", :type=>:integer, :required=>true
+end
+
+fileout = File.basename(opts.input) + ".1"
+header = nil
+out = File.new(fileout, "w")
+count = 0
+File.new(opts.input).each do |line|
+  if !header
+    header = line
+    out.print header
+  else
+    out.print line
+    count += 1
+    if count == opts.num
+      out.close
+      count = 0
+      fileout = fileout.succ
+      out = File.new(fileout, "w")
+      out.print header
+    end
+  end
+end
+out.close
