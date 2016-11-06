@@ -9,6 +9,7 @@ opts = Trollop::options do
   opt :input, "input file", :required=>true, :type=>:string
   opt :strategy, "experimental strategy", :default=>"WXS"
   opt :token, "gdc download token", :type=>:string, :required=>true
+  opt :swarm, "make swarm file"
 end
 
 CSV.foreach(opts.input, :col_sep=>"\t", :headers=>true) do |line|
@@ -21,14 +22,22 @@ CSV.foreach(opts.input, :col_sep=>"\t", :headers=>true) do |line|
     if !File.exists?(unmapped)
       cmd = "gdc-client download " + line["file_id"]
       cmd += " -t " + opts.token
-      STDOUT << "Downloading #{output}...\n"
-      system(cmd)
-      system("mv #{line["file_id"]}/*.bam #{output}")
-      system("rm -r #{line["file_id"]}")
-      STDOUT << "Producing #{unmapped}...\n"
-      system("samtools view -b -f 4 #{output} > #{unmapped}")
-      system("rm #{output}")
-      exit(1)
+      if opts.swarm
+        print "module load gdc-client;"
+        print cmd + ";"
+        print "mv #{line["file_id"]}/*.bam #{output};"
+        print "rm -r #{line["file_id"]};"
+        print "samtools view -b -f 4 #{output} > #{unmapped};"
+        print "rm #{output}\n"
+      else
+        STDOUT << "Downloading #{output}...\n"
+        system(cmd)
+        system("mv #{line["file_id"]}/*.bam #{output}")
+        system("rm -r #{line["file_id"]}")
+        STDOUT << "Producing #{unmapped}...\n"
+        system("samtools view -b -f 4 #{output} > #{unmapped}")
+        system("rm #{output}")
+      end
     end
   end
 end
