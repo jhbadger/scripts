@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input bams", :required=>true, :type=>:strings
+  opt :error, "sequence error threshold", :default=>0.05
+  opt :db, "kraken db", :default=>ENV["HOME"]+"/krakendb/all"
+end
+
+opts.input.each do |bam|
+  STDERR << "Processing #{bam}...\n"
+  name = File.basename(bam, ".bam")
+  cmd = "samtools bam2fq #{bam}| seqtk trimfq -q #{opts.error} - | "
+  cmd += "kraken -db #{opts.db} --fastq-input /dev/fd/0 "
+  cmd += "|egrep -v \"^U\" | grep -v -w 9606 > #{name}.kraken"
+  system(cmd)
+  cmd = "kraken-translate --db #{opts.db} #{name}.kraken > #{name}.labels"
+  system(cmd)
+end
