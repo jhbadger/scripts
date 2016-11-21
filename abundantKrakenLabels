@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input label file(s)", :required=>true, :type=>:strings
+  opt :num, "min num to count", :default=>1000
+end
+
+opts.input.each do |file|
+  name = File.basename(file, ".labels")
+  counts = Hash.new
+  File.new(file).each do |line|
+    n, tx = line.chomp.split("\t")
+    ranks = tx.split(";").size
+    if ranks > 5
+      counts[tx] = 0 if !counts[tx]
+      counts[tx] += 1
+    end
+  end
+  counts.keys.each do |tx|
+    print name + "\t" + tx + "\t" + counts[tx].to_s + "\n" if counts[tx] >= opts.num
+  end
+end

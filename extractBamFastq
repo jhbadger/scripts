@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input abundance file", :required=>true, :type=>:string
+end
+
+
+File.new(opts.input).each do |line|
+  name, tx1 = line.chomp.split("\t")
+  t1 = tx1.split(";").last
+  grab = Hash.new
+  outname = ""
+  t = ""
+  outname1 = name + "_" + t1.tr("()[]:;.","").tr(" ","_") + "_R1.fastq"
+  outname2 = name + "_" + t1.tr("()[]:;.","").tr(" ","_") + "_R2.fastq"
+  STDERR << "Processing #{outname1.split("_R1").first}...\n"
+  File.new(name + ".labels").each do |line|
+    id, tx = line.chomp.split(" ", 2)
+    id = id.split("/").first
+    t = tx.split(";").last
+    grab[id] = true if t==t1 && !File.exist?(outname1)
+  end
+  if !File.exist?(outname1)
+    out1 = File.new(outname1,"w")
+    out2 = File.new(outname2,"w")
+    `samtools view bams/#{name}.bam`.split("\n").each do |line|
+      fields = line.chomp.split("\t")
+      if grab[fields[0]]
+        if fields[1] == "77"
+          out1.print "@"+fields[0]+"/1\n" + fields[9]
+          out1.print "\n+\n" + fields[10] + "\n"
+        elsif fields[1] == "141"
+          out2.print "@"+fields[0]+"/2\n" + fields[9]
+          out2.print "\n+\n" + fields[10] + "\n"
+        end
+      end
+    end
+    out1.close
+    out2.close
+  end
+end
