@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'trollop'
+require 'set'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fastq R1 file(s)", :required=>true, :type=>:strings
+  opt :quality, "minimum quality of sequence", :default=>25
+  opt :len, "minimum length of sequence", :default=>10
+end
+
+opts.input.each do |r1|
+  good1 = Set.new
+  r2 = r1.gsub("_R1","_R2")
+  Bio::FlatFile.new(Bio::Fastq, ZFile.new(r1)).each do |seq|
+    name = seq.entry_id.gsub("/1","")
+    qual = seq.qualities.reduce(:+)/seq.qualities.length
+    good1.add name if qual >= opts.quality && seq.seq.length >= opts.len
+  end
+  good2 = Set.new
+  Bio::FlatFile.new(Bio::Fastq, ZFile.new(r2)).each do |seq|
+    name = seq.entry_id.gsub("/2","")
+    qual = seq.qualities.reduce(:+)/seq.qualities.length
+    good2.add name if qual >= opts.quality && seq.seq.length >= opts.len
+  end
+  good = good1 & good2
+  out1 = File.new(r1.gsub("_R1","_R1_filtered"),"w")
+  Bio::FlatFile.new(Bio::Fastq, ZFile.new(r1)).each do |seq|
+    name = seq.entry_id.gsub("/1","")
+    out1.print seq if good.include? name
+  end
+  out1.close
+  out2 = File.new(r2.gsub("_R2","_R2_filtered"),"w")
+  Bio::FlatFile.new(Bio::Fastq, ZFile.new(r2)).each do |seq|
+    name = seq.entry_id.gsub("/2","")
+    out2.print seq if good.include? name
+  end
+  out2.close
+end
