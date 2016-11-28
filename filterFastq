@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fastq file(s)", :required=>true, :type=>:strings
+  opt :list, "file of ids to remove", :required=>true, :type=>:string
+end
+
+remove = Hash.new
+File.new(opts.list).each do |line|
+  remove[line.chomp] = true
+end
+
+opts.input.each do |file|
+  out = File.new(File.basename(file, ".fastq")+"_filtered.fastq", "w")
+  Bio::FlatFile.new(Bio::Fastq, File.new(file)).each do |seq|
+    name = seq.entry_id.split("/").first
+    out.print seq if !remove[name]
+  end
+  out.close
+end
