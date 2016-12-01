@@ -9,9 +9,10 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "Input fasta file", :required=>true, :type=>:string
   opt :file, "Read patterns from file", :type=>:string
-  opt :pattern, "pattern to match header", :type=>:string
+  opt :pattern, "pattern to match header", :type=>:strings
   opt :fastq, "Read fastq format rather than fasta"
   opt :inverse, "Return things not matching"
+  opt :nostrand, "cut off strand info when matching"
 end
 
 if opts.fastq
@@ -20,23 +21,27 @@ else
   form = Bio::FastaFormat
 end
 
+patterns = Hash.new
 if opts.file
-  pattern = ""
   File.new(opts.file).each do |line|
-    pattern += line.chomp+"|"
+    fields = line.chomp.split(" ")
+    patterns[fields.first] = true
   end
-  pattern.chop!
 else
-  pattern = opts.pattern
+  opts.pattern.each do |pat|
+    patterns[pat] = true
+  end
 end
 
-if !pattern
+if patterns.keys.empty?
   STDERR << File.basename($0)+": Search pattern required\n"
   exit(1)
 end
 
 Bio::FlatFile.new(form, ZFile.new(opts.input)).each do |seq|
-  if seq.definition =~/#{pattern}/
+  name = seq.entry_id
+  name = name.gsub(/\/1|\/2/,"") if opts.nostrand
+  if patterns[name]
     print seq if !opts.inverse
   else
     print seq if opts.inverse
