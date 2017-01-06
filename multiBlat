@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :db, "db file(s)", :required=>true, :type=>:strings
+  opt :qtype, "query type", :default=>"dna"
+  opt :dtype, "database type", :default=>"dna"
+  opt :minident, "minimum identity", :default=>98
+  opt :evalue, "maximum evalue", :default=>1e-6
+  opt :fastmap, "use fastmap option", :default=>false
+  opt :swarm, "create swarm file", :default=>false
+end
+
+cmd1 = "blat -t=#{opts.dtype} -q=#{opts.qtype} -minIdentity=#{opts.minident}"
+cmd1 += " -out=blast8"
+cmd1 += " -fastMap" if opts.fastmap
+opts.input.each do |file|
+  opts.db.each do |db|
+    outFile = File.basename(file, ".fa") + "_" + File.basename(db, ".2bit")
+    outFile += ".blast8"
+    ooc = db.sub(".2bit","_11.ooc")
+    if File.exists? ooc
+      cmd = cmd1 + " -ooc=#{ooc}"
+    else
+      cmd = cmd1
+    end
+    cmd += " " + db + " " + file + " " + outFile+".tmp" + " >/dev/null"
+    cmd += " 2>/dev/null"
+    cmd += ";ruby -ane 'fields=$_.chomp.split(\"\\t\"); print $_ "
+    cmd += "if fields[2].to_f >= #{opts.minident} "
+    cmd += "&& fields[10].to_f <= #{opts.evalue}' #{outFile}.tmp > #{outFile};"
+    cmd += "rm #{outFile}.tmp"
+    if opts.swarm
+      print cmd + "\n"
+    else
+      system(cmd)
+    end
+  end
+end
