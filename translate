@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :name, "fasta record name", :required=>true, :type=>:string
+  opt :start, "start position", :required=>true, :type=>:integer
+  opt :stop, "stop position", :required=>true, :type=>:integer
+end
+
+if opts.start > opts.stop
+  start, stop = opts.stop, opts.start
+  comp = true
+else
+  start, stop = opts.start, opts.stop
+  comp = false
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  sname = seq.entry_id
+  if comp
+    seq = seq.naseq.reverse_complement
+  end
+  if sname == opts.name
+    subseq = seq.seq[start-1..stop-1]
+    header = sname+":" + start.to_s + "-" + stop.to_s
+    if comp
+      header += "(-)"
+    else
+      header += "(+)"
+    end
+    print (Bio::Sequence::NA.new subseq).translate.to_fasta(header, 60)
+  end
+end
+
