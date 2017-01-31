@@ -8,14 +8,15 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input DNA fasta file", :required=>true, :type=>:string
-  opt :minorf, "minimum orf size (in nucleotides)", :default=>150
+  opt :minorf, "minimum orf size (in aa)", :default=>75
+  opt :longest, "only print longest ORF per transcript"
   opt :starts, "regex of start aas", :default=> "M|I|L|V"
 end
 
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  longest = nil
   next if seq.length < opts.minorf*3
   [1, 2, 3, -1, -2, -3].each do |frame|
-    num = "_0001"
     prot = seq.naseq.translate(frame, 11)
     prot.seq.split(/\*|$/).each do |orf|
       start = -1
@@ -23,17 +24,23 @@ Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
         norf = orf[start..orf.length]
         orfStart = frame.abs + 3*prot.seq.index(norf)
         orfEnd = orfStart + (norf.length*3) - 1
-        if frame < 1
-          orfStart = 1 + seq.length - orfStart
-          orfEnd = 1 + seq.length - orfEnd
+        orfName = seq.entry_id + ":" + orfStart.to_s + "-" + orfEnd.to_s
+        if frame > 0
+          orfName += "(+)"
+        else
+          orfName += "(-)"
         end
-        orfName = seq.entry_id + "_" + frame.to_s + num
-        orfName += " " + seq.entry_id + " " + orfStart.to_s + " " + orfEnd.to_s
         if norf.length >= opts.minorf
-          print Bio::Sequence.new(norf).to_fasta(orfName, 60)
-          orfName.succ!
+          if opts.longest
+            if !longest || norf.length > longest.length
+              longest = Bio::Sequence.new(norf).to_fasta(orfName, 60)
+            end
+          else
+            print Bio::Sequence.new(norf).to_fasta(orfName, 60)
+          end
         end
       end
     end
   end
+  print longest if longest && opts.longest
 end
