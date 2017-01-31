@@ -25,5 +25,5 @@ ARGV.options {|opts|
 term = ARGV.pop
 
 term = term.tr(" ","_").gsub("(","%28").gsub(")","%29")
-system("w3m -dump http://#{opt.lang}.wikipedia.org/wiki/#{term}| less")
+system("w3m -dump https://#{opt.lang}.wikipedia.org/wiki/#{term}| less")
  
