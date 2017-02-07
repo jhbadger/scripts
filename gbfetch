@@ -1,7 +1,6 @@
-#!/usr/bin/env ruby 
+#!/usr/bin/env ruby
 
-require 'rubygems'
-require 'bio'    
+require 'bio'
 require 'trollop'
 
 ARGV.push("--help") if ARGV.empty?
@@ -14,27 +13,27 @@ end
 
 
 if File.exists?(opts.input.first)
-	ids = []
-	File.new(opts.input.first).each do |line|
-		ids.push(line.chomp.split(" ").first)
-	end
+  ids = []
+  File.new(opts.input.first).each do |line|
+    ids.push(line.chomp.split(" ").first)
+  end
 else
-	ids = opts.input
+  ids = opts.input
 end
 
 ids.each do |id|
-	if id.index(":")
-		ids.delete(id)
-		s, e = id.split(":")
-		cur = s
-		while (cur <= e)
-			ids.push(cur.dup)
-			cur.succ!
-		end
-	end
+  if id.index(":")
+    ids.delete(id)
+    s, e = id.split(":")
+    cur = s
+    while (cur <= e)
+      ids.push(cur.dup)
+      cur.succ!
+    end
+  end
 end
 
-Bio::NCBI.default_email = ENV["USER"] + "@jcvi.org"
+Bio::NCBI.default_email = ENV["USER"] + "@nih.gov"
 ncbi = Bio::NCBI::REST.new
 seqs = ncbi.efetch(ids = ids, {"db"=>opts.database, "rettype"=>opts.format})
 seqs.gsub!("\n\n", "\n")
