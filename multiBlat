@@ -34,10 +34,12 @@ opts.input.each do |file|
     cmd += "if fields[2].to_f >= #{opts.minident} "
     cmd += "&& fields[10].to_f <= #{opts.evalue}' #{outFile}.tmp > #{outFile};"
     cmd += "rm #{outFile}.tmp"
-    if opts.swarm
-      print cmd + "\n"
-    else
-      system(cmd)
+    if !File.exists? outFile
+      if opts.swarm
+        print cmd + "\n"
+      else
+        system(cmd)
+      end
     end
   end
 end
