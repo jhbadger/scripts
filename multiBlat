@@ -28,6 +28,9 @@ opts.input.each do |file|
     else
       cmd = cmd1
     end
+    if file[0] != "/"
+      file = ENV["PWD"] + "/" + file
+    end
     cmd += " " + db + " " + file + " " + outFile+".tmp" + " >/dev/null"
     cmd += " 2>/dev/null"
     cmd += ";ruby -ane 'fields=$_.chomp.split(\"\\t\"); print $_ "
@@ -36,6 +39,8 @@ opts.input.each do |file|
     cmd += "rm #{outFile}.tmp"
     if !File.exists? outFile
       if opts.swarm
+        cmd = "cd /lscratch/$SLURM_JOBID;" + cmd
+        cmd += ";cp #{outFile} #{ENV["PWD"]}/#{outFile}"
         print cmd + "\n"
       else
         system(cmd)
