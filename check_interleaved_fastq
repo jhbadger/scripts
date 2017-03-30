@@ -40,13 +40,18 @@ def process_reads(args):
     #   http://effbot.org/zone/readline-performance.htm
 
     forward = ["","","","",""]
+    name, strand = "", ""
+    
     while 1: 
 
         # process the first file
         idstring = inp.readline()
         if not idstring: break
-        name, strand = idstring.split(" ", 2)
-        strand = strand.split(":")[0]
+        if "/1" in idstring or "/2" in idstring:
+            name, strand = idstring.rstrip().split("/")
+        else:
+            name, strand = idstring.split(" ", 2)
+            strand = strand.split(":")[0]
         seq = inp.readline()
         plus = inp.readline()
         quals = inp.readline()
