@@ -1,20 +1,28 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
+require 'trollop'
 require 'bio'
 require 'ZFile'
 
-if (ARGV.size != 3)
-  STDERR.printf("usage: %s seq.fasta min max\n", $0)
-  exit(1)
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "name of filter to filter", :required=>true, :type=>:string
+  opt :format, "type of seq", :default=>"fasta"
+  opt :minv, "minimum length", :type=>:integer, :required=>true
+  opt :maxv, "maximum length", :type=>:integer, :required=>true
 end
 
-file, min, max = ARGV
-min = min.to_i
-max = max.to_i
 
-seqs = Hash.new
+if opts.format == "fasta"
+  format = Bio::FastaFormat
+elsif opts.format == "fastq"
+  format = Bio::Fastq
+else
+  format = "???"
+end
 
-Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each {|seq|
-  print seq if (seq.length >= min && seq.length <= max)
-}
+Bio::FlatFile.new(format, ZFile.new(opts.input)).each do |seq|
+  print seq if seq.seq.length >= opts.minv && seq.seq.length <= opts.maxv
+end
