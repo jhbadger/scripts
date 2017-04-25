@@ -1,0 +1,76 @@
+#!/usr/bin/env python
+# encoding: utf-8
+
+import sys
+import argparse
+
+def interface():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('INPUT',
+                        type=argparse.FileType('r'),
+                        default=sys.stdin,
+                        nargs='?',
+                        help='interleaved reads.')
+
+    parser.add_argument('GOOD_OUTPUT',
+                        type=argparse.FileType('w'),
+                        default=sys.stdout,
+                        nargs='?',
+                        help='Correctly Interleaved reads')
+
+    parser.add_argument('BAD_OUTPUT',
+                        type=argparse.FileType('w'),
+                        default=sys.stderr,
+                        nargs='?',
+                        help='Non Interleaved reads')
+
+    args = parser.parse_args()
+    return args
+
+
+def process_reads(args):
+    
+    inp = args.INPUT
+    fout = args.GOOD_OUTPUT
+    ferr = args.BAD_OUTPUT
+    
+    # USING A WHILE LOOP MAKES THIS SUPER FAST
+    # Details here: 
+    #   http://effbot.org/zone/readline-performance.htm
+
+    forward = ["","","","",""]
+    name, strand = "", ""
+    
+    while 1: 
+
+        # process the first file
+        idstring = inp.readline()
+        if not idstring: break
+        if "/1" in idstring or "/2" in idstring:
+            name, strand = idstring.rstrip().split("/")
+        else:
+            name, strand = idstring.split(" ", 2)
+            strand = strand.split(":")[0]
+        seq = inp.readline()
+        plus = inp.readline()
+        quals = inp.readline()
+        if strand == "1":
+            if forward[0] != "":
+                ferr.write(forward[1]+forward[2]+forward[3]+forward[4])
+            forward = [name, idstring, seq, plus, quals]
+        elif name == forward[0]:
+            fout.write(forward[1]+forward[2]+forward[3]+forward[4])
+            fout.write(idstring+seq+plus+quals)
+            forward = ["","","","",""]
+        else:
+            ferr.write(forward[1]+forward[2]+forward[3]+forward[4])
+            forward = ["","","","",""]
+    inp.close()
+    fout.close()
+    ferr.close()
+    return 0
+
+if __name__ == '__main__':
+    args = interface()
+    process_reads(args)
