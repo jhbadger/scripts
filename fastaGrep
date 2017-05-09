@@ -6,13 +6,11 @@ require 'trollop'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
-  banner File.basename($0)
-  opt :input, "Input fasta file", :required=>true, :type=>:string
-  opt :file, "Read patterns from file", :type=>:string
-  opt :pattern, "pattern to match header", :type=>:strings
+  banner File.basename($0) + " [options] pattern file [...file...]"
+  opt :file, "pattern is file"
+  opt :begin, "must match begining of header"
   opt :fastq, "Read fastq format rather than fasta"
   opt :inverse, "Return things not matching"
-  opt :nostrand, "cut off strand info when matching"
 end
 
 if opts.fastq
@@ -21,6 +19,8 @@ else
   form = Bio::FastaFormat
 end
 
+pat = ARGV.shift
+
 patterns = Hash.new
 if opts.file
   File.new(opts.file).each do |line|
@@ -28,9 +28,7 @@ if opts.file
     patterns[fields.first] = true
   end
 else
-  opts.pattern.each do |pat|
-    patterns[pat] = true
-  end
+  patterns[pat] = true
 end
 
 if patterns.keys.empty?
@@ -38,12 +36,20 @@ if patterns.keys.empty?
   exit(1)
 end
 
-Bio::FlatFile.new(form, ZFile.new(opts.input)).each do |seq|
-  name = seq.entry_id
-  name = name.gsub(/\/1|\/2/,"") if opts.nostrand
-  if patterns[name]
-    print seq if !opts.inverse
-  else
-    print seq if opts.inverse
+if opts.begin
+  beg="^"
+else
+  beg = ""
+end
+
+ARGV.each do |input|
+  Bio::FlatFile.new(form, ZFile.new(input)).each do |seq|
+    match = false
+    patterns.keys.each do |key|
+      if seq.definition =~/#{beg}#{key}/
+        match = true
+      end
+    end
+    print seq if (match && !opts.inverse) || (!match && opts.inverse) 
   end
 end
