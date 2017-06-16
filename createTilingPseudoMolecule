@@ -23,17 +23,17 @@ File.new(tiling).each do |line|
   rs, re, qs, qe, per1, per2, strand, scaff = line.chomp.split(" ")
   seen.push(scaff)
   if (strand == "+")
-    tiled += scaffs[scaff].seq.tr("N","")
+    tiled += scaffs[scaff].seq.tr("N","") + "N"*100
   else
-    tiled += Bio::Sequence::NA.new(scaffs[scaff].seq).reverse_complement.seq.tr("N","")
+    tiled += Bio::Sequence::NA.new(scaffs[scaff].seq).reverse_complement.seq.tr("N","") + "N"*100
   end
   order.printf("%s\t%s\n", scaff, strand)
 end
 
+miss = File.new(File.basename(query).split(".").first+"_missing.fa", "w")
 missing = scaffs.keys - seen
 missing.each do |scaff|
-  tiled += scaffs[scaff].seq.tr("N","") + "N"*100
-  order.printf("%s\t%s\n", scaff, "+")
+  miss.print scaffs[scaff]
 end
 
 pseudo = File.new(File.basename(query).split(".").first+"_pseudo.fa", "w")
@@ -41,3 +41,5 @@ pseudo = File.new(File.basename(query).split(".").first+"_pseudo.fa", "w")
 pseudo.printf(">%s\n%s", File.basename(query).split(".").first, 
        tiled.upcase.gsub(Regexp.new(".{1,60}"), "\\0\n"))
 
+pseudo.close
+miss.close
