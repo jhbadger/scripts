@@ -23,7 +23,7 @@ pat = ARGV.shift
 
 patterns = Hash.new
 if opts.file
-  File.new(opts.file).each do |line|
+  File.new(pat).each do |line|
     fields = line.chomp.split(" ")
     patterns[fields.first] = true
   end
