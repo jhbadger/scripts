@@ -1,0 +1,55 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "Input fastq files", :required=>true, :type=>:strings
+  opt :bin, "size of sample bin", :default=>10
+end
+
+samples = opts.input.collect{|x| File.basename(x).split("_").first}.sort.uniq
+r = DATA.read
+swarm = File.new("inferVar.swarm", "w")
+num = "0001"
+samples.each_slice(opts.bin) do |group|
+  liststr = "\""+group.join("\",\"")+"\""
+  out = File.new("inferVar_#{num}","w")
+  out.print r.sub("seqtab_N","seqtab_#{num}").sub("SAMPLELIST",liststr)
+  out.close
+  swarm.printf("R --no-save < inferVar_#{num}\n")
+  num.succ!
+end
+swarm.close
+                 
+__END__
+library(dada2);
+set.seed(100)
+load("errF")
+load("errR")
+filtpath <- "filtered/"
+filtFs <- list.files(filtpath, pattern="F_filt.fastq.gz", full.names = TRUE)
+filtRs <- list.files(filtpath, pattern="R_filt.fastq.gz", full.names = TRUE)
+if(!identical(sample.names, sample.namesR)) stop("Forward and reverse files do not match.")
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+set.seed(100)
+# Sample inference and merger of paired-end reads
+mergers <- vector("list", length(sample.names))
+names(mergers) <- sample.names
+for(sam in c(SAMPLELIST)) {
+  cat("Processing:", sam, "\n")
+    derepF <- derepFastq(filtFs[[sam]])
+    ddF <- dada(derepF, err=errF, multithread=TRUE)
+    derepR <- derepFastq(filtRs[[sam]])
+    ddR <- dada(derepR, err=errR, multithread=TRUE)
+    merger <- mergePairs(ddF, derepF, ddR, derepR)
+    mergers[[sam]] <- merger
+}
+rm(derepF); rm(derepR)
+# Construct sequence table and remove chimeras
+seqtab <- makeSequenceTable(mergers)
+saveRDS(seqtab, "seqtab_N.rds")
+
+
