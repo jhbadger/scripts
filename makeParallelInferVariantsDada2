@@ -36,9 +36,10 @@ names(filtFs) <- sample.names
 names(filtRs) <- sample.names
 set.seed(100)
 # Sample inference and merger of paired-end reads
-mergers <- vector("list", length(sample.names))
-names(mergers) <- sample.names
-for(sam in c(SAMPLELIST)) {
+samples <- c(SAMPLELIST) 
+mergers <- vector("list", length(samples))
+names(mergers) <- samples
+for(sam in samples) {
   cat("Processing:", sam, "\n")
     derepF <- derepFastq(filtFs[[sam]])
     ddF <- dada(derepF, err=errF, multithread=TRUE)
