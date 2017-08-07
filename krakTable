@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :level, "taxonomic level", :default => 1
+  opt :threshold, "taxonomic threshold", :default => 10
+end
+
+counts = Hash.new
+total = Hash.new
+opts.input.each do |file|
+  File.new(file).each do |line|
+    x, tax = line.chomp.split("\t")
+    taxon = tax.split(";")[opts.level]
+    if !taxon.nil?
+      counts[taxon] = Hash.new if counts[taxon].nil? 
+      counts[taxon][file] = 0 if counts[taxon][file].nil?
+      counts[taxon][file] += 1
+      total[taxon] = 0 if !total[taxon]
+      total[taxon] += 1
+    end
+  end
+end
+
+print ["", opts.input].join("\t")+"\n"
+total.keys.sort{|x,y| total[y] <=> total[x]}.each do |taxon|
+  if total[taxon] >= opts.threshold
+    print [taxon, counts[taxon].values].join("\t")+"\n"
+  end
+end
+
+
