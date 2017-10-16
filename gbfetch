@@ -9,6 +9,7 @@ opts = Trollop::options do
   opt :input, "Input (ids or file)", :required=>true, :type=>:strings
   opt :database, "ncbi database (nucleotide, protein, or sra)", :default=>"nucleotide", :type=>:string
   opt :format, "sequence format (gb, gp or fasta)", :default=>"gb", :type=>:string
+  opt :batch, "batch size for sending request", :default=>1000
 end
 
 
@@ -21,6 +22,7 @@ else
   ids = opts.input
 end
 
+# handle range of ids
 ids.each do |id|
   if id.index(":")
     ids.delete(id)
@@ -35,7 +37,12 @@ end
 
 Bio::NCBI.default_email = ENV["USER"] + "@nih.gov"
 ncbi = Bio::NCBI::REST.new
-seqs = ncbi.efetch(ids = ids, {"db"=>opts.database, "rettype"=>opts.format})
-seqs.gsub!("\n\n", "\n")
 
-print seqs
+batches = ids.each_slice(opts.batch).to_a
+
+batches.each do |batch|
+  seqs = ncbi.efetch(ids = batch,
+                     {"db"=>opts.database, "rettype"=>opts.format})
+  seqs.gsub!("\n\n", "\n")
+  print seqs
+end
