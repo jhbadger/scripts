@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input_dir, "dir with fastqs", :required=>true, :type=>:string
+  opt :threads, "number of threads to use", :default=>4
+end
+
+if !File.exists? "paired.qza"
+  system("qiime tools import --type " +
+         "'SampleData[PairedEndSequencesWithQuality]' --input-path " +
+         opts.input_dir + " --output-path paired.qza " +
+         "--source-format CasavaOneEightSingleLanePerSampleDirFmt")
+end
+	
+if !File.exists? "paired.qzv"
+  system "qiime demux summarize --i-data paired.qza " +
+    "--o-visualization paired.qzv"
+end
+
+if !File.exists? "table.qza"
+  system "qiime dada2 denoise-paired \
+  --verbose \
+  --p-n-threads #{opts.threads} \
+  --i-demultiplexed-seqs paired.qza \
+  --o-table table \
+  --o-representative-sequences rep-seqs.qza \
+  --p-trim-left-f 10 \
+  --p-trim-left-r 10 \
+  --p-trunc-len-f 240 \
+  --p-trunc-len-r 180"
+end
