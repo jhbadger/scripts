@@ -26,10 +26,38 @@ if !File.exists? "table.qza"
   --verbose \
   --p-n-threads #{opts.threads} \
   --i-demultiplexed-seqs paired.qza \
-  --o-table table \
+  --o-table table.qza \
   --o-representative-sequences rep-seqs.qza \
-  --p-trim-left-f 10 \
-  --p-trim-left-r 10 \
-  --p-trunc-len-f 240 \
-  --p-trunc-len-r 180"
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 220 \
+  --p-trunc-len-r 200"
+  system "qiime tools export rep-seqs.qza --output-dir ."
+  system "qiime tools export table.qza --output-dir ."
 end
+
+if !File.exists? "aligned-rep-seqs.qza"
+  system "qiime alignment mafft \
+  --i-sequences rep-seqs.qza \
+  --o-alignment aligned-rep-seqs.qza"
+end
+
+if !File.exists? "masked-aligned-rep-seqs.qza"
+  system "qiime alignment mask \
+  --i-alignment aligned-rep-seqs.qza \
+  --o-masked-alignment masked-aligned-rep-seqs.qza"
+end
+
+if !File.exists? "unrooted-tree.qza"
+  system "qiime phylogeny fasttree \
+  --i-alignment masked-aligned-rep-seqs.qza \
+  --o-tree unrooted-tree.qza"
+end
+
+if !File.exists? "rooted-tree.qza"
+  system "qiime phylogeny midpoint-root \
+  --i-tree unrooted-tree.qza \
+  --o-rooted-tree rooted-tree.qza"
+  system "qiime tools export rooted-tree.qza --output-dir ."
+end
+
