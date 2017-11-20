@@ -6,10 +6,14 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input_dir, "dir with fastqs", :required=>true, :type=>:string
+  opt :classification_db, "qiime classification db", :required=>true,
+      :type=>:string
+  opt :metadata, "metadata tsv", :required=>true, :type=>:string
   opt :threads, "number of threads to use", :default=>4
 end
 
 if !File.exists? "paired.qza"
+  STDERR << "Pairing sequences...\n"
   system("qiime tools import --type " +
          "'SampleData[PairedEndSequencesWithQuality]' --input-path " +
          opts.input_dir + " --output-path paired.qza " +
@@ -22,6 +26,7 @@ if !File.exists? "paired.qzv"
 end
 
 if !File.exists? "table.qza"
+  STDERR << "Running DADA2...\n"
   system "qiime dada2 denoise-paired \
   --verbose \
   --p-n-threads #{opts.threads} \
@@ -37,6 +42,7 @@ if !File.exists? "table.qza"
 end
 
 if !File.exists? "aligned-rep-seqs.qza"
+  STDERR << "Aligning Sequences...\n"
   system "qiime alignment mafft \
   --i-sequences rep-seqs.qza \
   --o-alignment aligned-rep-seqs.qza"
@@ -49,6 +55,7 @@ if !File.exists? "masked-aligned-rep-seqs.qza"
 end
 
 if !File.exists? "unrooted-tree.qza"
+  STDERR << "Making Phylogeny...\n"
   system "qiime phylogeny fasttree \
   --i-alignment masked-aligned-rep-seqs.qza \
   --o-tree unrooted-tree.qza"
@@ -61,3 +68,16 @@ if !File.exists? "rooted-tree.qza"
   system "qiime tools export rooted-tree.qza --output-dir ."
 end
 
+if !File.exists? "taxonomy.qza"
+  STDERR << "Classifying Sequences...\n"
+  system "qiime feature-classifier classify-sklearn --i-reads rep-seqs.qza \
+  --i-classifier #{opts.classification_db} --o-classification taxonomy.qza"
+  system "qiime tools export taxonomy.qza --output-dir ."
+end
+
+if !File.exists? "out.biom"
+  system "biom add-metadata -i feature-table.biom -o out.biom \
+  --output-as-json --observation-metadata-fp taxonomy.tsv \
+  --sample-metadata-fp #{opts.metadata} \
+  --observation-header 'Id,Taxonomy,Confidence'"
+end
