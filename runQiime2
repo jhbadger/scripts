@@ -10,6 +10,10 @@ opts = Trollop::options do
       :type=>:string
   opt :metadata, "metadata tsv", :required=>true, :type=>:string
   opt :threads, "number of threads to use", :default=>4
+  opt :f_trim, "number of bases to trim on the forward read", :default=>19
+  opt :r_trim, "number of bases to trim on the reverse read", :default=>20
+  opt :f_trunc, "number of bases to truncate forward read", :default=>220
+  opt :r_trunc, "number of bases to truncate forward read", :default=>200
 end
 
 if !File.exists? "paired.qza"
@@ -33,10 +37,10 @@ if !File.exists? "table.qza"
   --i-demultiplexed-seqs paired.qza \
   --o-table table.qza \
   --o-representative-sequences rep-seqs.qza \
-  --p-trim-left-f 0 \
-  --p-trim-left-r 0 \
-  --p-trunc-len-f 220 \
-  --p-trunc-len-r 200"
+  --p-trim-left-f #{opts.f_trim} \
+  --p-trim-left-r #{opts.r_trim} \
+  --p-trunc-len-f #{opts.f_trunc} \
+  --p-trunc-len-r #{opts.r_trunc}"
   system "qiime tools export rep-seqs.qza --output-dir ."
   system "qiime tools export table.qza --output-dir ."
 end
