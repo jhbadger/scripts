@@ -12,8 +12,8 @@ opts = Trollop::options do
   opt :threads, "number of threads to use", :default=>4
   opt :f_trim, "number of bases to trim on the forward read", :default=>19
   opt :r_trim, "number of bases to trim on the reverse read", :default=>20
-  opt :f_trunc, "number of bases to truncate forward read", :default=>220
-  opt :r_trunc, "number of bases to truncate forward read", :default=>200
+  opt :f_trunc, "number of bases to truncate forward read", :default=>250
+  opt :r_trunc, "number of bases to truncate forward read", :default=>250
 end
 
 if !File.exists? "paired.qza"
