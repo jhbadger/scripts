@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+print ["Var_label","Var_type"].to_csv
+CSV.foreach(opts.input,  :headers => true, :converters => :all) do |row|
+  row.to_a.each do |pair|
+    var, value = pair
+    if var == row.headers.first
+      type = "Sample"
+    elsif value.class == String
+      type = "discrete"
+    else
+      type = "continous"
+    end
+    print [var, type].to_csv
+  end
+  break
+end
