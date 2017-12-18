@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input samples list", :required=>true, :type=>:string
+  opt :files, "list of file names", :required=>true, :type=>:string
+end
+
+samples = Hash.new
+seen = Hash.new
+File.new(opts.input).each do |line|
+  samples[line.chomp] = true
+end
+
+File.new(opts.files).each do |line|
+  name = File.basename(line.chomp).split("_").first
+  if samples[name]
+    print line
+    seen[name] = true
+  end
+end
+
+samples.keys.each do |sample|
+  if !seen[sample]
+    STDERR.printf("Missing sample %s\n", sample)
+  end
+end
