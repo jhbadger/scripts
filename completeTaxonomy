@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'Zfile'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "complete file", :required=>true, :type=>:string
+  opt :species, "species file", :required=>true, :type=>:string
+end
+
+
+taxonomy = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  tax = seq.definition.split(";")
+  taxonomy[tax[5]] = tax[0..5].join(";") if !tax[5].nil?
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.species)).each do |seq|
+  acc, genus, species = seq.definition.split(" ")
+  if taxonomy[genus]
+    header = acc+" "+taxonomy[genus]+";"+genus+"_"+species+";"
+    print Bio::Sequence.new(seq.seq).to_fasta(header, 60)
+  end
+end
