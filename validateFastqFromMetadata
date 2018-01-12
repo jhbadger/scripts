@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'csv'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "metadata file", :required=>true, :type=>:string
+  opt :fastq, "fastq dir", :required=>true, :type=>:string
+  opt :trim_metadata, :default=>false
+end
+
+fastqs = Dir.glob(opts.fastq+"/*.fastq*").collect{|x| File.basename(x)}
+
+headers_printed = false
+CSV.foreach(opts.input, :headers=>true) do |row|
+  if opts.trim_metadata && !headers_printed
+    print row.headers.to_csv
+    headers_printed = true
+  end
+  sample = row.to_hash.values.first
+  matches = fastqs.grep(/^#{sample}_/)
+  if matches.length == 2
+    fastqs = fastqs - matches
+    print row.to_csv if opts.trim_metadata
+  else
+    STDERR.printf("Missing fastqs for sample: %s\n", sample)
+  end
+end
+
+fastqs.each do |fastq|
+  STDERR.printf("Extra fastq: %s\n", fastq)
+end
