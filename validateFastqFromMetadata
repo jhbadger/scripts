@@ -8,7 +8,7 @@ opts = Trollop::options do
   banner File.basename($0)
   opt :input, "metadata file", :required=>true, :type=>:string
   opt :fastq, "fastq dir", :required=>true, :type=>:string
-  opt :trim_metadata, :default=>false
+  opt :trim_metadata, "trim metadata", :default=>false
 end
 
 fastqs = Dir.glob(opts.fastq+"/*.fastq*").collect{|x| File.basename(x)}
