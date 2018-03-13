@@ -8,8 +8,8 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input file", :required=>true, :type=>:string
-  opt :fwd, "forward primer", :required=>true, :type=>:string
-  opt :rev, "reverse primer", :required=>true, :type=>:string
+  opt :fwd, "forward primer", :default=>"GTGYCAGCMGCCGCGGTAA"
+  opt :rev, "reverse primer", :default=>"GGACTACNVGGGTWTCTAAT"
 end
 
 fwdre = Bio::Sequence::NA.new(opts.fwd).to_re
@@ -20,7 +20,7 @@ Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
   start = s.index(/#{fwdre}/)
   stop = s.index(/#{revre}/)
   if start && stop
-    amplicon = s[(start+opts.fwd.length)..stop - 1].upcase
+    amplicon = s[start..(stop + opts.rev.length - 1)].upcase
     print Bio::Sequence.new(amplicon).to_fasta(seq.definition, 60)
   end
 end
