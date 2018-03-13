@@ -8,6 +8,7 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0) + " [options] pattern file [...file...]"
   opt :file, "pattern is file"
+  opt :onlyfirst, "only pick first matching sequence"
   opt :begin, "must match begining of header"
   opt :fastq, "Read fastq format rather than fasta"
   opt :inverse, "Return things not matching"
@@ -45,11 +46,17 @@ end
 ARGV.each do |input|
   Bio::FlatFile.new(form, ZFile.new(input)).each do |seq|
     match = false
+    matchedkey = ""
     patterns.keys.each do |key|
       if seq.definition =~/#{beg}#{key}/
         match = true
+        matchedkey = key
+        break if opts.onlyfirst
       end
     end
-    print seq if (match && !opts.inverse) || (!match && opts.inverse) 
+    print seq if (match && !opts.inverse) || (!match && opts.inverse)
+    if match && opts.onlyfirst
+      patterns.delete matchedkey
+    end
   end
 end
