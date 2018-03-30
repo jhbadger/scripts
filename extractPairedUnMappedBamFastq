@@ -6,32 +6,41 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :swarm, "generate a swarm file"
 end
 
 opts.input.each do |file|
-  name = File.basename(file, ".bam")
-  outname1 = name + "_R1.fastq"
-  outname2 = name + "_R2.fastq"
-  STDERR << "Processing #{name}...\n"
-  out1 = File.new(outname1,"w")
-  out2 = File.new(outname2,"w")
-  STDERR << "Getting statistics...\n"
-  system("samtools flagstat #{file} > #{name}.flagstat")
-  STDERR << "Extracting unmapped reads...\n"
-  unmapped = File.basename(file)+".unmapped"
-  system("samtools view -f4 #{file} > #{unmapped}")
-  STDERR << "Making fastqs...\n"
-  File.new(unmapped).each do |line|
-    fields = line.chomp.split("\t")
-    if fields[1] == "77"
-      out1.print "@"+fields[0]+"/1\n" + fields[9]
-      out1.print "\n+\n" + fields[10] + "\n"
-    elsif fields[1] == "141"
-      out2.print "@"+fields[0]+"/2\n" + fields[9]
-      out2.print "\n+\n" + fields[10] + "\n"
+  if opts.swarm
+    printf("%s -i %s\n", $0, file)
+  else
+    name = File.basename(file, ".bam")
+    outname1 = name + "_R1.fastq"
+    outname2 = name + "_R2.fastq"
+    STDERR << "Processing #{name}...\n"
+    out1 = File.new(outname1,"w")
+    out2 = File.new(outname2,"w")
+    STDERR << "Getting statistics...\n"
+    system("samtools flagstat #{file} > #{name}.flagstat")
+    STDERR << "Extracting unmapped reads...\n"
+    unmapped = File.basename(file)+".unmapped"
+    system("samtools view -f4 #{file} > #{unmapped}")
+    STDERR << "Making fastqs...\n"
+    File.new(unmapped).each do |line|
+      fields = line.chomp.split("\t")
+      if fields[1] == "77"
+        out1.print "@"+fields[0]+"/1\n" + fields[9]
+        out1.print "\n+\n" + fields[10] + "\n"
+      elsif fields[1] == "141"
+        out2.print "@"+fields[0]+"/2\n" + fields[9]
+        out2.print "\n+\n" + fields[10] + "\n"
+      end
     end
+    File.unlink(unmapped)
+    out1.close
+    out2.close
+    STDERR << "bzipping #{outname1}...\n"
+    system("bzip2 #{outname1}")
+    STDERR << "bzipping #{outname2}...\n"
+    system("bzip2 #{outname2}")
   end
-  File.unlink(unmapped)
-  out1.close
-  out2.close
 end
