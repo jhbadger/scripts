@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :lines, "lines per split", :default=>50
+end
+
+header = nil
+outName = File.basename(opts.input, ".txt")+".0001"
+swarm = File.new(File.basename(opts.input, ".txt")+".swarm", "w")
+out = nil
+count = 1
+File.new(opts.input).each do |line|
+  if header.nil?
+    header = line
+  else
+    if out.nil?
+      out = File.new(outName+".txt", "w")
+      out.print header
+    end
+    out.print line
+    count += 1
+    if count > opts.lines
+      swarm.print "gdc-client download -m #{outName}.txt -t ~/lib/gdc.token\n"
+      count = 1
+      out.close
+      outName.succ!
+      out = nil
+    end
+  end
+end
+
+swarm.print "gdc-client download -m #{outName}.txt -t ~/lib/gdc.token\n"
+out.close if out
+swarm.close
