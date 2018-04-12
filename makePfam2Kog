@@ -1,0 +1,64 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "pfam tbl", :required=>true, :type=>:string
+  opt :description, "pfam desc", :required=>true, :type=>:string
+  opt :cluster, "kog cluster", :required=>true, :type=>:string
+  opt :groups, "kog cluster categories", :required=>true, :type=>:string
+  opt :threshold, "pfam threshold", :default=>1e-6
+end
+
+pfamname = Hash.new
+ZFile.new(opts.description).each do |line|
+  n, desc = line.chomp.split("\t")
+  pfamname[n] = desc
+end
+
+categories = Hash.new
+ZFile.new(opts.groups).each do |line|
+  if line =~/\]/
+    cat, desc = line.rstrip.chomp.split(" ",2)
+    cat = cat.tr("[]","")
+    categories[cat] = desc
+  end
+end
+
+kogname = Hash.new
+kogcat = Hash.new
+pkog = Hash.new
+kog = nil
+ZFile.new(opts.cluster).each do |line|
+  if line =~/\[/
+    cat, kog, desc = line.chomp.split(" ",3)
+    cat = cat[cat.length - 2]
+    kogcat[kog] = cat
+    kogname[kog] = desc
+  else
+    org, hit = line.chomp.split(" ")
+    pkog[hit] = kog
+  end
+end
+
+seen = Hash.new
+ZFile.new(opts.input).each do |line|
+  if line =~/PF/
+    fields = line.chomp.split(" ")
+    hit = fields[0]
+    pfam = fields[3]
+    pvalue = fields[7].to_f
+    if pvalue <= opts.threshold
+      kog = pkog[hit]
+      if !kog.nil? && !seen[pfam+kog]
+        printf("%s\t%s\t%s\t%s\t%s\n",
+               pfam.split(".").first, pfamname[pfam], kog,
+               kogname[kog], categories[kogcat[kog]])
+        seen[pfam+kog] = true
+      end
+    end
+  end
+end
