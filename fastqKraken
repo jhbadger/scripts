@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input fastqs (R1)", :required=>true, :type=>:strings
+  opt :db, "kraken db", :default=>"/data/MicrobiomeCore/krakendb/all"
+  opt :threads, "threads", :default=>2
+end
+
+opts.input.each do |fq|
+  r2 = fq.gsub("_R1", "_R2")
+  if File.size(fq) > 14
+    out = File.basename(fq).split("_R1").first+".kraken"
+    cmd = "kraken -db #{opts.db} --paired --fastq-input --bzip2-compressed "
+    cmd += "--only-classified-output --output #{out} #{fq} #{r2} "
+    cmd += "--threads #{opts.threads}"
+    print cmd+"\n"
+  end
+end
