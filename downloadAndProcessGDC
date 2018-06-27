@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "manifest file", :required=>true, :type=>:string
+  opt :token, "gdc token", :required=>true, :type=>:string
+  opt :bsize, "size of inner batch", :default=>20
+  opt :dir, "results dir",
+      :default=> "/data/badgerjh/tumor-microbiome/unsorted"
+end
+
+def printcmd(token, mani, dir)
+  cmd = "cp #{mani}.txt /lscratch/$SLURM_JOB_ID;"
+  cmd += "cd /lscratch/$SLURM_JOB_ID;";
+  cmd += "gdc-client download -t #{token} -m #{mani}.txt;"
+  cmd += "extractPairedUnMappedBamFastq -i */*.bam;"
+  cmd += "mv *.flagstat #{dir}/stats;"
+  cmd += "mv *.bz2 #{dir}/fastq; rm */*.bam;rm */*.bai"
+  print cmd+"\n"
+end
+
+header = nil
+count = 0
+mani = "mani_0000"
+out = nil
+
+File.new(opts.input).each do |line|
+  if header.nil?
+    header = line
+  else
+    _, filename = line.chomp.split("\t")
+    name = File.basename(filename,".bam")
+    r1 = opts.dir + "/fastq/" + name + "_R1.fastq.bz2"
+    if !File.exists? r1
+      if count > opts.bsize || count == 0
+        printcmd(opts.token, mani, opts.dir) if count > 0
+        count = 0
+        mani.succ!
+        out.close if !out.nil?
+        out = File.new(mani+".txt","w")
+        out.print header
+      end
+      out.print line
+      count += 1      
+    end
+  end
+end
+
+printcmd(opts.token, mani, opts.dir) if count > 0
