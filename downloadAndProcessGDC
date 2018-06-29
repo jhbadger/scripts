@@ -12,10 +12,9 @@ opts = Trollop::options do
       :default=> "/data/badgerjh/tumor-microbiome/unsorted"
 end
 
-def printcmd(token, mani, dir)
-  cmd = "cp #{mani}.txt /lscratch/$SLURM_JOB_ID;"
-  cmd += "cd /lscratch/$SLURM_JOB_ID;";
-  cmd += "gdc-client download -t #{token} -m #{mani}.txt;"
+def printcmd(token, mani, dir, pwd)
+  cmd = "cd /lscratch/$SLURM_JOB_ID;";
+  cmd += "gdc-client download -t #{token} -m #{pwd}/#{mani}.txt;"
   cmd += "extractPairedUnMappedBamFastq -i */*.bam;"
   cmd += "mv *.flagstat #{dir}/stats;"
   cmd += "mv *.bz2 #{dir}/fastq; rm */*.bam;rm */*.bai"
@@ -26,6 +25,7 @@ header = nil
 count = 0
 mani = "mani_0000"
 out = nil
+pwd = Dir.pwd
 
 File.new(opts.input).each do |line|
   if header.nil?
@@ -36,7 +36,7 @@ File.new(opts.input).each do |line|
     r1 = opts.dir + "/fastq/" + name + "_R1.fastq.bz2"
     if !File.exists? r1
       if count > opts.bsize || count == 0
-        printcmd(opts.token, mani, opts.dir) if count > 0
+        printcmd(opts.token, mani, opts.dir, pwd) if count > 0
         count = 0
         mani.succ!
         out.close if !out.nil?
@@ -49,4 +49,4 @@ File.new(opts.input).each do |line|
   end
 end
 
-printcmd(opts.token, mani, opts.dir) if count > 0
+printcmd(opts.token, mani, opts.dir, pwd) if count > 0
