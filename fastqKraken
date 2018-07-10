@@ -12,11 +12,18 @@ end
 
 opts.input.each do |fq|
   r2 = fq.gsub("_R1", "_R2")
-  if File.size(fq) > 14
-    out = File.basename(fq).split("_R1").first+".kraken"
-    cmd = "kraken -db #{opts.db} --paired --fastq-input --bzip2-compressed "
-    cmd += "--only-classified-output --output #{out} #{fq} #{r2} "
-    cmd += "--threads #{opts.threads}"
-    print cmd+"\n"
+  if File.size(fq) > 14 && File.exists?(fq) && File.exists?(r2)
+    data = "/data/#{ENV["USER"]}"
+    out = data+"/"+ File.basename(fq).split("_R1").first+".kraken"
+    o1 = "/lscratch/$SLURM_JOB_ID/"+File.basename(out)
+    if !File.exists?(out)
+      cmd = "cp -r #{opts.db} /lscratch/$SLURM_JOB_ID;"
+      cmd += "kraken -db /lscratch/$SLURM_JOB_ID/#{File.basename(opts.db)} "
+      cmd += "--paired --fastq-input --bzip2-compressed "
+      cmd += "--output #{o1} #{fq} #{r2} "
+      cmd += "--threads #{opts.threads};"
+      cmd += "cp #{o1} #{out}"
+      print cmd+"\n"
+    end
   end
 end
