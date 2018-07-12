@@ -1,45 +1,40 @@
 #!/usr/bin/env ruby
 
 require 'trollop'
+require 'ZFile'
+require 'Set'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
-  opt :input, "input file(s)", :required=>true, :type=>:strings
-  opt :exclude, "exclude taxon", :type=>:string
+  opt :input, "input directory", :required=>true, :type=>:string
 end
 
+excluded = [1, 2, 131567, 9606]
 counts = Hash.new
-total = Hash.new
+names = Set.new
 
-opts.input.each do |file|
-  File.new(file).each do |line|
-    x, tax = line.chomp.split("\t")
-    if !opts.exclude || tax !~ /#{opts.exclude}/
-      counts[tax] = Hash.new if !counts[tax]
-      counts[tax][file] = 0 if !counts[tax][file]
-      total[tax] = 0 if !total[tax]
-      counts[tax][file] += 1
-      total[tax] += 1
+Dir.glob(opts.input+"/*.kraken*").each do |file|
+  name = File.basename(file).split("_gdc").first
+  names.add name
+  ZFile.new(file).each do |line|
+    _,_,tid = line.chomp.split("\t")
+    tid = tid.to_i
+    if !excluded.include? tid
+      counts[tid] = Hash.new if !counts[tid]
+      counts[tid][name] = 0 if !counts[tid][name]
+      counts[tid][name] += 1
     end
   end
 end
 
-otuTable = File.new("otu.txt","w")
-taxTable = File.new("tax.txt", "w")
-
-otu = "OTU_0001"
-
-otuTable.print (["#OTU"] + opts.input.collect{|x|
-                  x.split(".")[0]}).join("\t")+"\n"
-taxTable.print ["#OTU", "taxonomy"].join("\t")+"\n"
-
-total.keys.sort {|x,y| total[y] <=> total[x]}.each do |tax|
-  c = opts.input.collect{|x| counts[tax][x].to_i}
-  otuTable.print ([otu] + c).join("\t")+"\n"
-  taxTable.print [otu, tax].join("\t")+"\n"
-  otu.succ!
+names = names.to_a.sort
+print (["TID"] + names).join(",")+"\n"
+counts.keys.sort.each do |tid|
+  line = []
+  line.push(tid)
+  names.each do |name|
+    line.push counts[tid][name]
+  end
+  print line.join(",")+"\n"
 end
-
-otuTable.close
-taxTable.close
