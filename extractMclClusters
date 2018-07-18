@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'ZFile'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input cluster tsv", :required=>true, :type=>:string
+  opt :fasta, "fasta file", :required=>true, :type=>:string
+  opt :num, "target number", :required=>true, :type=>:integer
+end
+
+seqs = Hash.new
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.fasta)).each do |seq|
+  seqs[seq.entry_id] = seq
+end
+
+
+ZFile.new(opts.input).each do |line|
+  if line !~/^Cluster Num/
+    name, size, members = line.chomp.split("\t",3)
+    members = members.split("\t").sort
+    if size.to_i == opts.num
+      prefixes = members.collect{|x| x.split("_").first}.uniq
+      if prefixes.size == size.to_i
+        out = File.new(name+".fa", "w")
+        members.each do |pep|
+          out.print seqs[pep]
+        end
+        out.close
+        `muscle -in #{name}.fa -out #{name}.afa`
+      end
+    end
+  end
+end

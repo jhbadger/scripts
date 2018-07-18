@@ -8,13 +8,19 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "Input afa files", :required=>true, :type=>:strings
+  opt :prefix, "optional prefix separator", :type=>:string
 end
 
 peps = Hash.new
 opts.input.each do |file|
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
-    peps[seq.entry_id] = Hash.new if !peps[seq.entry_id]
-    peps[seq.entry_id][file] = seq.seq
+    if opts.prefix
+      name = seq.entry_id.split(opts.prefix).first
+    else
+      name = seq.entry_id
+    end
+    peps[name] = Hash.new if !peps[name]
+    peps[name][file] = seq.seq
   end
 end
 
