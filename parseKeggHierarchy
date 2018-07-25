@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+alevel = ""
+blevel = ""
+clevel = ""
+
+print ["KO", "Gene", "Desc", "A_class", "B_class", "C_class"].join("\t")+"\n"
+File.new(opts.input).each do |line|
+  if line=~/^A/
+    alevel = line.split(/^A/, 2).last.chomp
+  elsif line=~/^B/
+    blevel = line.split(" ",2).last.chomp
+  elsif line=~/^C/
+    clevel = line.split(" ",2).last.chomp
+  elsif line=~/^D/
+    _, ko, rest = line.chomp.split(" ", 3)
+    rest = rest.gsub("\t","")
+    gene, desc = rest.split("; ")
+    print [ko, gene, desc, alevel, blevel, clevel].join("\t")+"\n"
+  end
+end

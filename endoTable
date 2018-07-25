@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+end
+
+print "Acc\t\Host\tContigs\n"
+opts.input.each do |file|
+  acc = File.basename(file).split(/\_[A-Z|a-z]/)[0]
+  host = nil
+  contigs = 0
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
+    contigs += 1
+    if !host && seq.definition =~ /of/
+      host = seq.definition.split(" of ")[1]
+      host = host.split(/,| complete| scaf| [c|C]ontig| NODE| wolsym| genome| Wb| chromo| DNA| WSTR| [0-9]/).first
+      host = host.gsub(/ strain| str\./,"")
+    end
+  end
+  print [acc,host,contigs].join("\t")+"\n"
+end
