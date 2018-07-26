@@ -7,20 +7,71 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :prokka, "create swarm file for prokka"
+  opt :rrna, "extract 16S rRNA"
 end
 
-print "Acc\t\Host\tContigs\n"
+prokka = File.new("prokka.swarm", "w") if opts.prokka
+rrna = File.new("16S.fa", "w") if opts.rrna
+
+print "Accession\t\Host\tStrain\tSize (mbp)\t%GC\tGenes\t16S copies\tContigs\n"
 opts.input.each do |file|
   acc = File.basename(file).split(/\_[A-Z|a-z]/)[0]
   host = nil
+  strain = nil
   contigs = 0
+  gsize = 0
+  genes = 0
+  gc = 0
+  genus = nil
+  species = nil
   Bio::FlatFile.new(Bio::FastaFormat, File.new(file)).each do |seq|
     contigs += 1
+    gsize += seq.length
+    gc += seq.seq.count("GC")
     if !host && seq.definition =~ /of/
       host = seq.definition.split(" of ")[1]
       host = host.split(/,| complete| scaf| [c|C]ontig| NODE| wolsym| genome| Wb| chromo| DNA| WSTR| [0-9]/).first
       host = host.gsub(/ strain| str\./,"")
+      genus, species, strain = host.split(" ")
+      host = genus + " " + species
+    end
+    if !strain && seq.definition =~/str. ([\S]*)/
+      strain = $1
     end
   end
-  print [acc,host,contigs].join("\t")+"\n"
+  host = "Unknown" if host.nil?
+  strain = "isolate" if strain.nil?
+  if genus.nil? || species.nil?
+    STDERR << acc << " doesn't have a genus or species\n"
+    exit(1)
+  end
+  pname = genus+"_"+species+"_"+strain
+  if File.exists? pname
+    gname = pname + "/" + pname + ".ffn"
+    copies16S = 0
+    Bio::FlatFile.new(Bio::FastaFormat, File.new(gname)).each do |seq|
+      genes += 1
+      if seq.length > 1000 && seq.definition =~/16S ribosomal RNA/
+        if copies16S == 0 && opts.rrna
+          rrna.print Bio::Sequence.new(seq.seq).to_fasta(pname, 60)
+        end
+        copies16S += 1
+      end
+    end
+  end
+  gcper = sprintf("%2.1f", 100.0*gc / gsize)
+  gsize = sprintf("%1.2f", gsize / 1e6)
+  print [acc, host, strain, gsize, gcper, genes, copies16S,
+         contigs].join("\t")+"\n"
+  if opts.prokka
+    tag = genus[0]+species[0]+strain
+    prokka.printf("prokka --genus %s --species %s --strain %s " +
+                  "--locustag %s --prefix %s_%s_%s --outdir %s_%s_%s %s\n",
+                  genus, species, strain, tag, genus, species, strain,
+                  genus, species, strain, file)
+  end
 end
+
+prokka.close if opts.prokka
+rrna.close if opts.rrna
