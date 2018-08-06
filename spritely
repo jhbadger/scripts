@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+data = File.read(opts.input).split("\n").collect{|x| x.split(//)}
+
+if data.length % 8 != 0
+  STDERR << "Length must be divisible by 8!\n"
+else
+  while data.length > 0
+    outbyte = [0]*8
+    lines = data.shift(8)
+    0.upto(7) do |i|
+      factor = 2**i
+      0.upto(7) do |j|
+        if lines[i][j].to_s == "X"
+          bit = 1
+        else
+          bit = 0
+        end
+        outbyte[j] += bit*factor
+      end
+    end
+    print outbyte.to_s.gsub('"',"").gsub("[","{").gsub("]","}")+"\n"
+  end
+end
+
