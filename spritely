@@ -1,21 +1,49 @@
 #!/usr/bin/env ruby
 
 require 'trollop'
+require 'chunky_png'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input file", :required=>true, :type=>:string
+  opt :xflip, "flip horizontally"
+  opt :yflip, "flip vertically"
+  opt :rotate, "rotate 90 degrees"
 end
 
-data = File.read(opts.input).split("\n").collect{|x| x.split(//)}
+def rotate(lines)
+  0.upto(4) do |x|
+    x.upto(7-x) do |y|
+      temp = lines[x][y]
+      lines[x][y] = lines[y][7-x]
+      lines[y][7-x] = lines[7-x][7-y]
+      lines[7-x][7-y] = lines[7-y][x]
+      lines[7-y][x] = temp
+    end
+  end
+  lines
+end
 
+if opts.input ~/.png/
+  data = []
+  pixels = tank = ChunkyPNG::Image.from_file(opts.input).pixels
+  while pixels.length > 0
+    data += [pixels.shift(8).collect{|x| if x==255;"X";else " ";end}]
+  end
+else
+  data = File.read(opts.input).split("\n").collect{|x| x.split(//)}
+end
+  
 if data.length % 8 != 0
   STDERR << "Length must be divisible by 8!\n"
 else
   while data.length > 0
     outbyte = [0]*8
     lines = data.shift(8)
+    lines = rotate(lines) if opts.rotate
+    lines = lines.reverse if opts.yflip
+    lines = lines.collect{|x| x.reverse} if opts.xflip
     0.upto(7) do |i|
       factor = 2**i
       0.upto(7) do |j|
