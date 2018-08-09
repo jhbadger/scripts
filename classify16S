@@ -1,0 +1,119 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'bio'
+require 'newick'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Trollop::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :db, "16S blast database", :required=>true, :type=>:string
+  opt :percent, "percent identity", :default=>95.0
+  opt :max_target, "maximum number of target sequences", :default=>10
+  opt :threads, "CPU threads to use", :default=>2
+end
+
+queries = []
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  queries.push(seq)
+end
+STDERR << "Found #{queries.length} query sequences...\n"
+
+
+name = File.basename(opts.input).split(".").first
+blast = name + ".blast"
+list = name + ".list"
+tmp = name + ".tmp"
+homologs = name + ".hom"
+aln = name + ".afa"
+tree = name + ".tre"
+
+cmd = "blastn -db #{opts.db} -query=#{opts.input} "
+cmd += "-perc_identity #{opts.percent} -outfmt 6 -num_threads #{opts.threads} "
+cmd += "-max_target_seqs #{opts.max_target} > #{blast}"
+if File.exists?(blast)
+  STDERR << "Found #{blast} Skipping BLAST step...\n"
+else
+  STDERR << "Running blast...\n"
+  system(cmd)
+end
+
+out = File.new(list, "w")
+seen = Hash.new
+File.new(blast).each do |line|
+  id = line.chomp.split("\t")[1]
+  out.print id+"\n" if !seen[id]
+  seen[id] = true
+end
+out.close
+
+cmd = "blastdbcmd -db #{opts.db} -entry_batch #{list} > #{tmp}"
+
+if File.exists?(homologs)
+  STDERR << "Found #{homologs} Skipping homolog step...\n"
+else
+  STDERR << "Extracting homologs...\n"
+  system(cmd)
+  out = File.new(homologs,"w")
+  Bio::FlatFile.new(Bio::FastaFormat, File.new(tmp)).each do |seq|
+    sname = seq.entry_id
+    tax = seq.definition.split(" ",2).last.split(";")
+    sp = tax.pop
+    genus = tax.pop
+    sp = sp.gsub(genus,"")
+    sname += ("_"+genus+"_"+sp).tr(" :()","_").gsub("__","_")
+    out.print Bio::Sequence.new(seq.seq).to_fasta(sname, 60)
+  end
+  out.close
+end
+
+out = File.new(tmp, "w")
+queries.each do |seq|
+  out.print seq
+end
+Bio::FlatFile.new(Bio::FastaFormat, File.new(homologs)).each do |seq|
+  out.print seq
+end
+out.close
+
+cmd = "muscle -in #{tmp} -out #{aln}"
+if File.exists?(aln)
+  STDERR << "Found #{aln} Skipping alignment step...\n"
+else
+  system(cmd)
+end
+
+if File.exists?(tree)
+  STDERR << "Found #{tree} Skipping phylogeny step...\n"
+else
+  out = File.new(tmp, "w")
+  align = Bio::Alignment.readfiles(aln)
+  phylip = align.output_phylip
+  align.keys.each do |key|
+    tenchar = key[0..9]
+    phylip = phylip.gsub(tenchar, key)
+  end
+  out.print phylip
+  out.close
+  cmd = "phyml --quiet -i #{tmp} -m GTR -c 4 >/dev/null"
+  STDERR << "Building Phylogeny...\n"
+  system(cmd)
+  File.rename(tmp+"_phyml_tree.txt", tree)
+  File.unlink(tmp+"_phyml_stats.txt")
+end
+
+ttree = NewickTree.fromFile(tree)
+queries.each do |query|
+  qname = query.definition.split(" ").first
+  node = ttree.root.findNode(qname)
+  taxa = node.parent.taxa
+  STDOUT << "Neighbors of #{qname} are:"
+  taxa.each do |hname|
+    STDOUT << " " + hname if hname != qname
+  end
+  STDOUT << "\n"
+end
+
+File.unlink(list) if File.exists?(list)
+File.unlink(tmp) if File.exists?(tmp)
