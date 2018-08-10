@@ -89,8 +89,10 @@ end
 
 def percent_identity(x,y)
   ident = 0
-  0.upto(x.length) do |i|
-    ident += 1 if x[i]==y[i] || x[i]=="-" || y[i] == "-"
+  0.upto(x.length - 1) do |i|
+    a = x[i].upcase.tr("U","T")
+    b = y[i].upcase.tr("U","T")
+    ident += 1 if a==b || a=="-" || b == "-"
   end
   (10000*ident/x.length)/100.0
 end
