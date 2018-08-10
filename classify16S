@@ -3,13 +3,14 @@
 require 'trollop'
 require 'bio'
 require 'newick'
+require 'fpdf'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input file", :required=>true, :type=>:string
   opt :db, "16S blast database", :required=>true, :type=>:string
-  opt :percent, "percent identity", :default=>95.0
+  opt :percent, "percent blast identity", :default=>95.0
   opt :max_target, "maximum number of target sequences", :default=>10
   opt :threads, "CPU threads to use", :default=>2
 end
@@ -28,6 +29,7 @@ tmp = name + ".tmp"
 homologs = name + ".hom"
 aln = name + ".afa"
 tree = name + ".tre"
+pdf = tree + ".pdf"
 
 cmd = "blastn -db #{opts.db} -query=#{opts.input} "
 cmd += "-perc_identity #{opts.percent} -outfmt 6 -num_threads #{opts.threads} "
@@ -84,17 +86,29 @@ else
   system(cmd)
 end
 
+
+def percent_identity(x,y)
+  ident = 0
+  0.upto(x.length) do |i|
+    ident += 1 if x[i]==y[i] || x[i]=="-" || y[i] == "-"
+  end
+  (10000*ident/x.length)/100.0
+end
+
+align = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, File.new(aln)).each do |seq|
+  align[seq.entry_id] = seq.seq
+end
+
+
 if File.exists?(tree)
   STDERR << "Found #{tree} Skipping phylogeny step...\n"
 else
   out = File.new(tmp, "w")
-  align = Bio::Alignment.readfiles(aln)
-  phylip = align.output_phylip
+  out << " #{align.keys.length} #{align.values.first.length}\n"
   align.keys.each do |key|
-    tenchar = key[0..9]
-    phylip = phylip.gsub(tenchar, key)
+    out << key + " " + align[key].seq+"\n"
   end
-  out.print phylip
   out.close
   cmd = "phyml --quiet -i #{tmp} -m GTR -c 4 >/dev/null"
   STDERR << "Building Phylogeny...\n"
@@ -103,17 +117,29 @@ else
   File.unlink(tmp+"_phyml_stats.txt")
 end
 
-ttree = NewickTree.fromFile(tree)
+STDOUT << "\n\n"
+
+ttree = NewickTree.fromFile(tree).midpointRoot
 queries.each do |query|
   qname = query.definition.split(" ").first
   node = ttree.root.findNode(qname)
   taxa = node.parent.taxa
   STDOUT << "Neighbors of #{qname} are:"
   taxa.each do |hname|
-    STDOUT << " " + hname if hname != qname
+    identity = percent_identity(align[qname],align[hname])
+    STDOUT << " " + hname + " (#{identity})" if hname != qname
   end
   STDOUT << "\n"
 end
 
+ttree.draw(pdf) if !File.exists?(pdf)
+  
 File.unlink(list) if File.exists?(list)
 File.unlink(tmp) if File.exists?(tmp)
+File.unlink(homologs) if File.exists?(homologs)
+
+STDOUT << "\n\nBlast is #{blast}\n"
+STDOUT << "Alignment is #{aln}\n"
+STDOUT << "Tree is #{tree}\n"
+STDOUT << "PDF is #{pdf}\n"
+
