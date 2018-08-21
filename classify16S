@@ -11,6 +11,7 @@ opts = Trollop::options do
   opt :input, "input file", :required=>true, :type=>:string
   opt :db, "16S blast database", :required=>true, :type=>:string
   opt :percent, "percent blast identity", :default=>95.0
+  opt :algorithm, "algorithm to use (ml or nj)", :default=>"ml"
   opt :max_target, "maximum number of target sequences", :default=>10
   opt :threads, "CPU threads to use", :default=>2
 end
@@ -26,6 +27,7 @@ name = File.basename(opts.input).split(".").first
 blast = name + ".blast"
 list = name + ".list"
 tmp = name + ".tmp"
+tmp2 = name + ".tmp2"
 homologs = name + ".hom"
 aln = name + ".afa"
 tree = name + ".tre"
@@ -112,11 +114,22 @@ else
     out << key + " " + align[key].seq+"\n"
   end
   out.close
-  cmd = "phyml --quiet -i #{tmp} -m GTR -c 4 >/dev/null"
   STDERR << "Building Phylogeny...\n"
-  system(cmd)
-  File.rename(tmp+"_phyml_tree.txt", tree)
-  File.unlink(tmp+"_phyml_stats.txt")
+  if opts.algorithm == "ml"
+    cmd = "phyml --quiet -i #{tmp} -m GTR -c 4 >/dev/null"
+    system(cmd)
+    File.rename(tmp+"_phyml_tree.txt", tree)
+    File.unlink(tmp+"_phyml_stats.txt")
+  else
+    out = File.new(tmp2, "w")
+    out << "# STOCKHOLM 1.0\n"
+    align.keys.each do |key|
+      out << key + " " + align[key] << "\n"
+    end
+    out.close
+    cmd = "quicktree -boot 100 #{tmp2} > #{tree}"
+    system(cmd)
+  end
 end
 
 STDOUT << "\n\n"
@@ -138,6 +151,7 @@ ttree.draw(pdf) if !File.exists?(pdf)
   
 File.unlink(list) if File.exists?(list)
 File.unlink(tmp) if File.exists?(tmp)
+File.unlink(tmp2) if File.exists?(tmp2)
 File.unlink(homologs) if File.exists?(homologs)
 
 STDOUT << "\n\nBlast is #{blast}\n"
