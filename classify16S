@@ -2,7 +2,7 @@
 
 require 'trollop'
 require 'bio'
-require 'newick'
+require 'Newick'
 require 'fpdf'
 
 ARGV.push("--help") if ARGV.empty?

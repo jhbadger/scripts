@@ -2,12 +2,13 @@
 
 require 'trollop'
 require 'ZFile'
-require 'Set'
+require 'set'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input directory", :required=>true, :type=>:string
+  opt :output, "output file", :required=>true, :type=>:string
 end
 
 excluded = [1, 2, 131567, 9606]
@@ -15,6 +16,7 @@ counts = Hash.new
 names = Set.new
 
 Dir.glob(opts.input+"/*.kraken*").each do |file|
+  STDERR << "Processing #{file}...\n"
   name = File.basename(file).split("_gdc").first
   names.add name
   ZFile.new(file).each do |line|
@@ -28,13 +30,16 @@ Dir.glob(opts.input+"/*.kraken*").each do |file|
   end
 end
 
+out = File.new(opts.output, "w")
+
 names = names.to_a.sort
-print (["TID"] + names).join(",")+"\n"
+out.print (["TID"] + names).join(",")+"\n"
 counts.keys.sort.each do |tid|
   line = []
   line.push(tid)
   names.each do |name|
     line.push counts[tid][name]
   end
-  print line.join(",")+"\n"
+  out.print line.join(",")+"\n"
 end
+out.close
