@@ -9,6 +9,7 @@ opts = Trollop::options do
   opt :window, "sliding window", :default=>5
   opt :quality, "minimum quality", :default=>20
   opt :len, "minimum length", :default=>28
+  opt :threads, "threads to use", :default=>2
   opt :execute, "execute command rather than printing it" 	
 end
 
@@ -23,11 +24,10 @@ else
   run = method(:println)
 end
 
-run.call("cd #{ENV["PWD"]}")
-
 files = opts.input.join(' ')
 outs = opts.input.collect{|x| x.sub(".f","_paired.f")+" "+x.sub(".f","_unpaired.f")}.join(" ")
+outs = outs.gsub(".bz2",".gz")
 topts = "SLIDINGWINDOW:#{opts.window}:#{opts.quality} LEADING:#{opts.quality} "
 topts += "TRAILING:#{opts.quality} MINLEN:#{opts.len}" 
-cmd = "#{trim} PE #{files} #{outs} #{topts}"
+cmd = "#{trim} PE -threads #{opts.threads} #{files} #{outs} #{topts}"
 run.call(cmd)
