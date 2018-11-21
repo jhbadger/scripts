@@ -6,12 +6,17 @@ ARGV.push("--help") if ARGV.empty?
 opts = Trollop::options do
   banner File.basename($0)
   opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :remove, "delete bam file after processing", :default=>false
   opt :swarm, "generate a swarm file"
 end
 
 opts.input.each do |file|
   if opts.swarm
-    printf("%s -i %s\n", $0, file)
+    if opts.remove
+      printf("%s -r -i %s\n", $0, file)
+    else
+      printf("%s -i %s\n", $0, file)
+    end
   else
     name = File.basename(file, ".bam")
     outname1 = name + "_R1.fastq"
@@ -36,6 +41,7 @@ opts.input.each do |file|
       end
     end
     File.unlink(unmapped)
+    File.unlink(file) if opts.remove
     out1.close
     out2.close
     STDERR << "bzipping #{outname1}...\n"
