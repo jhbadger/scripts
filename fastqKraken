@@ -6,16 +6,15 @@ ARGV.push("--help") if ARGV.empty?
 opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input fastqs (R1)", :required=>true, :type=>:strings
-  opt :db, "kraken db", :default=>"/data/MicrobiomeCore/krakendb/all"
-  opt :threads, "threads", :default=>2
+  opt :db, "kraken db", :default=>"/data/MicrobiomeCore/JAMSdb/db/krakendb/JAMSkdb"
+  opt :outdir, "output dir", :default=>"/scratch/#{ENV["USER"]}"
+  opt :threads, "threads", :default=>16
 end
 
 opts.input.each do |fq|
   r2 = fq.gsub("_R1", "_R2")
   if File.size(fq) > 14 && File.exists?(fq) && File.exists?(r2)
-    data = "/data/#{ENV["USER"]}"
-    out = data+"/tumor-microbiome/unsorted/kraken/"+
-          File.basename(fq).split("_R1").first+".kraken"
+    out = opts.outdir+"/" + File.basename(fq).split("_R1").first+".kraken"
     o1 = "/lscratch/$SLURM_JOB_ID/"+File.basename(out)
     if !File.exists?(out+".bz2")
       dbname = "/lscratch/$SLURM_JOB_ID/"+File.basename(opts.db)
