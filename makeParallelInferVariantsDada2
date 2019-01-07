@@ -1,9 +1,9 @@
 #!/usr/bin/env ruby
 
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input fastq files", :required=>true, :type=>:strings
   opt :bin, "size of sample bin", :default=>10

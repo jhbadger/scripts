@@ -2,10 +2,10 @@
 
 require 'rubygems'
 require 'bio'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :code, "NCBI genetic code", :default=>11, :type=>:integer
   opt :glimmer, "glimmer position output", :type=>:string, :required=>true

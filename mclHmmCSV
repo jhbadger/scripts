@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 require 'ZFile'
 require 'csv'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input cluster csv file", :required=>true, :type=>:string
   opt :hmm, "hmm tbl file", :required=>true, :type=>:string

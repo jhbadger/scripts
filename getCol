@@ -2,11 +2,11 @@
 
 require 'rubygems'
 require 'ZFile'
-require 'trollop'
+require 'optimist'
 require 'fcsv'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :col, "column to use", :required=>true, :type=>:integer
   opt :csv, "Parse using csv library"

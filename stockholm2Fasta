@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 require 'bio'    
 
 # converts pointless stockholm alignment to a useful fasta one
@@ -47,7 +47,7 @@ def infer(pid, afa, method, verbose)
 end
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input stockholm file", :required=>true, :type=>:string
 end

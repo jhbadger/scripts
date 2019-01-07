@@ -2,13 +2,13 @@
 
 $VERBOSE=nil
 
-require 'trollop'
+require 'optimist'
 require 'ZFile'
 require 'sqlite3'
 require 'axlsx'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :db, "sqlite database to use (or be created)", :required=>true, :type=>:string
   opt :input, "Input blast file(s)", :type=>:strings

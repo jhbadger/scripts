@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby 
 # -*- coding: utf-8 -*-
 
-require 'trollop'
+require 'optimist'
 
 def required_programs(array)
   array.each do |item|
@@ -20,7 +20,7 @@ end
 required_programs ["pdf2htmlEX"]
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "pdf file", :required=>true, :type=>:string
   opt :title, "title", :default=>"My Title"

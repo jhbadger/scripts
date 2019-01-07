@@ -2,14 +2,14 @@
 # script to build spreadsheet of reads, peptides, for given sites and filter sizes
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 require 'fcsv'
 require 'bio'
 require 'ZFile'
 require 'GOS'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :dir, "depot directory with GOS file structure", :default=>"/usr/local/depot/projects/GOS/indian_ocean", 
   	:type=>:string

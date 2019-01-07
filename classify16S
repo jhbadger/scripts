@@ -1,12 +1,12 @@
 #!/usr/bin/env ruby
 
-require 'trollop'
+require 'optimist'
 require 'bio'
 require 'Newick'
 require 'fpdf'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input file", :required=>true, :type=>:string
   opt :db, "16S blast database", :required=>true, :type=>:string

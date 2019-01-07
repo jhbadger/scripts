@@ -1,14 +1,14 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 require 'bio'
 require 'Grid'
 
 $VERBOSE = nil
 ARGV.push("-h") if ARGV.empty?
 
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :blast, "blast program", :default=>"rpsblast", :type => :string
   opt :database, "BLAST database to use", :required => true, :type => :string

@@ -1,13 +1,13 @@
 #!/usr/bin/env ruby
 
-require 'trollop'
+require 'optimist'
 require 'bio'
 require 'Grid'
 
 $VERBOSE=nil
 
 ARGV.push("-h") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :command, "hmm search program", :default=>"tmhmm", :type => :string
   opt :input, "FASTA input file(s)", :required => true, :type => :strings

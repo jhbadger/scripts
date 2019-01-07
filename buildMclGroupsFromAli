@@ -1,9 +1,9 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "ali file", :required=>true, :type=>:string
   opt :level, "numerical level in taxonomy to use", :required=>true, :type=>:integer

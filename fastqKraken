@@ -1,9 +1,9 @@
 #!/usr/bin/env ruby
 
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input fastqs (R1)", :required=>true, :type=>:strings
   opt :db, "kraken db", :default=>"/data/MicrobiomeCore/krakendb/all"

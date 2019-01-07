@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 require 'bio'
 require 'csv'
 
@@ -28,7 +28,7 @@ categories = {
 "X"=>"Unassigned to COG"}
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input cog.tbl", :required=>true, :type=>:string
   opt :fasta, "input pep files", :required=>true, :type=>:string

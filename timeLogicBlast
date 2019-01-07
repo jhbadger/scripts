@@ -3,10 +3,10 @@
 $VERBOSE = nil
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input fasta file(s)", :required=>true, :type=>:strings
   opt :database, "timelogic db to use", :required=>true, :type=>:string
@@ -21,9 +21,9 @@ end
 
 db = ARGV.shift
 
-Trollop::die :unknown_blast unless opts.blast =~ /^blast[n|p|x]/ || opts.blast =~/tblastn/
+Optimist::die :unknown_blast unless opts.blast =~ /^blast[n|p|x]/ || opts.blast =~/tblastn/
 
-Trollop::die :unknown_format unless opts.format =~ /btab|m8|m8plus|ncbi/
+Optimist::die :unknown_format unless opts.format =~ /btab|m8|m8plus|ncbi/
 
 opts.input.each do |file|
   bout = File.basename(file) + "_vs_" + File.basename(opts.database)

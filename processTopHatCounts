@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 require 'ZFile'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :pt2, "pt2 counts file(s)", :type=>:strings
   opt :pt3, "pt3 counts file(s)", :type=>:strings

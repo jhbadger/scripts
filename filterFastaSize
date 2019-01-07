@@ -1,12 +1,12 @@
 #!/usr/bin/env ruby
 
-require 'trollop'
+require 'optimist'
 require 'bio'
 require 'ZFile'
 
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "name of filter to filter", :required=>true, :type=>:string
   opt :format, "type of seq", :default=>"fasta"

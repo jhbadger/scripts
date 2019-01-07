@@ -2,10 +2,10 @@
 
 require 'bio'
 require 'ZFile'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0) + " [options] pattern file [...file...]"
   opt :file, "pattern is file"
   opt :onlyfirst, "only pick first matching sequence"

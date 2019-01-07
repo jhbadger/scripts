@@ -2,14 +2,14 @@
 
 $VERBOSE=nil 
 
-require 'trollop'
+require 'optimist'
 require 'sqlite3'
 
 $:.unshift File.dirname(File.expand_path($0))
 require 'rnaseq_lib'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input BAM file(s)", :required=>true, :type=>:strings
   opt :org, "organism of rnaseq sample", :required=>:true, :type=>:string

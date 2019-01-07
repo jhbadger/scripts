@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
 
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0) 
   opt :csv, "csv file to pick from", :required =>true, :type => :string
   opt :num, "number of lines to pick", :required=>true, :type=> :integer

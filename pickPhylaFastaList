@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby 
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input fasta file", :required=>true, :type=>:string
   opt :number, "number per phyla", :type=>:integer, :default=>3

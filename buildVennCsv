@@ -4,7 +4,7 @@ $VERBOSE = nil
 
 require 'rubygems'
 require 'bio'
-require 'trollop'
+require 'optimist'
 
 def merge(clusters, pvalue, genome)
   clusters.each do |c1|
@@ -85,7 +85,7 @@ def processmcl(out, score, plen, genomes, reps, globalSeen)
 end
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :peptides, "Input fasta files", :required=>true, :type=>:strings
   opt :evalue, "evalue cutoff", :default=>0.1, :type=>:float

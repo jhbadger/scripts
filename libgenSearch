@@ -1,12 +1,12 @@
 #!/usr/bin/env ruby 
 # encoding: UTF-8
 
-require 'trollop'
+require 'optimist'
 require 'csv'
 require 'ZFile'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input csv file(s)", :required=>true, :type=>:strings
   opt :field, "search field (title, author, year)", :default=>"title"

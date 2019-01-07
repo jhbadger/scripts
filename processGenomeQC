@@ -2,17 +2,17 @@
 
 require 'rubygems'
 require 'bio'    
-require 'trollop'
+require 'optimist'
 require 'csv'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input csv files with genomeqc locations", :required=>true, :type=>:string
   opt :database, "NR or NT", :default=>"NR", :type=>:string
 end
 
-Trollop::die :NT_or_NR unless opts.database == "NR" || opts.database == "NT"
+Optimist::die :NT_or_NR unless opts.database == "NR" || opts.database == "NT"
 
 libs = []
 hits = Hash.new

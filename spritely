@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby
 
-require 'trollop'
+require 'optimist'
 require 'chunky_png'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input file", :required=>true, :type=>:string
   opt :xflip, "flip horizontally"

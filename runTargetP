@@ -1,13 +1,13 @@
 #!/usr/bin/env ruby 
 
 require 'bio'    
-require 'trollop'
+require 'optimist'
 require 'ZFile'
 
 $VERBOSE=nil
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input fasta file", :required=>true, :type=>:string
   opt :plant, "use plant model"

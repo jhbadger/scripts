@@ -1,12 +1,12 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 require 'simple_xlsx_reader'
 require 'axlsx'
 require 'bio'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input xlsx", :required=>true, :type=>:string
   opt :hmm, "hmm file", :default=>ENV["HOME"] + "/lib/lhc/minifam"

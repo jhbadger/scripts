@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 require 'bio'
 require 'csv'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :email, "email address", :default=>"jbadger@jcvi.org"
   opt :name, "search name", :default=>"Badger JH"

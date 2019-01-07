@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 require 'mysql'
 require 'sqlite3'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :host, "db host (for mysql)", :default=>"mysql-lan-pro", :type=>:string
   opt :user, "user (for mysql)", :default=>"jbadger", :type=>:string

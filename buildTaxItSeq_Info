@@ -1,12 +1,12 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 require 'fcsv'
 require 'bio'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input fasta file", :required=>true, :type=>:string
   opt :taxids, "taxids.txt", :required=>true, :type=>:string

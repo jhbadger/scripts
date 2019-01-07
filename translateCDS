@@ -3,10 +3,10 @@
 require 'rubygems'
 require 'ZFile'
 require 'bio'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :cds, "Input cds file", :required=>true, :type=>:string
   opt :input, "Input fasta file(s)", :required=>true, :type=>:strings

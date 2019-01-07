@@ -2,14 +2,14 @@
 # provides some information about sequence(s) in a FASTA file
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 require 'bio'
 require 'ZFile'
 require 'csv'
 
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input sequence file(s)", :required=>true, :type=>:strings
   opt :csv, "output as csv", :default=>false

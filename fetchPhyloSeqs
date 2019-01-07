@@ -2,10 +2,10 @@
 
 require 'rubygems'
 require 'mysql'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "ids to retrieve data for", :type => :strings, :required=> true
   opt :file, "id(s) are files, not record ids"

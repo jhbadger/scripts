@@ -2,7 +2,7 @@
 
 require 'rubygems'
 require 'ostruct'
-require 'trollop'
+require 'optimist'
 require 'yajl'
 require 'ZFile'
 require 'csv'
@@ -29,7 +29,7 @@ if Object.const_defined?("Yajl") # Has Yajl been loaded?
 end
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
         banner File.basename($0)
         opt :input, "read from file rather than STDIN", :type => :string
 end

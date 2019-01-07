@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby
 
 require 'bio'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input alignment file(s)", :required=>true, :type=>:strings
   opt :phylip, "use PHYLIP format for input"

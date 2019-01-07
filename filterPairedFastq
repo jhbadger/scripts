@@ -1,12 +1,12 @@
 #!/usr/bin/env ruby
 
 require 'bio'
-require 'trollop'
+require 'optimist'
 require 'set'
 require 'ZFile'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input fastq R1 file(s)", :required=>true, :type=>:strings
   opt :quality, "minimum quality of sequence", :default=>25

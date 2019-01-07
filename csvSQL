@@ -1,13 +1,13 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 require 'sqlite3'
 require 'csv'
 require 'simple_xlsx_reader'
 require 'axlsx'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input csv/txt/xlsx file(s)", :type=>:strings
   opt :sql, "SQL Query", :required=>true, :type=>:string
@@ -20,9 +20,9 @@ opts = Trollop::options do
   opt :verbose, "be verbose in reporting messages"
 end
 
-Trollop::die :format, "must be tab, csv, or xlsx" unless opts.format == "tab" or opts.format == "csv" or opts.format == "xlsx"
+Optimist::die :format, "must be tab, csv, or xlsx" unless opts.format == "tab" or opts.format == "csv" or opts.format == "xlsx"
 
-Trollop::die :output, "must provide output for xlsx" if opts.format == "xlsx" && !opts.output
+Optimist::die :output, "must provide output for xlsx" if opts.format == "xlsx" && !opts.output
 
 db = SQLite3::Database.new(opts.db)
 

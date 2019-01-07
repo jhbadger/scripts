@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby
 
-require 'trollop'
+require 'optimist'
 require 'csv'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input pathoscope file(s)", :required=>true, :type=>:strings
   opt :taxonomy, "taxonomy of pathoscope organisms", :required=>true, :type=>:string

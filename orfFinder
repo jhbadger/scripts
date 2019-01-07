@@ -2,10 +2,10 @@
 
 require 'bio'
 require 'ZFile'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input DNA fasta file", :required=>true, :type=>:string
   opt :minorf, "minimum orf size (in aa)", :default=>75

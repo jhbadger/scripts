@@ -1,14 +1,14 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 require 'Newick'
 require 'fpdf'
 require 'fcsv'
 
 ARGV.push("--help") if ARGV.empty?
 
-opts = Trollop::options do
+opts = Optimist::options do
   banner "Usage: " << File.basename($0) << " [options]"
   opt :csv, "apis flat file with tree", :required => true, :type => :string
   opt :sep, "separator for fields", :type=>:string, :default=>"\t"

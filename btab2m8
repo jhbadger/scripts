@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 
 ARGV.push("-h") if ARGV.empty?
 
-opts = Trollop::options do
+opts = Optimist::options do
 	banner File.basename($0)
 	opt :input, "btab blast file", :required =>true, :type => :string
 end

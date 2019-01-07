@@ -1,12 +1,12 @@
 #!/usr/bin/env ruby
 
 require 'rubygems'
-require 'trollop'
+require 'optimist'
 require 'Newick'
 require 'csv'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :exclude, "exclude from target", :type=>:strings, :default=>[""]
   opt :ingroup , "ingroup taxa", :type=>:strings, :default=>[""]

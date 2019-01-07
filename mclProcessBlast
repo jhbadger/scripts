@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby 
 
-require 'trollop'
+require 'optimist'
 require 'ZFile'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :alias, "alias file", :type=>:string
   opt :input, "blast M8 file", :required=>true, :type=>:string
@@ -87,7 +87,7 @@ if opts.mcl
   out.print ["Cluster Num", "Size", "Members"].join("\t")+"\n"
   entry = "CLUSTER0001"
   `mcl #{mcl} --abc -o -`.split("\n").each do |line|
-    members = line.chomp.split("\t").join("\t")
+    members = line.chomp.split("\t").join(" ")
     out.print [entry, members.split(" ").size, members].join("\t")+"\n"
     entry.succ!
   end

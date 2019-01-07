@@ -2,10 +2,10 @@
 
 require 'rubygems'
 require 'csv'    
-require 'trollop'
+require 'optimist'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :ann, "csv with annotation", :required=>true, :type=>:string
   opt :venn, "venn.csv", :required=>true, :type=>:string

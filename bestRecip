@@ -2,12 +2,12 @@
 
 require 'rubygems'
 require 'bio'    
-require 'trollop'
+require 'optimist'
 require 'ZFile'
 require 'Btab'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "two blast files to compare", :required=>true, :type=>:strings
   opt :evalue, "evalue cutoff", :default=>0.1, :type=>:float

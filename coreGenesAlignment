@@ -2,11 +2,11 @@
 
 require 'rubygems'
 require 'bio'    
-require 'trollop'
+require 'optimist'
 require 'fcsv'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :dir, "core-hmm-dir", :required=>true, :type=>:string
   opt :peps, "Input peptides files (one per species)", :required=>true, :type=>:strings

@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby
 
 require 'bio'
-require 'trollop'
+require 'optimist'
 require 'ZFile'
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input fastq file(s)", :required=>true, :type=>:strings
   opt :list, "file of ids to remove", :required=>true, :type=>:string

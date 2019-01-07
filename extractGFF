@@ -1,9 +1,9 @@
 #!/usr/bin/env ruby
 require 'bio'
-require 'trollop'
+require 'optimist'
 require 'ostruct'
 
-opts = Trollop::options do
+opts = Optimist::options do
   banner "Usage: " << File.basename($0) << " [options]"
   opt :gff, "gff file", :required =>true, :type => :string
   opt :fasta, "fasta file of genome", :required=>true, :type => :string

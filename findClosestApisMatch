@@ -5,7 +5,7 @@ VER = "1.2"
 DATE = "02/26/2014"
 
 require 'ostruct'
-require 'trollop'
+require 'optimist'
 require 'yajl'
 require 'ZFile'
 
@@ -16,7 +16,7 @@ require "Newick"
 require "ZFile"
 
 ARGV.push("--help") if ARGV.empty?
-opts = Trollop::options do
+opts = Optimist::options do
    banner File.basename($0) << " " << VER << " " << DATE
    opt :inputs, "read from file(s) rather than STDIN", :type => :strings, :required=>true  
 end
