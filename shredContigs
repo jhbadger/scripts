@@ -1,46 +1,30 @@
 #!/usr/bin/env ruby 
 
-require 'rubygems'
+require 'optimist'
 require 'bio'    
-require 'optparse'
-require 'ostruct'
 require 'ZFile'
 
-opt = OpenStruct.new
-opt.min = 600
-opt.overlap = 500
-opt.max = 1950
-opt.len = 1000
-
-o = OptionParser.new
-o.banner << " seq.fasta"
-o.on("-l ", "--length ", Integer, "shred length (#{opt.len})") {|t| opt.len = t}
-o.on("-m ", "--min ", Integer, "minimum length (#{opt.min})") {|t| opt.min = t}
-o.on("-x ", "--max ", Integer, "maximum length (#{opt.max})") {|t| opt.max = t}
-o.on("-o ", "--overlap ", Integer, "overlap length (#{opt.overlap})") {|t| opt.overlap = t}
-begin
-  o.parse!
-rescue
-  STDERR << $!.message << "\n"
-  STDERR << o
-  exit(1)
-end
-if (ARGV.size != 1)
-  STDERR << o
-  exit(1)
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :len, "shred length", :default=>1000
+  opt :max_len, "maximum length", :default=>1950
+  opt :min_len, "minimum length", :default=>500
+  opt :overlap, "overlap length", :default=>500
+  opt :fastq, "output fastq format", :default=>false
 end
 
-file = ARGV.shift
-
-seqs = Hash.new
-
-Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(file)).each do |seq|
-  if (seq.length >= opt.min)
-    if (seq.length <= opt.max)
-      print seq
-    else
-      (0..seq.length).step(opt.overlap) do |i|
-        print seq.seq[i,opt.len].to_fasta(seq.entry_id + "_" + (i + 1).to_s + "_" + (i + opt.len).to_s, 60) if (seq.seq[i,opt.len].size >= opt.min)
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  (0..seq.length).step(opts.overlap) do |i|
+    s = seq.seq[i,opts.len]
+    header = seq.entry_id + "_" + (i + 1).to_s + "_" +
+             (i + opts.len).to_s
+    if s.length >= opts.min_len
+      if opts.fastq
+        print "@"+header+"\n"+s+"\n+\n"+"A"*s.length+"\n"
+      else
+        print s.to_fasta(header, 60)
       end
     end
   end
