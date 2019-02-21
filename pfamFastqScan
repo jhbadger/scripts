@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+require 'tempfile'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :hmm, "hmm database", :required=>true, :type=>:string
+  opt :threshold, "e-value threshold", :default=>0.01
+end
+
+opts.input.each do |fq|
+  out = Tempfile.new("seqs")
+  Bio::FlatFile.new(Bio::Fastq, File.new(fq)).each do |seq|
+    1.upto(6) do |i|
+      out.write ">"+seq.entry_id+"\n"
+      out.write Bio::Sequence::NA.new(seq.seq).translate(i)
+      out.write("\n")
+    end
+  end
+  out.close
+  system("hmmscan -E #{opts.threshold} --tblout #{File.basename(fq)}.tbl " +
+           "#{opts.hmm} #{out.path} >/dev/null")
+  out.unlink
+end
+
