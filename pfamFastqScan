@@ -9,8 +9,9 @@ ARGV.push("--help") if ARGV.empty?
 opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input file(s)", :required=>true, :type=>:strings
+  opt :cpus, "number of cpus to use", :default=>2
   opt :hmm, "hmm database", :required=>true, :type=>:string
-  opt :threshold, "e-value threshold", :default=>0.01
+  opt :threshold, "e-value threshold", :default=>0.1
 end
 
 opts.input.each do |fq|
@@ -23,8 +24,8 @@ opts.input.each do |fq|
     end
   end
   out.close
-  system("hmmscan -E #{opts.threshold} --tblout #{File.basename(fq)}.tbl " +
-           "#{opts.hmm} #{out.path} >/dev/null")
+  system("hmmsearch -E #{opts.threshold} --tblout #{File.basename(fq)}.tbl " +
+           "--cpu #{opts.cpus} #{opts.hmm} #{out.path} >/dev/null")
   out.unlink
 end
 
