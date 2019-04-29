@@ -1,35 +1,35 @@
 #!/usr/bin/env ruby
 
-if (ARGV.size != 1)
-  STDERR.printf("usage: %s fasta-file\n", $0)
-  exit(1)
-end
+require 'bio'
+require 'optimist'
 
-fasta = ARGV.pop
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+end
 
 seqs = Hash.new
-name = nil
-File.new(fasta).each {|line|
-  line.chomp!
-  line.tr!("*","")
-  if (line =~ /^>/)
-    name = line[1..line.length].split(";").pop
-    seqs[name] = ""
-  else
-    seqs[name] += line
-  end
-}
-
-lineLen = 60
-printf("%d %d\n", seqs.size, seqs[name].length)
-pos = 0
-while (pos < seqs[name].length)
-  seqs.keys.sort.each {|name|
-    if (pos == 0)
-      printf("%-10s ", name)
-    end
-    printf("%s\n", seqs[name][pos..pos + lineLen - 1])
-  }
-  pos += lineLen
-  printf("\n")
+orfNum = "SID0000001"
+aliFile = File.new(File.basename(opts.input, ".afa")+".ali", "w")
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  seqs[orfNum] = seq.seq
+  aliFile.printf("%s\t%s\n", orfNum, seq.definition)
+  orfNum.succ!
 end
+aliFile.close
+
+n = 0
+slen = seqs.values.first.length
+printf(" %d  %d\n", seqs.keys.length, slen)
+
+while n <= slen
+  print "\n" if n > 0
+  seqs.keys.each do |name|
+    sseq = seqs[name][n..n+59].gsub(/(.{10})/, '\1 ').strip
+    name = " "*10 if n > 0
+    printf("%s %s\n", name, sseq)
+  end
+  n += 60
+end
+
