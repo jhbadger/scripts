@@ -22,7 +22,7 @@ end
 ZFile.new(opts.input).each do |line|
   if line !~/^Cluster Num/
     name, size, members = line.chomp.split("\t",3)
-    members = members.split("\t").sort
+    members = members.split(" ").sort
     if size.to_i == opts.num
       prefixes = members.collect{|x| x.split("_").first}.uniq
       if prefixes.size == size.to_i
