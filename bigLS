@@ -1,52 +1,20 @@
 #!/usr/bin/env ruby
+require 'optimist'
 
-require 'ostruct'
-require 'optparse'
-opt.count = false
-opt = OpenStruct.new
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "files to list", :required=>true, :type=>:string
+  opt :num, "just return number", :default=>false
+end
 
-ARGV.options {|opts|
-  opts.banner << " \"glob\" [grep]\n"
-  opts.on("-c", "--count", "just return number") {|t| opt.count = t}    
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
+files = Dir.glob(opts.input)
+
+if opts.num
+  print files.length
+  print "\n"
+else
+  files.each do |file|
+    print file + "\n"
   end
-  if (ARGV.size != 1 && ARGV.size != 2)
-    STDERR.puts opts
-    exit(1)
-  end
-}
-
-
-glob, grep = ARGV
-
-count = 0
-
-Dir.glob(glob).each {|file|
-  if (grep.nil?)
-    if (opt.count)
-      count += 1
-    else
-      print file + "\n"
-    end
-  else
-    lineNum = 1
-    File.new(file).each {|line|
-      if (line =~ /#{grep}/)
-        if (opt.count)
-          count += 1
-        else
-          print "#{file} line #{lineNum} : #{line}"
-        end
-      end
-      lineNum += 1
-    }
-  end
-}
-if (opt.count)
-  printf("%d\n", count)
 end
