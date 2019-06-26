@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+
+Bio::FlatFile.new(Bio::FastaFormat, File.new(opts.input)).each do |seq|
+  gc = seq.seq.count("GC")*1.0/seq.length
+  if gc >= 0.45 && gc <= 0.65
+    if seq.definition =~/ProbeID=([0-9]*)\;/
+      print Bio::Sequence.new(seq.seq).to_fasta($1,60)
+    end
+  end
+end
