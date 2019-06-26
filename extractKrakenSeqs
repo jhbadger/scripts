@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+require 'bio'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input tbl file", :required=>true, :type=>:string
+  opt :krakendir, "Kraken directory", :default=>"/data/badgerjh/tumor-microbiome/unsorted/kraken"
+  opt :fastqdir, "Fastq directory", :default=>"/data/badgerjh/tumor-microbiome/unsorted/fastq"
+end
+
+seen = Hash.new
+ZFile.new(opts.input).each do |line|
+  if line =~/PF/
+    name = line.split(" ").first
+    seen[name] = true
+  end
+end
+
+kfile = opts.krakendir+"/"+File.basename(opts.input,".tbl").split("_").first
+kfile = Dir.glob(kfile+"*").first
+
+out = File.new(File.basename(opts.input,".tbl")+".kraken","w")
+
+ZFile.new(kfile).each do |line|
+  x, y = line.split("\t")
+  out.print line if seen[y]
+end
+out.close
+
+ffile = opts.fastqdir+"/"+File.basename(opts.input,".tbl").split("_").first
+ffile = Dir.glob(ffile+"*").first
+
+out = File.new(File.basename(opts.input,".tbl")+".fastq","w")
+
+
+Bio::FlatFile.new(Bio::Fastq, ZFile.new(ffile)).each do |seq|
+  out.print seq if seen[seq.entry_id]
+end
+out.close
+

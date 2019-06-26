@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+require 'bio'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "gene (names)", :required=>true, :type=>:strings
+  opt :search, "search names", :type=>:strings
+  opt :pepdb, "peptide db", :default=>"/data/badgerjh/genomes/all.pep"
+  opt :cdsdb, "peptide db", :default=>"/data/badgerjh/genomes/all.cds"
+end
+
+opts.input.each do |gene|
+  if opts.search
+    name = opts.search.shift
+  else
+    name = gene
+  end
+  cmd = "grep -i \"#{name}\" #{opts.pepdb} | getCol -c 0 | sed -e 's/>//' > l"
+  system(cmd)
+  cmd = "blastdbcmd -db #{opts.pepdb} -entry_batch l > #{gene}.pep"
+  system(cmd)
+  Bio::FlatFile.new(Bio::FastaFormat, File.new("#{gene}.pep")).each do |pep|
+    if pep.definition =~/Escherichia coli/
+      cmd = "blastdbcmd -db #{opts.cdsdb} -entry \"#{pep.entry_id}\""
+      cmd += " > ecoli_#{gene}.cds"
+      system(cmd)
+    end
+  end
+  cmd = "blastdbcmd -db #{opts.cdsdb} -entry_batch l > #{gene}.cds"
+  system(cmd)
+end

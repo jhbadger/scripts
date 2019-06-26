@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input R1 file", :required=>true, :type=>:string
+  opt :db, "database", :default=>"/data/MicrobiomeCore/JAMSdb/db2/krakendb/JAMSk2all32"
+  opt :threads, "number of threads", :default=>1
+end
+
+name = opts.input.split("_star").first
+
+cmd = "kraken2 --paired --use-names --db #{opts.db} "
+cmd += "--threads #{opts.threads} " if opts.threads > 1
+cmd += "--gzip-compressed " if opts.input =~/\.gz$/
+cmd += "--classified-out #{name}_classified#.fastq "
+cmd += "--output #{name}.kraken2 "
+cmd += opts.input + " " + opts.input.gsub("_R1","_R2")
+
+system(cmd)
+system("gzip #{name}*.fastq")
+system("gzip #{name}.kraken2")
