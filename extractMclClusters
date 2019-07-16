@@ -24,7 +24,7 @@ ZFile.new(opts.input).each do |line|
     name, size, members = line.chomp.split("\t",3)
     members = members.split(" ").sort
     if size.to_i == opts.num
-      prefixes = members.collect{|x| x.split("_").first}.uniq
+      prefixes = members.collect{|x| x.split("_0").first}.uniq
       if prefixes.size == size.to_i
         out = File.new(name+".fa", "w")
         members.each do |pep|

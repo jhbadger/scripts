@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+
+expression, file = ARGV
+
+first = true
+args = ['-F"\t"', '-v OFS="\t"']
+File.new(file).each do |line|
+  break if !first
+  first = false
+  fields = line.chomp.split("\t")
+  1.upto(fields.length) do |i|
+    args.push ["-v #{fields[i-1]}=#{i}"]
+  end
+end
+
+system("gawk #{args.join(' ')} '#{expression}' #{file}")

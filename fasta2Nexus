@@ -1,6 +1,5 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
 require 'optimist'
 require 'bio'    
 
@@ -10,22 +9,19 @@ opts = Optimist::options do
   opt :input, "Input fasta file", :required=>true, :type=>:string
 end
 
-# is a fasta file DNA?
-def isDNA?(fasta)
+# is a fasta file nucleotide
+def isNuc?(fasta)
    seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
-   seq.count("AGTCN").to_f / seq.length > 0.90
+   seq.count("AGTCNU").to_f / seq.length > 0.90
 end
 
 # converts fasta to NEXUS format
-def fasta2Nexus(alignFile, dna, nexFile = nil)
+def fasta2Nexus(alignFile, nuc = isNuc?(alignFile), nexFile = nil)
    seqs = Hash.new
-   name = nil
-   seqFile = File.new(alignFile)
-   Bio::FlatFile.new(Bio::FastaFormat, seqFile).each do |seq|
-      seqs[seq.full_id] = seq.seq.gsub("?","-").gsub(".","-")
+   Bio::FlatFile.new(Bio::FastaFormat, File.new(alignFile)).each do |seq|
+      seqs[seq.entry_id] = seq.seq
    end
-   seqFile.close
-   if dna
+   if nuc
       type = "NUC"
    else
       type = "PROT"
@@ -39,20 +35,14 @@ def fasta2Nexus(alignFile, dna, nexFile = nil)
    aLen = seqs[seqs.keys.first].size
    out.print "#NEXUS\nBEGIN DATA;\n"
    out.print "DIMENSIONS NTAX=#{seqs.size} NCHAR=#{aLen};\n"
-   out.print "FORMAT DATATYPE=#{type} INTERLEAVE MISSING=-;\n"
+   out.print "FORMAT DATATYPE=#{type} MISSING=-;\n"
    out.print "MATRIX\n"
    pos = 0
-   while (pos < aLen)
-      seqs.keys.sort.each do |name|
-         out.printf("%35s ", name)
-         out.printf("%s\n", seqs[name][pos..pos + lineLen - 1])
-      end
-      pos += lineLen
-      out.printf("\n")
-   end
+   seqs.keys.each do |key|
+     print key + "\t" + seqs[key].seq + "\n"
+   end	
    out.print ";\nEND;\n"
    out.close if nexFile
 end
 
-dna = isDNA?(opts.input)
-fasta2Nexus(opts.input, dna)
+fasta2Nexus(opts.input)
