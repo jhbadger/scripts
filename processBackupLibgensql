@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+require 'CSV'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+needHeader = true
+header = []
+File.new(opts.input).each do |line|
+  if needHeader && line=~/ENGINE/
+    needHeader = false
+    print header.join("\t")+"\n"
+  end
+  if needHeader && line=~/DEFAULT/ && line !~ /CREATE/
+    header.push(line.split(" ")[0].tr("`",""))
+  end
+  if line =~/^INSERT INTO/
+    fields = line.split("VALUES ",2)
+    fields = fields[1].split(",(")
+    fields.each do |book|
+      book.chop!
+      begin
+        fields = CSV.parse(book)[0]
+        fields.shift if fields.length > header.length
+        print fields.join("\t")+"\n"
+      rescue
+        STDERR << "Skipping Line: #{book}\n"
+      end
+    end
+  end
+end
