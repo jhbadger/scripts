@@ -1,70 +1,81 @@
 #!/usr/bin/env ruby
 
-require 'ostruct'
-require 'optparse'
-require 'rubygems'
-require 'Phylogeny'
-opt = OpenStruct.new
-$VERBOSE = nil
-opt.outgroup = nil
-opt.project = nil
+require 'optimist'
+require 'bio'
+require 'Newick'
 
-ARGV.options {|opts|
-  opts.banner << " tree fasta"
-  opts.on("-o ", "--outgroup ", String, "outgroup") {|t| opt.outgroup = t}
-  opts.on("-p ", "--project ", String, "JCVI grid project") {|p| opt.project = p}
-  begin
-    opts.parse!
-  rescue
-    STDERR.puts $!.message
-    STDERR.puts opts
-    exit(1)
-  end
-  if (ARGV.size != 2)
-    STDERR.puts opts
-    exit(1)
-  end
-}
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "Input tree file", :required=>true, :type=>:string
+  opt :fasta, "fasta alignment file", :required=>true, :type=>:string
+end
 
 def cleanup(dir)
   system("rm -rf #{dir}")	
 end
 
-tree, fasta = ARGV
-
-if (opt.project)
-  cmd = $0
-  cmd += " -o #{opt.outgroup}" if (opt.outgroup)
-  cmd += " #{tree} #{fasta}"
-  system("qsub -P #{opt.project} -e #{tree}.stderr -cwd -o #{tree}.stdout \"#{cmd}\"")
-else
-  name = File.basename(fasta).split(".").first
-  tmpdir = ENV["HOME"] + "/.tmp"
-  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
-  tmpdir += "/" + name + "_" + Time.now.to_f.to_s
-  Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
-  tname = tmpdir + "/" + name
-  dna = isDNA?(fasta)
-  aliHash = aliasFasta(fasta, nil, tname)
-  tree = NewickTree.fromFile(tree)
-  tree.reAlias(aliHash)
-  tree.fixPhylip
-  tree = estimateMLBranchLengths(tree, tname, tmpdir)
-  tree.unAlias(aliHash)
-  if (opt.outgroup)
-    outNode = tree.findNode(opt.outgroup)
-    if (outNode.nil?)
-      STDERR.printf("taxon #{opt.outgroup} not found in tree!\n")
-    else
-      tree = tree.reroot(outNode)
-    end 
-  else
-    tree = tree.midpointRoot
-  end  
-  Dir.glob("#{tname}*").each{|file|
-    File.unlink(file) 
-  }
-  print tree.to_s + "\n"
+# is a fasta file DNA?
+def isDNA?(fasta)
+   seq = File.read(fasta, 10000).split("\n").grep(/^[^>]/).join
+   seq.upcase.count("ACTGNU").to_f / seq.upcase.count("ACDEFGHIKLMNPQRSTVWYZ") > 0.90
 end
+
+# provide aliased fasta name so programs like PHYLIP don't get confused by long names
+def aliasFasta(fasta, ali, out, outgroup = nil)
+   outFile = File.new(out, "w")
+   aliFile = File.new(ali, "w") if (!ali.nil?)
+   aliHash = Hash.new
+   orfNum = "SID0000001"
+   Bio::FlatFile.new(Bio::FastaFormat, File.new(fasta)).each do |seq|
+      newName = orfNum
+      name = seq.definition.split(" ").first
+      newName = "SID0000000" if (outgroup == name)
+      aliFile.printf("%s\t%s\n", newName, seq.definition) if (ali)
+      aliHash[newName] = seq.definition.tr("(),:","_")
+      seq.definition = newName
+      outFile.print seq
+      orfNum = orfNum.succ if (outgroup != name)
+   end
+   outFile.close
+   aliFile.close if (ali)
+   return aliHash
+end
+
+# given a NewickTree and an alignment add ML distances
+def estimateMLBranchLengths(tree, alignFile, tmpdir)
+  required_programs ['puzzle']
+  outgroup = tree.taxa.sort.last
+  tree.reroot(tree.findNode(outgroup))
+  bClades = tree.clades(true)
+  fasta2Phylip(alignFile, "#{tmpdir}/infile")
+  tree.write("#{tmpdir}/intree")
+  treepuzzle = "puzzle infile intree"
+  system("cd #{tmpdir};echo  \"y\" | #{treepuzzle} > /dev/null")
+  tree = NewickTree.fromFile("#{tmpdir}/intree.tree")
+  tree.reroot(tree.findNode(outgroup))
+  tree.addBootStrap(bClades)
+  File.unlink(tmpdir+"/intree", tmpdir+"/intree.tree", tmpdir+"/infile")
+  File.unlink(tmpdir+"/intree.dist", tmpdir+"/intree.puzzle")
+  return tree
+end
+
+name = File.basename(opts.fasta).split(".").first
+tmpdir = ENV["HOME"] + "/.tmp"
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+tmpdir += "/" + name + "_" + Time.now.to_f.to_s
+Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+tname = tmpdir + "/" + name
+dna = isDNA?(opts.fasta)
+aliHash = aliasFasta(opts.fasta, nil, tname)
+tree = NewickTree.fromFile(opts.tree)
+tree.reAlias(aliHash)
+tree.fixPhylip
+tree = estimateMLBranchLengths(tree, tname, tmpdir)
+tree.unAlias(aliHash)
+Dir.glob("#{tname}*").each do |file|
+  File.unlink(file) 
+end
+print tree.to_s + "\n"
 cleanup(tmpdir)
  
