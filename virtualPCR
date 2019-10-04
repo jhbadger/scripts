@@ -7,15 +7,15 @@ require 'ZFile'
 ARGV.push("--help") if ARGV.empty?
 opts = Optimist::options do
   banner File.basename($0)
-  opt :input, "SILVA fasta file", :required=>true, :type=>:string
-  opt :primers, "primer set to evaluate", :required=>true, :type=>:string
-  opt :level, "taxonomic level to evaluate", :default=>1
-  opt :reverse, "reverse second primer"
-  opt :out, "optional output file for amplicon sequence", :type=>:string
-  opt :csv, "read in csv rather than tabs"
+  opt :input, "fasta file to search", :required=>true, :type=>:string
+  opt :primers, "primer set to evaluate (name fwd rev)", :required=>true, :type=>:string
 end
 
-def deg2regexp(pat)
+def deg2regexp(pat, rev=false)
+  if rev 
+    pat = Bio::Sequence::NA.new(pat).reverse_complement
+    pat = pat.seq.upcase
+  end
   npat = pat.gsub("V","[G|A|C]")
   npat = npat.gsub("B","[G|T|C]")
   npat = npat.gsub("H","[A|T|C]")
@@ -30,41 +30,17 @@ def deg2regexp(pat)
   npat
 end
 
-if !opts.out.nil?
-  out = File.new(opts.out, "w")
-else
-  out = nil
-end
-
-fwd = nil
-rev = nil
 File.new(opts.primers).each do |line|
   name, fwd, rev = line.chomp.split("\t")
   if !fwd.nil?
-    if !opts.reverse
-      rev = Bio::Sequence::NA.new(rev).reverse_complement.seq.upcase
-    end
     dfwd = deg2regexp(fwd)
-    drev = deg2regexp(rev)
-    seen = Hash.new
-    hits = Hash.new
+    drev = deg2regexp(rev, true)
     Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
-      taxon = seq.definition
-      next if taxon.nil?
-      seen[taxon] = 0 if !seen[taxon]
-      seen[taxon] += 1
       if seq.seq.upcase.tr("U","T") =~/((#{dfwd}).*(#{drev}))/
         amplicon, fhit, rhit = $1, $2, $3
         amplicon = Bio::Sequence::NA.new(amplicon)
-        out.print amplicon.to_fasta(seq.definition+ " " + name, 60) if out
-        hits[taxon] = 0 if !hits[taxon]
-        hits[taxon] += 1
+        print amplicon.to_fasta(seq.definition+ " " + name, 60)
       end
-    end
-    printf("===%s===\n", name)
-    seen.keys.sort.each do |taxon|
-      printf("%s\t %6d/%-6d\t%-3.2f%%\n", taxon, seen[taxon], hits[taxon].to_i,
-             hits[taxon].to_i*100.0/seen[taxon])
     end
   end
 end
