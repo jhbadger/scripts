@@ -38,8 +38,13 @@ end
 
 fwd = nil
 rev = nil
+if opts.csv
+  sep = ","
+else
+  sep = " "
+end
 File.new(opts.primers).each do |line|
-  name, fwd, rev = line.chomp.split("\t")
+  name, fwd, rev = line.chomp.split(sep)
   if !fwd.nil?
     if !opts.reverse
       rev = Bio::Sequence::NA.new(rev).reverse_complement.seq.upcase
@@ -49,7 +54,7 @@ File.new(opts.primers).each do |line|
     seen = Hash.new
     hits = Hash.new
     Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
-      taxon = seq.definition
+      taxon = seq.definition.split(" ",2)[1].split(";")[opts.level]
       next if taxon.nil?
       seen[taxon] = 0 if !seen[taxon]
       seen[taxon] += 1
