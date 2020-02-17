@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+# coding: utf-8 
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+  opt :chars, "output special characters"
+  opt :title, "title word to exclude", :type=>:string
+end
+
+if opts.input =~/pdf/
+  system("pdf2htmlEX  --optimize-text 1  --process-nontext 0 --no-drm 1 " +
+         opts.input)
+  output = File.basename(opts.input).sub(".pdf",".html")
+  system("w3m " + output + " > " + output.sub(".html",".txt"))
+  file = output.sub(".html",".txt")
+  File.unlink(output)
+else
+  file = opts.input
+end
+
+chars = Hash.new
+File.new(file, :encoding => "utf-8").each do |line|
+  next if line=~/^[0-9]/ && line.length < 5
+  next if opts.title && line=~/#{opts.title}/
+  line = line.tr("Ÿ","Ŝ")
+  line = line.tr("ÿ","ŝ")
+  line = line.tr("¯","Ĝ")
+  line = line.tr("¸","ĝ")
+  line = line.tr("Û", "Û")
+  line = line.tr("û","ŭ")
+  line = line.tr("Ç","Ĉ")
+  line = line.tr("ç", "ĉ")
+  line = line.tr("î", "ĵ")
+  line = line.tr("˛", "ĥ")
+  line = line.gsub("ﬁ","fi")
+  line = line.gsub("ﬂ","fl")
+  line = line.gsub("", "...")
+  line = line.gsub("…", "...")
+  line = line.gsub("-\n","")
+  line = line.gsub("\n"," ") if line.length > 50 || line.length < 3
+  next if line =~/eLIBRO/
+  line.chomp.split(//).each do |c|
+    chars[c] = true
+  end
+  print line if !opts.chars
+end
+
+if opts.chars 
+  p chars.keys.sort.filter{|x| x !~/[A-Z|a-z|0-9]/}
+end

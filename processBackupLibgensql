@@ -20,16 +20,20 @@ File.new(opts.input).each do |line|
     header.push(line.split(" ")[0].tr("`",""))
   end
   if line =~/^INSERT INTO/
+    line = line.gsub("\t","")
     fields = line.split("VALUES ",2)
     fields = fields[1].split(",(")
     fields.each do |book|
       book.chop!
       begin
+        book = book.gsub("\\'","")
+        book = book.gsub('\\"','')
         fields = CSV.parse(book)[0]
         fields.shift if fields.length > header.length
         print fields.join("\t")+"\n"
       rescue
         STDERR << "Skipping Line: #{book}\n"
+        exit(1)
       end
     end
   end
