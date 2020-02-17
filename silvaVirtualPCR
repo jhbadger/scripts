@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'optimist'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "SILVA fasta file", :required=>true, :type=>:string
+  opt :primers, "primer set to evaluate", :required=>true, :type=>:string
+  opt :level, "taxonomic level to evaluate", :default=>1
+  opt :reverse, "reverse second primer"
+  opt :out, "optional output file for amplicon sequence", :type=>:string
+  opt :csv, "read in csv rather than tabs"
+end
+
+def deg2regexp(pat)
+  npat = pat.gsub("V","[G|A|C]")
+  npat = npat.gsub("B","[G|T|C]")
+  npat = npat.gsub("H","[A|T|C]")
+  npat = npat.gsub("D","[G|A|T]")
+  npat = npat.gsub("K","[G|T]")
+  npat = npat.gsub("S","[G|C]")
+  npat = npat.gsub("W","[A|T]")
+  npat = npat.gsub("M","[A|C]")
+  npat = npat.gsub("Y","[C|T]")
+  npat = npat.gsub("R","[A|G]")
+  npat = npat.gsub("N","[A|C|G|T]")
+  npat
+end
+
+if !opts.out.nil?
+  out = File.new(opts.out, "w")
+else
+  out = nil
+end
+
+fwd = nil
+rev = nil
+if opts.csv
+  sep = ","
+else
+  sep = " "
+end
+File.new(opts.primers).each do |line|
+  name, fwd, rev = line.chomp.split(sep)
+  if !fwd.nil?
+    if !opts.reverse
+      rev = Bio::Sequence::NA.new(rev).reverse_complement.seq.upcase
+    end
+    dfwd = deg2regexp(fwd)
+    drev = deg2regexp(rev)
+    seen = Hash.new
+    hits = Hash.new
+    Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+      taxon = seq.definition.split(" ",2)[1].split(";")[opts.level]
+      next if taxon.nil?
+      seen[taxon] = 0 if !seen[taxon]
+      seen[taxon] += 1
+      if seq.seq.upcase.tr("U","T") =~/((#{dfwd}).*(#{drev}))/
+        amplicon, fhit, rhit = $1, $2, $3
+        amplicon = Bio::Sequence::NA.new(amplicon)
+        out.print amplicon.to_fasta(seq.definition+ " " + name, 60) if out
+        hits[taxon] = 0 if !hits[taxon]
+        hits[taxon] += 1
+      end
+    end
+    printf("===%s===\n", name)
+    seen.keys.sort.each do |taxon|
+      printf("%s\t %6d/%-6d\t%-3.2f%%\n", taxon, seen[taxon], hits[taxon].to_i,
+             hits[taxon].to_i*100.0/seen[taxon])
+    end
+  end
+end
