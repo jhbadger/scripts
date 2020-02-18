@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'optimist'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "Input fastq file(s)", :required=>true, :type=>:strings
+  opt :threshold, "minimum count of sequences", :default=>5
+  opt :mlen, "minimum length of sequences", :default=>150
+end
+
+seqs = Hash.new
+names = Hash.new
+opts.input.each do |file|
+  STDERR.printf("Processing %s...\n", file)
+  Bio::FlatFile.new(Bio::Fastq, ZFile.new(file)).each do |seq|
+    if !seqs[seq.seq]
+      seqs[seq.seq] = 0
+      names[seq.seq] = seq.entry_id
+    end
+    seqs[seq.seq] += 1
+  end
+end
+
+nfile = File.new("seqs.count","w")
+sfile = File.new("unique.fa","w")
+
+seqs.keys.each do |key|
+  if seqs[key] >= opts.threshold and key.length >= opts.mlen
+    sfile.printf(">%s\n%s\n", names[key], key)
+    nfile.printf("%s\t%d\n", names[key], seqs[key])
+  end
+end
+
+sfile.close
+nfile.close
+

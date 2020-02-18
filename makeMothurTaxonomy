@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'optimist'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+end
+
+tax = Hash.new
+seqs = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  seqs[seq.entry_id] = seq.seq
+  tax[seq.entry_id] = "k__"+seq.definition.split("|k__").last+";"
+end
+
+sfile = File.new("db.fa","w")
+tfile = File.new("db.tax","w")
+
+seqs.keys.each do |key|
+  sfile.printf(">%s\n%s\n", key, seqs[key])
+  tfile.printf("%s\t%s\n", key, tax[key])
+end
+
+sfile.close
+tfile.close

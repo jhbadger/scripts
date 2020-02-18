@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "stats file(s)", :required=>true, :type=>:strings
+end
+
+counts = Hash.new
+opts.input.each do |file|
+  STDERR << "Processing #{file}...\n"
+  sname = File.basename(file,".sam.stats")
+  counts[sname] = Hash.new
+  File.new(file).each do |line|
+    if line !~/Avg_fold/
+      name, val = line.split("\t")
+      counts[sname][name] = val
+    end
+  end
+end
+
+print "Seq_Name"
+counts.keys.each do |sname|
+  print "\t"+ sname
+end
+print "\n"
+counts[counts.keys.first].keys.each do |seq|
+  print seq
+  counts.keys.each do |sname|
+    print "\t" + counts[sname][seq]
+  end
+  print "\n"
+end
