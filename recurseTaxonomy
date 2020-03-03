@@ -2,6 +2,7 @@
 
 require 'rubygems'
 require 'optimist'
+require 'ZFile'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Optimist::options do
@@ -31,11 +32,11 @@ if opts.taxonomy
   end
 elsif opts.nodes
   names = Hash.new
-  File.new(opts.names).each do |line|
+  ZFile.new(opts.names).each do |line|
     num, name = line.chomp.split("\t|\t")
     names[num.to_i] = name if !names[num.to_i]
   end
-  File.new(opts.nodes).each do |line|
+  ZFile.new(opts.nodes).each do |line|
     current, parent, rank = line.chomp.split("\t|\t")
     tax[current.to_i] = [names[current.to_i], parent.to_i, rank]
   end
