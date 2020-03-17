@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+require 'bio'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input clusters.tsv", :required=>true, :type=>:string
+  opt :proteins, "proteins fasta", :required=>true, :type=>:string
+  opt :reference, "reference genome", :required=>true, :type=>:string
+end
+
+ann = Hash.new
+sizes = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.proteins)).each do |seq|
+  desc = seq.definition.split(" ",2).last
+  next if desc=="hypothetical protein"
+  ann[seq.entry_id] = desc
+  sizes[seq.entry_id] = 3*seq.seq.length
+end
+
+ZFile.new(opts.input).each do |line|
+  if line =~/#{opts.reference}/
+    p line
+  end
+end

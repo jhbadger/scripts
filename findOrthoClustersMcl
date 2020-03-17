@@ -6,13 +6,21 @@ ARGV.push("--help") if ARGV.empty?
 opts = Optimist::options do
   banner File.basename($0)
   opt :input, "clusters.tsv", :required=>true, :type=>:string
-  opt :genomes, "genomes to look for", :type => :strings
 end
 
 header = ["Cluster Num", "Size", "Members"]
 print header.join("\t")+"\n"
 
-genomes = opts.genomes
+genomes = []
+File.new(opts.input).each do |line|
+  fields = line.chomp.split("\t")
+  if fields.first != "Cluster Num"
+    name, size, members = fields
+    members = members.split(" ")
+    member_genomes = members.collect{|x| x.split(/\_[0-9]/).first}.sort.uniq
+    genomes = (member_genomes + genomes).sort.uniq
+  end
+end
 
 File.new(opts.input).each do |line|
   fields = line.chomp.split("\t")
@@ -21,8 +29,7 @@ File.new(opts.input).each do |line|
     size = size.to_i
     members = members.split(" ")
     member_genomes = members.collect{|x| x.split(/\_[0-9]/).first}.sort.uniq
-    genomes = member_genomes if genomes.nil?
-    if size == genomes.size #&& member_genomes == genomes
+    if size == genomes.size && member_genomes.size == genomes.size
       print [name, size, members.sort.join(" ")].join("\t")+"\n"
     end
   end

@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'optimist'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+  opt :tax, "Input tax file", :required=>true, :type=>:string
+end
+
+
+tax = Hash.new
+File.new(opts.tax).each do |line|
+  acc, rest = line.chomp.split(" ",2)
+  rest = rest.gsub(" ","_").split(";")
+  rest = ["k__","p__","c__","o__","f__","g__","s__"].zip(rest).join(";")
+  rest = rest.gsub("__;","__")
+  sp = rest.split(";").last
+  tax[acc] = sp+"|"+acc+"|"+acc+"|refs|"+rest
+end
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  if tax[seq.entry_id]
+    print ">"+tax[seq.entry_id]+"\n"+seq.seq+"\n"
+  end
+end
