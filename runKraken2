@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file (R1 if paired)", :required=>true, :type=>:strings
+  opt :classfied, "write out classified sequences to file", :default=>false
+  opt :paired, "work on paired reads", :default=>false
+  opt :dryrun, "just print command, don't run it", :default=>false
+  opt :db, "database", :default=>"/data/MicrobiomeCore/JAMSdb/JAMSdbJan2021Full_96Gbk2db/krakendb"
+  opt :threads, "number of threads", :default=>1
+end
+
+
+opts.input.each do |file|
+  name = file.split("_star").first
+
+  cmd = "kraken2 --use-names --db #{opts.db} "
+  cmd += "--paired " if opts.paired
+  cmd += "--threads #{opts.threads} " if opts.threads > 1
+  cmd += "--gzip-compressed " if file =~/\.gz$/
+  cmd += "--classified-out #{name}_classified#.fastq " if opts.classified
+  cmd += "--output #{name}.kraken2 "
+  if opts.paired
+    if file.include? "_R1"
+      cmd += file + " " + file.gsub("_R1","_R2")
+    else
+      cmd += file + " " + file.gsub(".1",".2")
+    end
+  else
+    cmd += file + " "
+  end
+  if opts.dryrun
+    print cmd+"\n"
+  else
+    system(cmd)
+    system("gzip #{name}*.fastq") if opts.classified
+    system("gzip #{name}.kraken2")
+  end
+end
