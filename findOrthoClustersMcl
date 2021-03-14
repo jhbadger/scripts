@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "clusters.tsv", :required=>true, :type=>:string
+end
+
+header = ["Cluster Num", "Size", "Members"]
+print header.join("\t")+"\n"
+
+genomes = []
+File.new(opts.input).each do |line|
+  fields = line.chomp.split("\t")
+  if fields.first != "Cluster Num"
+    name, size, members = fields
+    members = members.split(" ")
+    member_genomes = members.collect{|x| x.split(/\_[0-9]/).first}.sort.uniq
+    genomes = (member_genomes + genomes).sort.uniq
+  end
+end
+
+File.new(opts.input).each do |line|
+  fields = line.chomp.split("\t")
+  if fields.first != "Cluster Num"
+    name, size, members = fields
+    size = size.to_i
+    members = members.split(" ")
+    member_genomes = members.collect{|x| x.split(/\_[0-9]/).first}.sort.uniq
+    if size == genomes.size && member_genomes.size == genomes.size
+      print [name, size, members.sort.join(" ")].join("\t")+"\n"
+    end
+  end
+end

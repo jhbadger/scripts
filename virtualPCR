@@ -8,7 +8,7 @@ ARGV.push("--help") if ARGV.empty?
 opts = Optimist::options do
   banner File.basename($0)
   opt :input, "fasta file to search", :required=>true, :type=>:string
-  opt :primers, "primer set to evaluate (name fwd rev)", :required=>true, :type=>:string
+  opt :primers, "primers fasta", :required=>true, :type=>:string
 end
 
 def deg2regexp(pat, rev=false)
@@ -30,8 +30,15 @@ def deg2regexp(pat, rev=false)
   npat
 end
 
-File.new(opts.primers).each do |line|
-  name, fwd, rev = line.chomp.split("\t")
+primers = Hash.new
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.primers)).each do |seq|
+  name = seq.entry_id.split("|").first
+  primers[name] = [] if !primers[name]
+  primers[name].push seq.seq
+end
+
+primers.keys.each do |name|
+  fwd, rev = primers[name]
   if !fwd.nil?
     dfwd = deg2regexp(fwd)
     drev = deg2regexp(rev, true)
