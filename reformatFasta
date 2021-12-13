@@ -26,13 +26,13 @@ end
 Bio::FlatFile.new(form, ZFile.new(opts.input)).each do |seq|
   seq.seq.gsub!(/-|\./,"") if opts.remove
   seq.seq.gsub!(/N|n|X|x/,"") if opts.noambig
-  seq.seq.tr!("U","T")
-  seq.seq.tr!("u","t")
+  seq.seq.tr!("U","T") if opts.utot
+  seq.seq.tr!("u","t") if opts.utot
   if !opts.header || opts.fastq
     header = seq.entry_id
   else
     header = seq.definition
   end
   header = header.split(opts.cut).first if opts.cut
-  print seq.seq.upcase.to_fasta(header, opts.linelen)
+  print seq.to_seq.output(:fasta, :header=>header, :width=>opts.linelen) 
 end
