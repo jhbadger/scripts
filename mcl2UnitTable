@@ -3,26 +3,55 @@
 require 'optimist'
 require 'bio'
 require 'ZFile'
+require 'Set'
 
 ARGV.push("--help") if ARGV.empty?
 opts = Optimist::options do
   banner File.basename($0)
   opt :input, "input clusters.tsv", :required=>true, :type=>:string
   opt :proteins, "proteins fasta", :required=>true, :type=>:string
-  opt :reference, "reference genome", :required=>true, :type=>:string
 end
 
 ann = Hash.new
 sizes = Hash.new
+genomes = Set.new
 Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.proteins)).each do |seq|
   desc = seq.definition.split(" ",2).last
-  next if desc=="hypothetical protein"
   ann[seq.entry_id] = desc
   sizes[seq.entry_id] = 3*seq.seq.length
+  genomes.add(seq.entry_id.split("_0").first)
 end
 
+genomes = genomes.sort.to_a           
+
+seen = Hash.new
+print (["Function"] + genomes).join("\t")+"\n"
 ZFile.new(opts.input).each do |line|
-  if line =~/#{opts.reference}/
-    p line
+  fields = line.chomp.split("\t")
+  if fields[1] != "Size"
+    cluster, size, entries = fields
+    entries = entries.split(" ")
+    function = nil
+    entries.each do |entry|
+      next if !function.nil? && function != "hypothetical protein"
+      function = ann[entry]
+    end
+    if !seen[function]
+      seen[function] = 1
+    else
+      seen[function] = seen[function] + 1
+      function = function + "_" + seen[function].to_s
+    end
+    print function
+    genomes.each do |genome|
+      hits = entries.grep(/#{genome+"_0"}/)
+      size = 0
+      hits.each do |hit|
+        size += sizes[hit]
+      end
+      print "\t" + size.to_s
+    end
+    print "\n"
   end
 end
+

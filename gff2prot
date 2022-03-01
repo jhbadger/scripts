@@ -13,6 +13,7 @@ opts = Optimist::options do
   opt :code, "Genetic code to use", :default=>11, :type=>:integer
   opt :transcripts, "output transcripts, not proteins"
   opt :ftarget, "Target to use (CDS or exon)", :default=>"CDS"
+  opt :product, "use product info"
   opt :bed, "output a bed file"
 end
 
@@ -20,10 +21,16 @@ end
 exons = Hash.new
 strand = Hash.new
 ec = 1
+product = nil
 
 STDERR << "Parsing gff...\n"
 ZFile.new(opts.gff).each do |line|
-  contig, source, feature, start, stop, score, strandl, frame, attribute = line.chomp.split("\t") 
+  contig, source, feature, start, stop, score, strandl, frame, attribute = line.chomp.split("\t")
+  product = nil
+  if opts.product && !attribute.nil?
+    product = attribute.split(";").grep(/product/).first
+    product = product.split("=",2)[1] if product
+  end
   if feature == opts.ftarget
     pid = nil
     ename = nil
@@ -35,6 +42,7 @@ ZFile.new(opts.gff).each do |line|
       ename = ename + ":exon:" + ec.to_s if !ename.index(":exon:")
       ec += 1
       pid = ename.split(":exon").first
+      pid = pid + " " + product if product
       exons[contig][pid] = Hash.new if !exons[contig][pid]
     else
       STDERR << "Cannot parse: " << attribute

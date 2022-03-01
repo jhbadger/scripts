@@ -25,8 +25,8 @@ pat = ARGV.shift
 patterns = Hash.new
 if opts.file
   File.new(pat).each do |line|
-    fields = line.chomp.split(" ")
-    patterns[fields.first] = true
+    #fields = line.chomp.split(" ")
+    patterns[line.chomp] = true
   end
 else
   patterns[pat] = true

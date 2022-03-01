@@ -9,6 +9,8 @@ opts = Optimist::options do
   banner File.basename($0)
   opt :input, "fasta file to search", :required=>true, :type=>:string
   opt :primers, "primers fasta", :required=>true, :type=>:string
+  opt :trimLeft, "number of bases to trim at start", :default=>0
+  opt :trimRight, "number of bases to trim at emd", :default=>0
 end
 
 def deg2regexp(pat, rev=false)
@@ -45,6 +47,8 @@ primers.keys.each do |name|
     Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
       if seq.seq.upcase.tr("U","T") =~/((#{dfwd}).*(#{drev}))/
         amplicon, fhit, rhit = $1, $2, $3
+        amplicon =
+          amplicon[opts.trimLeft..(amplicon.length-1-opts.trimRight)]
         amplicon = Bio::Sequence::NA.new(amplicon)
         print amplicon.to_fasta(seq.definition+ " " + name, 60)
       end
