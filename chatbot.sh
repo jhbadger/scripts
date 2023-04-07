@@ -1,6 +1,6 @@
 #!/bin/bash
 
-dir="/Users/badgerjh/lib/src/llama.cpp"
+dir="$HOME/lib/src/llama.cpp"
 main="$dir/main"
 model="$dir/models/ggml-vicuna-13b-4bit-rev1.bin"
 prompt="$dir/prompts/chat-with-vicuna.txt"
