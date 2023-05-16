@@ -2,9 +2,9 @@
 
 dir="$HOME/lib/src/llama.cpp"
 main="$dir/main"
-model="$dir/models/ggml-vicuna-13b-4bit-rev1.bin"
-prompt="$dir/prompts/chat-with-vicuna.txt"
-revprompt="### Human:"
+model="$dir/models/Wizard-Vicuna-13B-Uncensored.ggml.q4_0.bin"
+prompt="$dir/prompts/chat-with-assistant.txt"
+revprompt="Human::"
 temp=0.8
 n=-1
 k=40
@@ -52,5 +52,5 @@ done
 
 
 
-cmd="rlwrap $main -m $model --color -f $prompt -i -r '$revprompt' --top_k $k -t 8 --temp $temp --ignore-eos -n $n -c 2048 -t 7"
+cmd="$main -m $model --color -f $prompt -i -r '$revprompt' --top_k $k -t 8 --temp $temp --ignore-eos -n $n -c 2048 -t 7 --prompt-cache $TMPDIR/pcache"
 eval $cmd
