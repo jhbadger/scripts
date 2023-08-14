@@ -2,7 +2,7 @@
 
 dir="$HOME/lib/src/llama.cpp"
 main="$dir/main"
-model="$dir/models/Wizard-Vicuna-13B-Uncensored.ggml.q4_0.bin"
+model="$dir/models/Wizard-Vicuna-7B-Uncensored.ggmlv3.q4_1.bin"
 prompt="$dir/prompts/chat-with-assistant.txt"
 revprompt="Human::"
 temp=0.8
@@ -52,5 +52,5 @@ done
 
 
 
-cmd="$main -m $model --color -f $prompt -i -r '$revprompt' --top_k $k -t 8 --temp $temp --ignore-eos -n $n -c 2048 -t 7 --prompt-cache $TMPDIR/pcache"
+cmd="$main -m $model --color -f $prompt -i -r '$revprompt' --top_k $k -t 8 --temp $temp --ignore-eos -n $n -c 2048 -ngl 1"
 eval $cmd

@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'optimist'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input integer", :required=>true, :type=>:integer
+end
+
+def find_prime_factors(n)
+  prime_factors = []
+  for i in 2..n
+    while n % i == 0
+      prime_factors << i
+      n /= i
+    end
+  end
+  return prime_factors.sort.uniq
+end
+
+print find_prime_factors(opts.input)
+
+
+

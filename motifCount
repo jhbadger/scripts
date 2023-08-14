@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'optimist'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "fasta file", :required=>true, :type=>:string
+  opt :motifs, "pattern to match", :required=>true, :type=>:string
+  opt :revcomp, "reverse complement pattern"
+  opt :percent, "report in percent"
+end
+
+tot = `grep -c ">" #{opts.input}`.to_i
+File.new(opts.motifs).each_line do |pat|
+  pat = pat.chomp
+  pat = pat.tr("NnX",".").upcase
+  opat = pat
+  if opts.revcomp
+    pat = Bio::Sequence::NA.new(pat).reverse_complement.seq.upcase
+  end
+
+  
+  pat.gsub!("V","[G|A|C]")
+  pat.gsub!("B","[G|T|C]")
+  pat.gsub!("H","[A|T|C]")
+  pat.gsub!("D","[G|A|T]")
+  pat.gsub!("K","[G|T]")
+  pat.gsub!("S","[G|C]")
+  pat.gsub!("W","[A|T]")
+  pat.gsub!("M","[A|C]")
+  pat.gsub!("Y","[C|T]")
+  pat.gsub!("R","[A|G]")
+  hits = 0
+  Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+    s = seq.seq.upcase
+    if s.index(/(#{pat})/)
+      hits += 1
+    end
+  end
+  if opts.percent
+    printf("%s\t%6.2f%%\n", opat, hits*100.0/tot)
+  else
+    printf("%s\t%6d\n", opat, hits)
+  end
+end

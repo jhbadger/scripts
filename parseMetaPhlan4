@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:strings
+  opt :level, "taxonomic level", :default=>"t__"
+  opt :extension, "extension to strip off sample", :default=>".metagenome.txt"
+  opt :taxtable, "output for taxonomy", :default=>"metaphlan4_taxonomy.tsv"
+  opt :abundance, "output for counts", :default=>"metaphlan4_ppm.tsv"
+end
+
+taxonomy = Hash.new
+counts = Hash.new
+samples = []
+opts.input.each do |file|
+  sample = File.basename(file, opts.extension)
+  samples.push(sample)
+  File.new(file).each do |line|
+    if line =~/#{opts.level}/
+      tx, d, abund = line.chomp.split("\t")
+      tx = tx.split("|")
+      dom = tx.grep(/k__/).first.sub("k__","d__")
+      tx = [dom] + tx
+      taxonomy[tx.last] = tx
+      counts[tx.last] = Hash.new if !counts[tx.last]
+      counts[tx.last][sample] = abund.to_f
+    end
+  end
+end
+
+out1 = File.new(opts.taxtable, "w")
+out1.print(["Taxon", "Domain","Kingdom", "Phylum",
+           "Class", "Order", "Family", "Genus",
+           "Species", "Strain"].join("\t")+"\n")
+out2 = File.new(opts.abundance, "w")
+out2.print (["Taxon"]+samples).join("\t")+"\n"
+taxonomy.keys.each do |taxon|
+  out1.print taxon + "\t" + taxonomy[taxon].join("\t")+"\n"
+  out2.print taxon
+  samples.each do |sample|
+    out2.print "\t"+(1e4*counts[taxon][sample].to_f).to_i.to_s
+  end
+  out2.print "\n"
+end
+out1.close
+out2.close

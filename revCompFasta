@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+
+require 'bio'
+require 'optimist'
+require 'ZFile'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "Input fasta file", :required=>true, :type=>:string
+end
+
+
+Bio::FlatFile.new(Bio::FastaFormat, ZFile.new(opts.input)).each do |seq|
+  header = seq.definition
+  seq = Bio::Sequence::NA.new(seq.seq)
+  seq = seq.reverse_complement
+  print ">"+header+"\n"+seq.seq.upcase+"\n"
+end
