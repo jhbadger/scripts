@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input R1 files", :required=>true, :type=>:strings
+  opt :threads, "number of threads to use", :default=>16
+  opt :db, "metaphlan db to use", :default=> "/data/badgerjh/mp_db"
+end
+
+opts.input.each do |file|
+  sample = file.split(/_R1|_PE.1/).first
+  if file =~/_R1/
+    r2 = file.sub("_R1","_R2")
+  else
+    r2 = file.sub("_PE.1","_PE.2")
+  end
+  out = File.basename(sample) + ".metagenome.txt"
+  bw = File.basename(sample)+"_bowtie.bz2"
+  printf("metaphlan #{file},#{r2} --bowtie2db #{opts.db} --bowtie2out #{bw} --nproc #{opts.threads} --input_type fastq -o #{out}\n")
+end
