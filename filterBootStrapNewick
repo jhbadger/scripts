@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input newick file", :required=>true, :type=>:string
+  opt :threshold, "threshold for bootstrap", :default=>70, :type=>:integer
+end
+
+tree = File.read(opts[:input]).chomp
+
+tree.scan(/\)(\d+):/).each do |match|
+  if match.first.to_i < opts[:threshold]
+    tree.gsub!(match.first, "")
+    p match.first
+  end
+end
+print tree
