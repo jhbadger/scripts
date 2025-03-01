@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file(s)", :required=>true, :type=>:strings
+end
+
+opts.input.each do |file|
+  name = file.split("/")[-2]
+  outf = File.new(name+"_gutsmash.tsv","w")
+  outf.print ["Contig", "Type", "Class", "From", "To"].join("\t")+"\n"
+  printIt = false
+  contig = nil
+  `w3m #{file} -dump`.split("\n").each do |line|
+    if line=~/ctg_/
+      contig = line.chomp.split(" ").first
+      printIt = true
+    end
+    if line=~/Region\&/ && printIt
+      r, type, cl, from, to = line.chomp.split(" ")
+      outf.print [contig, type, cl, from, to].join("\t")+"\n"
+    end
+  end
+  outf.close
+end

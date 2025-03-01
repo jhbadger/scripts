@@ -36,3 +36,4 @@ Bio::FlatFile.new(form, ZFile.new(opts.input)).each do |seq|
   header = header.split(opts.cut).first if opts.cut
   print seq.to_seq.output(:fasta, :header=>header, :width=>opts.linelen) 
 end
+
