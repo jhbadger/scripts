@@ -44,7 +44,7 @@ my $gff;
 my $fh;
 my $name;
 while (<>) {
-    if (/^LOCUS\s+(\w+)\s+(\d+)/) {
+    if (/^LOCUS\s+(\w+)/) {
 	$name = $1;
 	$gff->Print($fh) if (defined($gff));
 

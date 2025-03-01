@@ -4,19 +4,21 @@ require 'rubygems'
 require'bio'
 include Bio
 
-if (ARGV.size != 2)
-  STDERR.printf("usage %s pattern file\n", $0)
+if (ARGV.size < 2)
+  STDERR.printf("usage %s pattern file(s)\n", $0)
   exit(1)
 end
 
-pat, file = ARGV
+pat = ARGV.shift
 pat = pat.upcase.gsub("X",".")
 
-FlatFile.new(FastaFormat, File.new(file)).each {|seq|
-  name, rest = seq.definition.split(" ")
-  pos = -1
-  while (!pos.nil?)
-    pos = seq.seq.index(/#{pat}/i, pos + 1)
-    printf("%s\t%d\n", name, pos + 1) if (!pos.nil?)
-  end
+ARGV.each {|file|
+  FlatFile.new(FastaFormat, File.new(file)).each {|seq|
+    name, rest = seq.definition.split(" ")
+    pos = -1
+    while (!pos.nil?)
+      pos = seq.seq.index(/#{pat}/i, pos + 1)
+      printf("%s\t%d\n", name, pos + 1) if (!pos.nil?)
+    end
+  }
 }
