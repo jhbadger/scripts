@@ -1,0 +1,30 @@
+#!/usr/bin/env python
+
+import argparse
+import pickle
+import base64
+import mistralai
+import os
+
+def main():
+    parser = argparse.ArgumentParser(description='My Script')
+    parser.add_argument('-i', '--input', help='Input pkl ocr file')
+    args = parser.parse_args()
+
+    if args.input:
+         with open(args.input, 'rb') as f:
+            data = pickle.load(f)
+            for page in data.pages:
+                print(page.markdown)
+                if page.images:
+                    for image in page.images:
+                        img = image.image_base64.split(",")[1]
+                        decoded_data = base64.b64decode(img)
+                        with open(image.id, 'wb') as f2:
+                            f2.write(decoded_data)
+    else:
+        print('Please provide -i or --input option.')
+
+    
+if __name__ == "__main__":
+    main()
