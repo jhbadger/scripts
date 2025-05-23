@@ -14,15 +14,21 @@ RubyLLM.configure do |config|
   config.openai_api_key = "ollama"
 end
 
+files = Dir.glob("*")
+
+Readline.completion_proc = proc do |input|
+  files.select { |name| name.start_with?(input) }
+end
+
 chat = RubyLLM.chat(provider: :openai, model: opts.model,
                         assume_model_exists: true)
         
-while buf = Readline.readline("> ", true)
-  break if buf=="bye"
-  if buf =~/ (.+\.jpg|.png)/
-    response = chat.ask(buf, with: { image: $1 })
+while input = Readline.readline("> ", true)
+  break if input=="bye"
+  if input =~/ (.+\.jpg|.png)/
+    response = chat.ask(input, with: { image: $1 })
   else
-    response = chat.ask(buf)
+    response = chat.ask(input)
   end
   print response.content
 end
