@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require 'ruby_llm'
+require 'readline'
+require 'optimist'
+
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :model, "LLM model to use", :default=> "gemma3:4b"
+end
+
+RubyLLM.configure do |config|
+  config.openai_api_base = ENV["OLLAMA_API_BASE"]+"/v1"
+  config.openai_api_key = "ollama"
+end
+
+chat = RubyLLM.chat(provider: :openai, model: opts.model,
+                        assume_model_exists: true)
+        
+while buf = Readline.readline("> ", true)
+  break if buf=="bye"
+  if buf =~/ (.+\.jpg|.png)/
+    response = chat.ask(buf, with: { image: $1 })
+  else
+    response = chat.ask(buf)
+  end
+  print response.content
+end
