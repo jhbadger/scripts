@@ -9,24 +9,18 @@ opts = Optimist::options do
   banner File.basename($0)
   opt :blast, "blast program", :default=>"blastp", :type => :string
   opt :evalue, "BLAST evalue", :default => 1e-9, :type => :float
-  opt :format, "BLAST output format (ncbi, m8, btab)", :default=>"ncbi"
   opt :input, "FASTA input file(s) to blast", :required => true, :type => :strings
   opt :maxhits, "max number of BLAST hits", :default => 50, :type => :integer
-  opt :project, "JCVI project number", :required => true, :type => :string
-  opt :sizejob, "number of sequences per grid job", :default => 1000
 end
 
 
 opts.input.each do |pep1|
   opts.input.each do |pep2|
     if (pep1 != pep2)
-      if (opts.project.nil?)
-               else
         if (Dir.glob("#{pep2}_vs_#{pep1}*").empty?)
-          system("pblastNCBI -b #{opts.blast} -e #{opts.evalue} -m #{opts.maxhits} -p #{opts.project} -s #{opts.sizejob} -d #{pep1} -f #{opts.format} -i #{pep2}")
+          system("blastp -evalue #{opts.evalue} -max_target_seqs #{opts.maxhits} -db #{pep1} -query #{pep2} -outfmt 6 -out #{pep1}_vs_#{pep2}.blast")
         else
           STDERR.printf("Skipping #{pep1}_vs_#{pep2} due to existing results...\n")
-        end
       end
     end
   end

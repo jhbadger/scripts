@@ -1,0 +1,17 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "Input text", :required=>true, :type=>:string
+end
+
+conversions = {"a" => "а", "c" => "с", "d" => "ԁ", "e" => "е", "h" => "һ", "i" => "і",
+               "j" => "ј", "n" => "n", "o" => "о", "p" => "р", "q" => "զ", "u" => "υ"}
+
+File.new(opts.input).each do |line|
+  lm = line.split(//).collect{|x| if conversions[x];conversions[x];else x; end}.join
+  print lm
+end

@@ -8,6 +8,7 @@ opts = Optimist::options do
   banner File.basename($0)
   opt :input, "Input alignment file(s)", :required=>true, :type=>:strings
   opt :phylip, "use PHYLIP format for input"
+  opt :use_
 end
 
 
