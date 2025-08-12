@@ -1,0 +1,83 @@
+#!/usr/bin/env python
+
+import requests
+import json
+import ssl
+import urllib
+
+def get_exchange_rate(base_currency, target_currency):
+    """
+    Fetches the exchange rate between two currencies from a web API.
+
+    Args:
+        base_currency (str): The base currency (e.g., "USD").
+        target_currency (str): The target currency (e.g., "EUR").
+
+    Returns:
+        float: The exchange rate (base currency to target currency), or None if an error occurs.
+    """
+    try:
+        # Using exchangerate-api.com as a reliable source.  You can find others.
+        #  Consider using a more robust API with error handling and rate limiting.
+        url = f"https://api.exchangerate-api.com/v4/latest/{base_currency}"
+        context = ssl._create_unverified_context()
+        data = json.loads(urllib.request.urlopen(url,context=context).read())
+        
+        if target_currency in data['rates']:
+            return data['rates'][target_currency]
+        else:
+            print(f"Target currency '{target_currency}' not found in the API response.")
+            print("Valid currencies are: ")
+            print(data['rates'].keys())
+            return None
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching exchange rate: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON response: {e}")
+        return None
+    except KeyError as e:
+        print(f"KeyError: {e}.  The API response format may have changed.")
+        return None
+
+
+def convert_currency(amount, base_currency, target_currency):
+    """
+    Converts an amount from one currency to another.
+
+    Args:
+        amount (float): The amount to convert.
+        base_currency (str): The base currency (e.g., "USD").
+        target_currency (str): The target currency (e.g., "EUR").
+
+    Returns:
+        float: The converted amount, or None if an error occurs.
+    """
+    exchange_rate = get_exchange_rate(base_currency, target_currency)
+    if exchange_rate is not None:
+        converted_amount = amount * exchange_rate
+        return converted_amount
+    else:
+        return None
+
+
+if __name__ == "__main__":
+    # Example usage
+    amount = input("Enter the amount to convert (e.g. 1): ")
+    if amount == "":
+        amount = "1"
+    amount = float(amount)
+    base_currency = input("Enter the base currency (e.g., USD): ").upper()
+    if base_currency == "":
+        base_currency = "USD"
+    target_currency = input("Enter the target currency (e.g., EUR): ").upper()
+    if target_currency == "":
+        target_currency = "EUR"
+    converted_amount = convert_currency(amount, base_currency, target_currency)
+
+    if converted_amount is not None:
+        print(f"{amount} {base_currency} is equal to {converted_amount:.2f} {target_currency}")
+    else:
+        print("Currency conversion failed.")
+        

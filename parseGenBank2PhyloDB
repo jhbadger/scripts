@@ -188,12 +188,12 @@ opts.input.each do |gb|
         cds_name = nil
         translation = nil
         feature.qualifiers.each do |qual|
-          if (qual.value =~/GI:/)
-            cds_name = qual.value.downcase.gsub(":","")
+          if (qual.value.to_s =~/GI:/)
+            cds_name = qual.value.to_s.downcase.gsub(":","")
           elsif (!cds_name && qual.qualifier == "protein_id")
-            cds_name = qual.value
+            cds_name = qual.value.to_s
           elsif (qual.qualifier == "translation")
-            translation = qual.value
+            translation = qual.value.to_s
           end
         end
         seq = getSequence(dna, complement, feature.locations)
