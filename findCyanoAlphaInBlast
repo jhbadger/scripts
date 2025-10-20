@@ -16,7 +16,7 @@ end
 
 blastDir, fasta = ARGV
 
-Dir.mkdir(blastDir + "/subBlast") if (!File.exists?(blastDir + "/subBlast"))
+Dir.mkdir(blastDir + "/subBlast") if (!File.exist?(blastDir + "/subBlast"))
 names = []
 
 Dir.glob(blastDir+"/*.blastp").sort.each {|file|

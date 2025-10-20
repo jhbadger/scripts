@@ -47,7 +47,7 @@ opts.input.each do |file|
     exit(1)
   end
   pname = genus+"_"+species+"_"+strain
-  if File.exists? pname
+  if File.exist? pname
     gname = pname + "/" + pname + ".ffn"
     copies16S = 0
     Bio::FlatFile.new(Bio::FastaFormat, File.new(gname)).each do |seq|

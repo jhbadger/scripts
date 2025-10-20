@@ -19,7 +19,7 @@ CSV.foreach(opts.input, :col_sep=>"\t", :headers=>true) do |line|
     output = output.gsub(" ","").gsub("PrimarysolidTumor","Tumor")
     output = output.gsub("BloodDerivedNormal", "Blood")
     unmapped = output.gsub(".bam", "_Unmapped.bam")
-    if !File.exists?(unmapped)
+    if !File.exist?(unmapped)
       cmd = "gdc-client download " + line["file_id"]
       cmd += " -t " + opts.token
       if opts.swarm

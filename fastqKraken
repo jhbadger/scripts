@@ -13,10 +13,10 @@ end
 
 opts.input.each do |fq|
   r2 = fq.gsub("_R1", "_R2")
-  if File.size(fq) > 14 && File.exists?(fq) && File.exists?(r2)
+  if File.size(fq) > 14 && File.exist?(fq) && File.exist?(r2)
     out = opts.outdir+"/" + File.basename(fq).split("_R1").first+".kraken"
     o1 = "/lscratch/$SLURM_JOB_ID/"+File.basename(out)
-    if !File.exists?(out+".bz2")
+    if !File.exist?(out+".bz2")
       dbname = "/lscratch/$SLURM_JOB_ID/"+File.basename(opts.db)
       cmd = "if [ ! -d #{dbname} ]; then "
       cmd += "cp -r -L #{opts.db} /lscratch/$SLURM_JOB_ID;fi;"

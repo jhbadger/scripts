@@ -45,7 +45,7 @@ total = 0
 File.new(sheet).each {|line|
   orf, rest = line.split(",")
   tree = dir + "/trees/" + orf + ".tree"
-  if (File.exists?(tree))
+  if (File.exist?(tree))
     tree = NewickTree.fromFile(tree)
     targets = []
     tree.taxa.each {|taxon|

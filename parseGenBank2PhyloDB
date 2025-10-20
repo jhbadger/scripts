@@ -167,7 +167,7 @@ opts.input.each do |gb|
       end
       if feature.feature == "source" # contains taxon_id info
         feature.qualifiers.each do |qual|
-          if (qual.value =~/taxon:([0-9]+)/)
+          if (qual.value.to_s =~/taxon:([0-9]+)/)
             taxon_id = $1
           end
         end

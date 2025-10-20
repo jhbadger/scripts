@@ -9,7 +9,7 @@ opts = Optimist::options do
 end
 
 
-if !File.exists?(opts.input)
+if !File.exist?(opts.input)
   script = DATA.read
   out = File.new(opts.input, "w")
   out.print script

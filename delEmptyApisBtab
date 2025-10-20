@@ -32,7 +32,7 @@ files.each {|file|
   size = File.size(file)
   if (size < 130)
     name = File.basename(file,".blastp.btab")
-    if (!File.exists?("#{dir}/alignments/#{name}.afa"))
+    if (!File.exist?("#{dir}/alignments/#{name}.afa"))
       File.unlink(file)
       File.unlink("#{dir}/seq/#{name}.fasta")
     end

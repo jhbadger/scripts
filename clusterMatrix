@@ -84,7 +84,7 @@ clusters.keys.sort.each {|genome|
 
 out.close
 
-File.unlink("#{name}_tmp") if File.exists?("#{name}_tmp")
-File.unlink("#{name}_tmp.bak.clstr") if File.exists?("#{name}_tmp.bak.clstr")
-File.unlink("#{name}_tmp.clstr") if File.exists?("#{name}_tmp.clstr")
+File.unlink("#{name}_tmp") if File.exist?("#{name}_tmp")
+File.unlink("#{name}_tmp.bak.clstr") if File.exist?("#{name}_tmp.bak.clstr")
+File.unlink("#{name}_tmp.clstr") if File.exist?("#{name}_tmp.clstr")
 

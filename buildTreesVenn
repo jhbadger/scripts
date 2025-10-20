@@ -26,7 +26,7 @@ CSV.foreach(csv, :headers => true) do |row|
   hom = name + ".hom"
   afa = name + ".afa"
   tree = name + "_nj.tree"
-  if (!File.exists?(afa))
+  if (!File.exist?(afa))
     h = File.new(hom, "w")
     row.headers.each do |pep|
       h.print peps[pep][row[pep]].seq.to_fasta(pep, 60) if (peps[pep])

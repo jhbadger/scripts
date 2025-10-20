@@ -95,7 +95,7 @@ end
 
 if (opt.hmm)
   STDERR << "Loading HMMs...\n"
-  if (File.exists?(opt.hmm + ".serialized"))
+  if (File.exist?(opt.hmm + ".serialized"))
     data = File.read(opt.hmm+".serialized")
     hmm=Marshal::load(data)
     data = nil
@@ -125,7 +125,7 @@ end
 
 if (opt.kegg)
   STDERR << "Loading KEGG blast...\n"
-  if (File.exists?(opt.kegg + ".serialized"))
+  if (File.exist?(opt.kegg + ".serialized"))
     data = File.read(opt.kegg+".serialized")
     blast=Marshal::load(data)
     data=nil

@@ -14,7 +14,7 @@ ARGV.each do |file|
     STDERR.printf("Warning: %s not not exist\n", prefix + lib + ".fasta/apis")
     next
   end
-  next if (File.exists?(prefix + lib + ".fasta/apis/apis.csv.bz2"))
+  next if (File.exist?(prefix + lib + ".fasta/apis/apis.csv.bz2"))
   STDERR.printf("Copying %s...\n", file)
   system("cp #{file} #{prefix + lib + '.fasta/apis/apis.csv.bz2'}")
 end

@@ -34,7 +34,7 @@ File.new(opts.input).each do |line|
     _, filename = line.chomp.split("\t")
     name = File.basename(filename,".bam")
     r1 = opts.dir + "/fastq/" + name + "_R1.fastq.bz2"
-    if !File.exists? r1
+    if !File.exist? r1
       if count > opts.bsize || count == 0
         printcmd(opts.token, mani, opts.dir, pwd) if count > 0
         count = 0

@@ -13,7 +13,7 @@ opts = Optimist::options do
 end
 
 
-if File.exists?(opts.input.first)
+if File.exist?(opts.input.first)
   ids = []
   File.new(opts.input.first).each do |line|
     ids.push(line.chomp.split(" ").first)

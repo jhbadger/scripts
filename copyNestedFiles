@@ -34,10 +34,10 @@ ARGV.each do |file|
   baseName = baseName.split(opt.cut).first if (opt.cut)
   subDir = nil
   subDir = dir + "/" + baseName + "/" + name.split("/").first if (name.index("/"))
-  if (!File.exists?(dir + "/" + baseName))
+  if (!File.exist?(dir + "/" + baseName))
     STDERR.printf("No such directory: %s\n", dir + "/" + baseName)
     next
-  elsif (subDir && !File.exists?(subDir))
+  elsif (subDir && !File.exist?(subDir))
     Dir.mkdir(subDir)
   end
   STDERR.printf("Copying %s to %s...\n", file, dir + "/" + baseName + "/" + name)

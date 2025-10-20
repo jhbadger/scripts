@@ -36,7 +36,7 @@ pdf = tree + ".pdf"
 cmd = "blastn -db #{opts.db} -query=#{opts.input} "
 cmd += "-perc_identity #{opts.percent} -outfmt 6 -num_threads #{opts.threads} "
 cmd += "-max_target_seqs #{opts.max_target} > #{blast}"
-if File.exists?(blast)
+if File.exist?(blast)
   STDERR << "Found #{blast} Skipping BLAST step...\n"
 else
   STDERR << "Running blast...\n"
@@ -54,7 +54,7 @@ out.close
 
 cmd = "blastdbcmd -db #{opts.db} -entry_batch #{list} > #{tmp}"
 
-if File.exists?(homologs)
+if File.exist?(homologs)
   STDERR << "Found #{homologs} Skipping homolog step...\n"
 else
   STDERR << "Extracting homologs...\n"
@@ -82,7 +82,7 @@ end
 out.close
 
 cmd = "muscle -in #{tmp} -out #{aln}"
-if File.exists?(aln)
+if File.exist?(aln)
   STDERR << "Found #{aln} Skipping alignment step...\n"
 else
   system(cmd)
@@ -105,7 +105,7 @@ Bio::FlatFile.new(Bio::FastaFormat, File.new(aln)).each do |seq|
 end
 
 
-if File.exists?(tree)
+if File.exist?(tree)
   STDERR << "Found #{tree} Skipping phylogeny step...\n"
 else
   out = File.new(tmp, "w")
@@ -147,12 +147,12 @@ queries.each do |query|
   STDOUT << "\n"
 end
 
-ttree.draw(pdf) if !File.exists?(pdf)
+ttree.draw(pdf) if !File.exist?(pdf)
   
-File.unlink(list) if File.exists?(list)
-File.unlink(tmp) if File.exists?(tmp)
-File.unlink(tmp2) if File.exists?(tmp2)
-File.unlink(homologs) if File.exists?(homologs)
+File.unlink(list) if File.exist?(list)
+File.unlink(tmp) if File.exist?(tmp)
+File.unlink(tmp2) if File.exist?(tmp2)
+File.unlink(homologs) if File.exist?(homologs)
 
 STDOUT << "\n\nBlast is #{blast}\n"
 STDOUT << "Alignment is #{aln}\n"

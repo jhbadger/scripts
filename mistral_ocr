@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+import os
+import argparse
+import pickle
+from mistralai import Mistral
+
+def main():
+    # Retrieve the API key from environment variables
+    api_key = os.environ["MISTRAL_API_KEY"]
+    
+    parser = argparse.ArgumentParser(description='Mistral OCR')
+    parser.add_argument('-i', type=str, required=True,
+                        help='Input file name or path')
+    args = parser.parse_args()
+    file = args.i
+
+    api_key = os.environ["MISTRAL_API_KEY"]
+    client = Mistral(api_key=api_key)
+    
+    uploaded_pdf = client.files.upload(
+        file={
+            "file_name": "uploaded.pdf",
+            "content": open(file, "rb"),
+        },
+        purpose="ocr")
+    signed_url = client.files.get_signed_url(file_id=uploaded_pdf.id)
+
+    ocr_response = client.ocr.process(
+    model="mistral-ocr-latest",
+    document={
+        "type": "document_url",
+        "document_url": signed_url.url
+    },
+    include_image_base64=True)
+    pkl = os.path.basename(file)+".pkl"
+    with open(pkl, 'wb') as outp:
+        pickle.dump(ocr_response, outp, pickle.HIGHEST_PROTOCOL)
+    
+    
+if __name__ == '__main__':
+    main()

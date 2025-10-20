@@ -62,9 +62,9 @@ end
 
 name = File.basename(opts.fasta).split(".").first
 tmpdir = ENV["HOME"] + "/.tmp"
-Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+Dir.mkdir(tmpdir) if !File.exist?(tmpdir)
 tmpdir += "/" + name + "_" + Time.now.to_f.to_s
-Dir.mkdir(tmpdir) if !File.exists?(tmpdir)
+Dir.mkdir(tmpdir) if !File.exist?(tmpdir)
 tname = tmpdir + "/" + name
 dna = isDNA?(opts.fasta)
 aliHash = aliasFasta(opts.fasta, nil, tname)

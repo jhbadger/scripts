@@ -27,7 +27,7 @@ opts.input.each do |gb|
 	cog_categories.keys.each {|c| cog_counts[name][c] = 0}
 	stats_counts[name] = Hash.new
 	stats_categories.each {|c| stats_counts[name][c] = 0}
-	if !File.exists?(name + ".pep")
+	if !File.exist?(name + ".pep")
 		`parseGenbank2Combo -p #{name} -i #{gb}`
 	end
 	cogBlast = name+".pep_vs_cog_class.pep.blastp"

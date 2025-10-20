@@ -38,7 +38,7 @@ posF = File.new("pos.csv", "w")
 File.new(list).each {|line|
   prot = line.split(/ |,/).first
   STDERR.printf("Processing %s...\n", prot)
-  if (File.exists?("blast/#{prot}.blastp.gz"))
+  if (File.exist?("blast/#{prot}.blastp.gz"))
     blast = `zcat blast/#{prot}.blastp.gz`
     blast.split("\n").each {|line|
       if (line =~/^>/)

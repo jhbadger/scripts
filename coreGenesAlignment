@@ -50,7 +50,7 @@ opts.peps.each do |pep|
     elsif (count > 1)
       hits[pep].delete(gene) # remove multicopy genes
     end
-    File.unlink(tbl) if File.exists?(tbl)
+    File.unlink(tbl) if File.exist?(tbl)
   end
   STDERR << pep << " has " << hits[pep].keys.size << " core genes: " << hits[pep].keys.sort.join(" ") << "\n"
 end
@@ -63,5 +63,5 @@ conserved.each do |gene|
   end
   out.close
   system("muscle -in #{gene}.fa -out #{gene}.afa -quiet")
-  File.unlink(gene + ".fa") if File.exists?(gene + ".fa")
+  File.unlink(gene + ".fa") if File.exist?(gene + ".fa")
 end

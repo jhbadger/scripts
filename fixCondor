@@ -14,7 +14,7 @@ dir, fasta = ARGV
 done = Hash.new
 Dir.glob(dir + "/*.blastp").each {|file|
   name = File.basename(file, ".blastp")
-  done[name] = true if (!File.exists?(dir + "/" + name))
+  done[name] = true if (!File.exist?(dir + "/" + name))
 }
 
 FlatFile.new(FastaFormat, File.new(fasta)).each {|seq|

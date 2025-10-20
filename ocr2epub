@@ -19,6 +19,8 @@ def main():
                 for page in data.pages:
                     pg = re.sub(r'^#','\n#', page.markdown)
                     pg = re.sub(r'-\n','', pg)
+                    pg = re.sub(r'<br>',' ', pg)
+                    pg = re.sub(r'<BR>',' ', pg)
                     print(pg, file=o)
                     if page.images:
                         for image in page.images:

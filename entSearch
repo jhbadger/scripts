@@ -13,7 +13,7 @@ stop = stop.to_f
 
 contig = "TG_#{org}_#{id}.con"
 
-if !File.exists?(contig)
+if !File.exist?(contig)
   STDERR.printf("Retrieving #{org} from database\n")
   system("TigrGenomeRetriever.pl -db #{org}=1")
 end

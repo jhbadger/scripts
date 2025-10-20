@@ -20,7 +20,7 @@ STDERR.printf("Fetching ftp list...\n")
 files = ftp.nlst("*_*")
 STDERR.printf("Processing ftp list...\n")
 files.each {|file|
-  if (file =~/.gbk/ && !File.exists?(file))
+  if (file =~/.gbk/ && !File.exist?(file))
     if (contigs[File.basename(file, ".gbk")])
       STDERR.printf("Downloading %s\n", file)
       ftp.gettextfile(file)

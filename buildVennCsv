@@ -114,10 +114,10 @@ opts.peptides.each do |pep1|
     next if pep1 == pep2
     vs = pep1 + "_vs_" + pep2
     rvs = pep2 + "_vs_" + pep1
-    if (!File.exists?(vs + ".recip"))
+    if (!File.exist?(vs + ".recip"))
       b1 = Dir.glob("#{vs}.blastp.*").first
       b2 = Dir.glob("#{rvs}.blastp.*").first
-      if File.exists?(b1) && File.exists?(b2)
+      if File.exist?(b1) && File.exist?(b2)
         system("bestRecip -i #{b1} #{b2} -e #{opts.evalue} > #{vs}.recip")
       else
         STDERR.printf("Can't find any blast for #{vs}!\n")

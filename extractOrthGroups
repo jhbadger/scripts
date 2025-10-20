@@ -48,7 +48,7 @@ list = File.new("list.txt", "w")
 
 File.new(cluster).each {|line|
   orfs = line.split(" ")
-  if (!File.exists?(orfs.first + ".aln"))
+  if (!File.exist?(orfs.first + ".aln"))
     pFile = File.new(orfs.first + ".pep", "w")
     sFile = File.new(orfs.first + ".seq", "w")
     orfs.each {|orf|
