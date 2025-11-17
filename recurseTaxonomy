@@ -26,7 +26,7 @@ tax = Hash.new
 used = Hash.new
 
 if opts.taxonomy
-  File.new(opts.taxonomy).each do |line|
+  ZFile.new(opts.taxonomy).each do |line|
     current, name, parent, rank = line.chomp.split("\t")
     tax[current.to_i] = [name, parent.to_i, rank]
   end

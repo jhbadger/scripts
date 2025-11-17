@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+
+require 'optimist'
+
+ARGV.push("--help") if ARGV.empty?
+opts = Optimist::options do
+  banner File.basename($0)
+  opt :input, "input file", :required=>true, :type=>:string
+end
+
+registers = [0, 0, 0, 0, 0, 0, 0, 0]
+ops = ["inc", "dec", "jmp", "isz", "stp", "prt"]
+
+lines = File.read(opts.input).split("\n")
+pc = 0
+while pc < lines.length
+  if lines[pc] =~/^:/ # label
+    pc = pc + 1
+    next
+  end
+  op, val = lines[pc].chomp.split(" ")
+  if !ops.include? op
+    STDERR << op << " is not a valid wdr op code\n"
+    exit(1)
+  end
+  if val =~/^:/ # label
+    val = lines.index(val) + 1
+  end
+  val = val.to_i
+  if val < 0 || val > 7
+    STDERR << val << " is an illegal register\n"
+    exit(1)
+  end
+  if op == "inc"
+    registers[val] += 1
+  elsif op == "dec"
+    registers[val] -= 1
+  elsif op == "jmp"
+    pc = val
+    next
+  elsif op == "isz"
+    if (registers[val] == 0)
+      pc += 1
+    end
+  elsif op == "stp"
+    break
+  elsif op == "prt"
+    print registers[val]
+    print "\n"
+  end
+  pc += 1
+end
