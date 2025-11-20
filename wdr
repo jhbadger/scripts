@@ -9,49 +9,74 @@ opts = Optimist::options do
   opt :debug, "debugging mode", :default => false
 end
 
-registers = [0, 0, 0, 0, 0, 0, 0, 0]
-ops = ["inc", "dec", "jmp", "isz", "stp", "prt", "inp"]
+# Initialize registers to 0
+registers = [0] * 8
 
-lines = File.read(opts.input).split("\n")
+# Define operation codes as lambdas.  Each lambda takes register value as input.
+ops = {
+  inc: -> (r) { r += 1 },
+  dec: -> (r) { r -= 1 },
+  jmp: -> (r) { r },  # handle this in loop below
+  isz: -> (r) { r }, # handle this in loop below
+  stp: -> (r) { exit }, # Properly end program
+  prt: -> (r) { print r,"\n"; r},
+  inp: -> (r) { r = STDIN.read.to_i; r }
+}
+
+lines = File.read(opts.input).split("\n").
+          collect{|l| l.split(";").first} # get lines, remove comments
+
+lines = lines.select{|l| !l.nil? && l!=""} # remove empty lines
+
+# Label Definition Phase
+labels = {}
+0.upto(lines.length - 1) do |i|
+  line = lines[i]
+  if line.start_with?(":")
+    label_name = line[1..-1].strip
+    labels[label_name] = i
+    lines[i] = "" # get rid of label line
+  end
+end
+
+lines = lines.select{|l| !l.nil? && l!=""} # remove empty lines
+
+# replace labels with line numbers
+lines = lines.collect{|l| 
+  labels.keys.each do |lbl|
+    l = l.sub(lbl, labels[lbl].to_s)
+  end
+  l
+}
+
+debug_str = ""
 pc = 0
 while pc < lines.length
-  lines[pc] = lines[pc].to_s.split(";").first # comments after ;
-  if lines[pc]  == "" || lines[pc] =~/^:/
-	pc = pc + 1
-	next
-  end
-  op, val = lines[pc].chomp.split(" ")
-  if !ops.include? op
-    STDERR << op << " is not a valid wdr op code\n"
+  line = lines[pc] # Get the full line for error reporting
+  op, val_str = line.split(" ")  # Split the line
+  val = val_str.to_i
+  debug_str = registers.to_s + "\t" + line + "\t" if opts.debug
+
+  if val < 0 || val > registers.length - 1
+    STDERR << "Illegal register number " << val.to_s <<
+      " at line " << pc << ": " << line << "\n"
     exit(1)
   end
-  if val =~/^:/ # label
-    val = lines.index(val) + 1
-  end
-  val = val.to_i
-  if val < 0 || val > 7
-    STDERR << val << " is an illegal register\n"
-    exit(1)
-  end
-  print lines[pc] + "\t" + registers.to_s + "\n" if opts.debug
-  if op == "inc"
-    registers[val] += 1
-  elsif op == "dec"
-    registers[val] -= 1
-  elsif op == "jmp"
-    pc = val
-    next
-  elsif op == "isz"
-    if (registers[val] == 0)
-      pc += 1
+
+  if ops.key?(op.to_sym)
+    if op == "jmp"
+      pc = val
+      next
+    elsif op == "isz"
+      pc += 1 if registers[val] == 0
+    else
+      registers[val] = ops[op.to_sym].call(registers[val])
     end
-  elsif op == "stp"
-    break
-  elsif op == "prt"
-    print registers[val]
-    print "\n"
-  elsif op == "inp"
-	registers[val] = STDIN.read.to_i
+  else
+    STDERR << "Illegal op code " << op << " at line " <<
+      pc << ": " << line << "\n"
+    exit(1)
   end
+  print debug_str + registers.to_s + "\n" if opts.debug
   pc += 1
 end
