@@ -18,6 +18,7 @@ ops = {
   dec: -> (r) { r -= 1 },
   jmp: -> (r) { r },  # handle this in loop below
   isz: -> (r) { r }, # handle this in loop below
+  rts: -> (r) { r }, # handle this in loop below
   stp: -> (r) { exit }, # Properly end program
   prt: -> (r) { print r,"\n"; r},
   inp: -> (r) { r = STDIN.read.to_i; r }
@@ -51,6 +52,7 @@ lines = lines.collect{|l|
 
 debug_str = ""
 pc = 0
+opc = 0
 while pc < lines.length
   line = lines[pc] # Get the full line for error reporting
   op, val_str = line.split(" ")  # Split the line
@@ -65,7 +67,11 @@ while pc < lines.length
 
   if ops.key?(op.to_sym)
     if op == "jmp"
+	  opc = pc
       pc = val
+      next
+    elsif op == "rts"
+	  pc = opc + 1
       next
     elsif op == "isz"
       pc += 1 if registers[val] == 0
