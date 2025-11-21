@@ -16,6 +16,7 @@ registers = [0] * 8
 ops = {
   inc: -> (r) { r += 1 },
   dec: -> (r) { r -= 1 },
+  clr: -> (r) { 0 },
   jmp: -> (r) { r },  # handle this in loop below
   isz: -> (r) { r }, # handle this in loop below
   rts: -> (r) { r }, # handle this in loop below
