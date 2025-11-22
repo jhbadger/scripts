@@ -18,6 +18,7 @@ ops = {
   dec: -> (r) { r -= 1 },
   clr: -> (r) { 0 },
   jmp: -> (r) { r },  # handle this in loop below
+  jsr: -> (r) { r },  # handle this in loop below
   isz: -> (r) { r }, # handle this in loop below
   rts: -> (r) { r }, # handle this in loop below
   stp: -> (r) { exit }, # Properly end program
@@ -68,7 +69,10 @@ while pc < lines.length
 
   if ops.key?(op.to_sym)
     if op == "jmp"
-	  opc = pc
+      pc = val
+      next
+    elsif op == "jsr"
+      opc = pc
       pc = val
       next
     elsif op == "rts"
