@@ -1,0 +1,486 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+class Forth
+  def initialize
+    @stack   = []
+    @rstack  = []
+    @locals  = []
+    @dict    = {}
+
+    @compiling = false
+    @current   = nil
+    @prog      = []
+    @cstack    = []
+    @does_pos  = -1
+
+    # Heap: index 0 is BASE (default 10 = decimal)
+    @base_addr = 0
+    @heap      = [10]
+  end
+
+  # ── Stack helpers ──────────────────────────────────────────────────────────
+
+  def pop
+    raise "Stack underflow" if @stack.empty?
+    @stack.pop
+  end
+
+  def rpop
+    raise "Return stack underflow" if @rstack.empty?
+    @rstack.pop
+  end
+
+  def push(v)  = @stack.push(v)
+  def rpush(v) = @rstack.push(v)
+  def emit(ins) = @prog.push(ins)
+
+  # ── Number formatting / parsing ────────────────────────────────────────────
+
+  def format_int(n, base)
+    return "0" if n == 0
+    digits = "0123456789abcdef"
+    neg    = n < 0
+    n      = n.abs
+    result = ""
+    while n > 0
+      result = digits[n % base] + result
+      n /= base
+    end
+    neg ? "-#{result}" : result
+  end
+
+  def try_parse_number(token)
+    base = @heap[@base_addr]
+    neg  = token.start_with?("-")
+    s    = neg ? token[1..] : token
+    return [false, 0] if s.empty?
+
+    n = 0
+    s.each_char do |c|
+      d = "0123456789abcdef".index(c.downcase)
+      return [false, 0] if d.nil? || d >= base
+      n = n * base + d
+    end
+    [true, neg ? -n : n]
+  end
+
+  # ── Bytecode interpreter ───────────────────────────────────────────────────
+
+  def run(code)
+    pc = 0
+    while pc < code.size
+      ins = code[pc]
+      case ins[0]
+      when "lit"
+        push(ins[1])
+      when "strlit"
+        print ins[1]
+      when "call"
+        run_word(ins[1])
+      when "branch"
+        pc = ins[1] - 1
+      when "0branch"
+        pc = ins[1] - 1 if pop == 0
+      when "exit"
+        return
+      when "local@"
+        push(@rstack.last[ins[1]])
+      when "local!"
+        @rstack.last[ins[1]] = pop
+      when "locals-enter"
+        @rstack.push(Array.new(ins[1], 0))
+      when "locals-exit"
+        rpop
+      when "(do)"
+        start = pop
+        limit = pop
+        @rstack.push([start, limit])
+      when "(loop)"
+        f = @rstack.last
+        f[0] += 1
+        if f[0] < f[1]
+          pc = ins[1] - 1
+        else
+          rpop
+        end
+      when "push-addr"
+        push(ins[1])
+      end
+      pc += 1
+    end
+  end
+
+  def run_word(w)
+    w = w.downcase
+    if (entry = @dict[w])
+      case entry[0]
+      when "prim"
+        entry[1].call
+      when "word"
+        run(entry[1])
+      when "create"
+        push(entry[1])
+        run(entry[2]) if entry[2] && !entry[2].empty?
+      end
+      return
+    end
+
+    ok, n = try_parse_number(w)
+    return push(n) if ok
+
+    raise "Unknown word: #{w}"
+  end
+
+  # ── Primitives ─────────────────────────────────────────────────────────────
+
+  def init_prims
+    # Arithmetic
+    @dict["+"]   = ["prim", -> { b = pop; a = pop; push(a + b) }]
+    @dict["-"]   = ["prim", -> { b = pop; a = pop; push(a - b) }]
+    @dict["*"]   = ["prim", -> { b = pop; a = pop; push(a * b) }]
+    @dict["/"]   = ["prim", -> { b = pop; a = pop; push(a / b) }]
+    @dict["mod"] = ["prim", -> { b = pop; a = pop; push(a % b) }]
+
+    # Return stack
+    @dict[">r"] = ["prim", -> { rpush(pop) }]
+    @dict["r>"] = ["prim", -> { push(rpop) }]
+
+    # Stack manipulation
+    @dict["dup"]  = ["prim", -> { push(@stack.last) }]
+    @dict["drop"] = ["prim", -> { pop }]
+    @dict["swap"] = ["prim", -> { b = pop; a = pop; push(b); push(a) }]
+    @dict["over"] = ["prim", -> { push(@stack[-2]) }]
+    @dict["rot"]  = ["prim", -> { c = pop; b = pop; a = pop; push(b); push(c); push(a) }]
+
+    # Comparisons (Ruby booleans → Forth 0/1)
+    @dict["="]  = ["prim", -> { b = pop; a = pop; push(a == b ? 1 : 0) }]
+    @dict["<"]  = ["prim", -> { b = pop; a = pop; push(a <  b ? 1 : 0) }]
+    @dict[">"]  = ["prim", -> { b = pop; a = pop; push(a >  b ? 1 : 0) }]
+    @dict["0="] = ["prim", -> { push(pop == 0 ? 1 : 0) }]
+
+    # Bases
+    @dict["base"]    = ["prim", -> { push(@base_addr) }]
+    @dict["hex"]     = ["prim", -> { @heap[@base_addr] = 16 }]
+    @dict["decimal"] = ["prim", -> { @heap[@base_addr] = 10 }]
+    @dict["octal"]   = ["prim", -> { @heap[@base_addr] = 8  }]
+    @dict["binary"]  = ["prim", -> { @heap[@base_addr] = 2  }]
+
+    # Memory
+    @dict["@"] = ["prim", -> {
+      addr = pop
+      raise "Invalid heap address #{addr}" unless addr.between?(0, @heap.size - 1)
+      push(@heap[addr])
+    }]
+    @dict["!"] = ["prim", -> {
+      addr = pop
+      val  = pop
+      raise "Invalid heap address #{addr}" unless addr.between?(0, @heap.size - 1)
+      @heap[addr] = val
+    }]
+
+    @dict["cell+"] = ["prim", -> { push(pop + 1) }]
+    @dict["cells"]  = ["prim", -> { }] # cells are 1 unit each, no-op
+
+    # Output
+    @dict["."]    = ["prim", -> { print "#{format_int(pop, @heap[@base_addr])} " }]
+    @dict["emit"] = ["prim", -> { print pop.chr }]
+    @dict["cr"]   = ["prim", -> { puts }]
+    @dict[".s"]   = ["prim", -> { puts "Stack: #{@stack.inspect}" }]
+
+    # Loop index
+    @dict["i"] = ["prim", -> { push(@rstack.last[0]) }]
+
+    # Allot — grow heap by n cells
+    @dict["allot"] = ["prim", -> { @heap.concat(Array.new(pop, 0)) }]
+
+    # Words listing
+    @dict["words"] = ["prim", -> {
+      puts @dict.keys.sort.join(" ")
+    }]
+  end
+
+  # ── String literal collector ───────────────────────────────────────────────
+
+  # Returns [string, new_index]
+  def collect_string(tokens, i)
+    result = ""
+    loop do
+      i += 1
+      raise 'Unterminated ." string' if i >= tokens.size
+      if tokens[i].end_with?('"')
+        result += tokens[i][0..-2]
+        return [result, i]
+      end
+      result += tokens[i] + " "
+    end
+  end
+
+  # ── Token processor ────────────────────────────────────────────────────────
+
+  def process(tokens)
+    i = 0
+    while i < tokens.size
+      t = tokens[i].downcase
+
+      # Line comment
+      break if t == "\\"
+
+      # Block comment
+      if t == "("
+        i += 1
+        i += 1 while i < tokens.size && tokens[i] != ")"
+        i += 1
+        next
+      end
+
+      # String literal
+      if t == '."'
+        s, i = collect_string(tokens, i)
+        @compiling ? emit(["strlit", s]) : print(s)
+        i += 1
+        next
+      end
+
+      unless @compiling
+        # LOAD file
+        if t == "load"
+          filename = tokens[i += 1]
+          src = File.read(filename) rescue nil
+          unless src
+            puts "Cannot open #{filename}"
+            i += 1
+            next
+          end
+          src.each_line do |line|
+            line = line.strip
+            next if line.empty?
+            process(line.split(" ").reject(&:empty?))
+          end
+          i += 1
+          next
+        end
+
+        # SEE decompiler
+        if t == "see"
+          name = tokens[i += 1].downcase
+          unless @dict[name]
+            puts "Unknown word: #{name}"
+            i += 1
+            next
+          end
+          entry = @dict[name]
+          case entry[0]
+          when "prim"
+            puts "#{name} is a primitive"
+          when "word", "defining"
+            code = entry[1]
+            puts ": #{name}"
+            code.each do |ins|
+              case ins[0]
+              when "lit"          then puts "  lit #{ins[1]}"
+              when "strlit"       then puts "  .\" #{ins[1]}\""
+              when "call"         then puts "  #{ins[1]}"
+              when "branch"       then puts "  branch #{ins[1]}"
+              when "0branch"      then puts "  0branch #{ins[1]}"
+              when "(do)"         then puts "  do"
+              when "(loop)"       then puts "  loop"
+              when "exit"         then puts "  exit"
+              when "locals-enter" then puts "  { #{ins[2].join(" ")} -- }"
+              when "locals-exit"  then # nothing
+              when "local@"       then puts "  #{ins[2]}"
+              when "local!"       then puts "  -> #{ins[2]}"
+              else                     puts "  #{ins.inspect}"
+              end
+            end
+            if entry[0] == "defining"
+              puts "does>"
+              entry[2].each do |ins|
+                case ins[0]
+                when "call" then puts "  #{ins[1]}"
+                when "exit" then puts "  exit"
+                else             puts "  #{ins.inspect}"
+                end
+              end
+            end
+            puts ";"
+          when "create"
+            puts "#{name} is a created word, body addr=#{entry[1]}"
+          end
+          i += 1
+          next
+        end
+
+        # Start definition
+        if t == ":"
+          @current   = tokens[i += 1].downcase
+          @prog      = []
+          @does_pos  = -1
+          @compiling = true
+          i += 1
+          next
+        end
+
+        # Invoke defining word
+        if @dict[t] && @dict[t][0] == "defining"
+          new_name  = tokens[i += 1].downcase
+          body_addr = @heap.size
+          @heap.push(0)
+          does_code = @dict[t][2]
+          @dict[new_name] = ["create", body_addr, does_code]
+          push(body_addr)
+          run(@dict[t][1])
+          i += 1
+          next
+        end
+
+        run_word(t)
+        i += 1
+        next
+      end
+
+      # ── Compile mode ──────────────────────────────────────────────────────
+
+      if t == ";"
+        emit(["locals-exit"]) unless @locals.empty?
+        emit(["exit"])
+        @locals = []
+
+        if @does_pos >= 0
+          @dict[@current] = ["defining", @prog[0...@does_pos], @prog[@does_pos..]]
+        else
+          @dict[@current] = ["word", @prog]
+        end
+        @compiling = false
+        @does_pos  = -1
+        i += 1
+        next
+      end
+
+      if t == "does>"
+        @does_pos = @prog.size
+        i += 1
+        next
+      end
+
+      if t == "create"
+        i += 1
+        next
+      end
+
+      if t == "recurse"
+        emit(["call", @current])
+        i += 1
+        next
+      end
+
+      case t
+      when "if"
+        emit(["0branch", 0])
+        @cstack.push(@prog.size - 1)
+
+      when "else"
+        emit(["branch", 0])
+        prev = @cstack.pop
+        @prog[prev][1] = @prog.size
+        @cstack.push(@prog.size - 1)
+
+      when "then"
+        prev = @cstack.pop
+        @prog[prev][1] = @prog.size
+
+      when "do"
+        emit(["(do)"])
+        @cstack.push(@prog.size)
+
+      when "loop"
+        addr = @cstack.pop
+        emit(["(loop)", addr])
+
+      when "{"
+        all = []
+        loop do
+          i += 1
+          break if i >= tokens.size || tokens[i] == "}"
+          all << tokens[i]
+        end
+        names = all.take_while { |tok| tok != "--" }
+        emit(["locals-enter", names.size, names])
+        (names.size - 1).downto(0) { |j| emit(["local!", j, names[j]]) }
+        @locals = names
+
+      else
+        # Local variable read
+        local_idx = @locals.index(t)
+        if local_idx
+          emit(["local@", local_idx, t])
+          i += 1
+          next
+        end
+
+        # Local variable write
+        if t == "->"
+          lname = tokens[i += 1]
+          lidx  = @locals.index(lname)
+          raise "Unknown local: #{lname}" unless lidx
+          emit(["local!", lidx, lname])
+          i += 1
+          next
+        end
+
+        # Number or word call
+        ok, n = try_parse_number(t)
+        if ok
+          emit(["lit", n])
+        else
+          emit(["call", t])
+        end
+      end
+
+      i += 1
+    end
+  end
+
+  # ── REPL ───────────────────────────────────────────────────────────────────
+
+  def repl
+    init_prims
+    puts "Mini Ruby Forth"
+
+    stdlib_path = File.join(File.dirname(File.expand_path(__FILE__)), "stdlib.fs")
+    if File.exist?(stdlib_path)
+      File.readlines(stdlib_path).each do |line|
+        line = line.strip
+        next if line.empty?
+        begin
+          process(line.split(" ").reject(&:empty?))
+        rescue => e
+          puts "stdlib error: #{e.message}"
+        end
+      end
+    end
+
+    loop do
+      print "> "
+      line = $stdin.gets
+      break if line.nil? || line.strip == "bye"
+      line = line.strip
+      next if line.empty?
+      begin
+        process(line.split(" ").reject(&:empty?))
+        puts " ok"
+      rescue => e
+        puts "Error: #{e.message}"
+        # Reset interpreter state so it's usable after an error
+        @stack     = []
+        @rstack    = []
+        @cstack    = []
+        @prog      = []
+        @compiling = false
+        @does_pos  = -1
+      end
+    end
+  end
+end
+
+Forth.new.repl if __FILE__ == $PROGRAM_NAME

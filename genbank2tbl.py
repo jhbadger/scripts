@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # requires biopython
 # run like:
 #   genbank_to_tbl.py "my organism name" "my strain ID" "ncbi project id" < my_sequence.gbk
@@ -13,7 +13,7 @@ def find_gene_entry(features, locus_tag):
         if f.type == 'gene':
             if f.qualifiers['locus_tag'][0] == locus_tag:
                 return f
-    print locus_tag
+    print(locus_tag)
     raise ValueError
  
 coding = ['CDS', 'tRNA', 'rRNA']
@@ -28,7 +28,7 @@ def go():
     for rec in records:
         for f in rec.features:
             if f.type in coding and 'gene' in f.qualifiers:
-                print f.qualifiers['locus_tag'][0]
+                print(f.qualifiers['locus_tag'][0])
  
                 f2 = find_gene_entry(rec.features, f.qualifiers['locus_tag'][0])
                 f2.qualifiers['gene'] = f.qualifiers['gene']
@@ -38,12 +38,7 @@ def go():
     for rec in records:
         seqid += 1
  
-        if len(rec) <= 200:
-            print >>sys.stderr, "skipping small contig %s" % (rec.id,)
-            continue
- 
-#        rec.id = rec.name = "%s%08d" % (sys.argv[4], seqid,)
- 
+         
         circular = rec.annotations.get('molecule', 'linear')
         rec.description = "[organism=%s] [strain=%s] [topology=%s] [molecule=DNA] [tech=wgs] [gcode=11]" % (sys.argv[1], sys.argv[2], circular)
         SeqIO.write([rec], fasta_fh, "fasta")
