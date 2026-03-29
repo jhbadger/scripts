@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+
+import re
+import argparse
+import os
+from difflib import SequenceMatcher
+
+def is_similar(line, header_list, threshold=0.85):
+    """Checks if a line is a 'fuzzy' match for any header."""
+    line = line.strip().lower()
+    for h in header_list:
+        if SequenceMatcher(None, line, h.strip().lower()).ratio() > threshold:
+            return True
+    return False
+
+def clean_ocr_text(input_text, headers_list):
+    lines = input_text.splitlines()
+    cleaned_lines = []
+    
+    # regex for "Block 123 [123 :0]" and " ( 1. ) " markers
+    block_pattern = re.compile(r'Block\s+\d+\s+\[\d+\s+[:\\/]\d+\]', re.I)
+    exercise_marker = re.compile(r'^\s*\(\s*\d+[a-z]?\.\s*\)\s*$', re.I)
+
+    for line in lines:
+        # Skip if fuzzy match to header
+        if is_similar(line, headers_list):
+            continue
+        # Skip block markers
+        if block_pattern.search(line):
+            continue
+        # Skip standalone page numbers
+        if re.match(r'^\s*\d+\s*$', line):
+            continue
+        # Skip exercise markers like ( 1. )
+        if exercise_marker.match(line):
+            continue
+            
+        cleaned_lines.append(line)
+    
+    return "\n".join(cleaned_lines)
+
+def fix_broken_sentences(text):
+    """
+    Advanced joiner: Handles hyphens and avoids joining 
+    lines that look like code (starts with :)
+    """
+    lines = text.splitlines()
+    result = []
+    i = 0
+    
+    while i < len(lines):
+        curr = lines[i].rstrip()
+        
+        if not curr:
+            result.append("")
+            i += 1
+            continue
+
+        # Look ahead
+        next_idx = i + 1
+        while next_idx < len(lines) and not lines[next_idx].strip():
+            next_idx += 1
+            
+        if next_idx < len(lines):
+            nxt = lines[next_idx].strip()
+            
+            # Logic:
+            # - Current line doesn't end in punctuation
+            # - Current line isn't a FORTH definition (doesn't start with :)
+            # - Next line starts with lowercase
+            is_code = curr.strip().startswith(':') or nxt.startswith(':')
+            ends_with_punc = curr.endswith(('.', '!', '?', ':', ';'))
+            starts_with_lower = nxt and nxt[0].islower()
+            
+            if not ends_with_punc and starts_with_lower and not is_code:
+                # Handle hyphens: "com- \n puter" -> "computer"
+                if curr.endswith('-'):
+                    curr = curr[:-1] + nxt
+                else:
+                    curr = curr + " " + nxt
+                
+                lines[next_idx] = "" # Clear the merged line
+                lines[i] = curr      # Update current line to check again
+                continue
+
+        result.append(curr)
+        i += 1
+
+    return "\n".join(result)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input")
+    parser.add_argument("headers")
+    parser.add_argument("-o", "--output", default="final_clean.md")
+    args = parser.parse_args()
+
+    with open(args.headers, 'r') as f: headers = f.readlines()
+    with open(args.input, 'r') as f: content = f.read()
+
+    # Pipeline
+    text = clean_ocr_text(content, headers)
+    text = fix_broken_sentences(text)
+    
+    # Final polish: remove triple newlines and weird artifacts
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    with open(args.output, 'w') as f:
+        f.write(text)
+    print(f"Refined text saved to {args.output}")
+
+if __name__ == "__main__":
+    main()
