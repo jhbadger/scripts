@@ -16,23 +16,16 @@ def is_similar(line, header_list, threshold=0.85):
 def clean_ocr_text(input_text, headers_list):
     lines = input_text.splitlines()
     cleaned_lines = []
-    
-    # regex for "Block 123 [123 :0]" and " ( 1. ) " markers
-    block_pattern = re.compile(r'Block\s+\d+\s+\[\d+\s+[:\\/]\d+\]', re.I)
-    exercise_marker = re.compile(r'^\s*\(\s*\d+[a-z]?\.\s*\)\s*$', re.I)
-
+    n = 0
     for line in lines:
+        n += 1
+        if (n % 1000 == 0):
+            print("Processing line: ", n)
         # Skip if fuzzy match to header
         if is_similar(line, headers_list):
             continue
-        # Skip block markers
-        if block_pattern.search(line):
-            continue
         # Skip standalone page numbers
         if re.match(r'^\s*\d+\s*$', line):
-            continue
-        # Skip exercise markers like ( 1. )
-        if exercise_marker.match(line):
             continue
             
         cleaned_lines.append(line)
@@ -90,14 +83,12 @@ def fix_broken_sentences(text):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("input")
-    parser.add_argument("headers")
+    parser.add_argument("-i", "--input")
+    parser.add_argument("-t", "--headers")
     parser.add_argument("-o", "--output", default="final_clean.md")
     args = parser.parse_args()
-
     with open(args.headers, 'r') as f: headers = f.readlines()
     with open(args.input, 'r') as f: content = f.read()
-
     # Pipeline
     text = clean_ocr_text(content, headers)
     text = fix_broken_sentences(text)
