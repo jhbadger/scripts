@@ -1,0 +1,77 @@
+#!/bin/bash
+# oneliner — complex pipe chains from plain English, powered by Ollama (Gemma 3)
+#
+# Usage:  oneliner "sum the third column of a CSV"
+#         oneliner -x "count unique IPs in access.log"    # execute (asks confirm)
+#         oneliner -c "remove duplicate lines"            # copy to clipboard
+
+EXECUTE=false
+COPY=false
+MODEL="gemma3:12b"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -x|--execute)  EXECUTE=true; shift ;;
+        -c|--copy)     COPY=true; shift ;;
+        -h|--help)
+            echo "oneliner — powered by Ollama ($MODEL)"
+            echo ""
+            echo "Usage: oneliner [OPTIONS] \"description\""
+            echo ""
+            echo "  -x, --execute  Run the command (asks confirmation first)"
+            echo "  -c, --copy     Copy command to clipboard"
+            echo "  -h, --help     Show this help"
+            exit 0
+            ;;
+        -*) echo "Unknown option: $1. Use --help."; exit 1 ;;
+        *)  break ;;
+    esac
+done
+
+if [[ -z "$1" ]]; then
+    echo "Usage: oneliner \"what you need\""
+    exit 1
+fi
+
+# Check if Ollama is running
+if ! curl -s http://localhost:11434/api/tags &>/dev/null; then
+    echo "Error: Ollama is not running. Start it first!"
+    exit 1
+fi
+
+SYSTEM="You generate UNIX one-liners for macOS (zsh/bash). Output ONLY the command — no explanation, no markdown, no code fences. Prefer awk, sed, grep, sort, uniq, cut, tr, xargs, find, and jq. Use pipes. Keep it to a single line. Never output anything except the command."
+
+# Requesting from Ollama API
+# We use -s for silent and pipe to jq to extract the response
+# If you don't have jq, we can use a simpler sed approach, but jq is safer.
+result=$(curl -s http://localhost:11434/api/generate -d "{
+  \"model\": \"$MODEL\",
+  \"prompt\": \"$SYSTEM\n\nTask: $1\",
+  \"stream\": false,
+  \"options\": {
+    \"temperature\": 0.1
+  }
+}" | grep -o '"response":"[^"]*' | cut -d'"' -f4)
+
+# Clean up the output: strip code fences and extra whitespace
+result=$(echo "$result" | sed 's/```//g' | xargs)
+
+if [[ -z "$result" ]]; then
+    echo "Error: Received no output from Ollama."
+    exit 1
+fi
+
+if $COPY; then
+    echo "$result" | pbcopy
+    echo -e "\033[90m(copied to clipboard)\033[0m"
+fi
+
+echo -e "\033[33m\$\033[0m $result"
+
+if $EXECUTE; then
+    echo ""
+    read -r -p "Run this? [y/N] " confirm
+    if [[ "$confirm" =~ ^[yY]$ ]]; then
+        eval "$result"
+    fi
+fi
