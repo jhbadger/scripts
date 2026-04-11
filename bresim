@@ -1,0 +1,762 @@
+#!/usr/bin/env python3
+"""
+BRE (Barbarians of the Ruined Earth) Combat Simulator
+======================================================
+Pits a randomly generated level-1 Barbarian against a random Bestiary creature.
+Every die roll is explained so new players can learn the rules.
+
+Run:  python3 bre_combat_sim.py
+"""
+
+import random
+
+# ─── Dice helpers ─────────────────────────────────────────────────────────────
+
+def roll(sides):
+    return random.randint(1, sides)
+
+def roll_adv(sides):
+    """Roll 2d{sides} with Advantage: take the LOWER result."""
+    r1, r2 = roll(sides), roll(sides)
+    return min(r1, r2), r1, r2
+
+def roll_disadv(sides):
+    """Roll 2d{sides} with Disadvantage: take the HIGHER result."""
+    r1, r2 = roll(sides), roll(sides)
+    return max(r1, r2), r1, r2
+
+def exploding_damage(sides, log):
+    """
+    Barbarian ATTACKER ability: if you roll the max value on a damage die,
+    roll it again and add the result.  Keep going as long as you keep rolling max.
+    """
+    total, rolls = 0, []
+    r = roll(sides)
+    rolls.append(r)
+    total += r
+    while r == sides:
+        log.append(f"    *** EXPLODING DAMAGE! Rolled max ({sides}) — rolling again!")
+        r = roll(sides)
+        rolls.append(r)
+        total += r
+    return total, rolls
+
+# ─── Enemy damage table (from BRE p.13 / p.122) ──────────────────────────────
+
+_ENEMY_DAMAGE_TABLE = {
+    1:  ([(6, 1)],         "1d6"),
+    2:  ([(4, 2)],         "2d4"),
+    3:  ([(10, 1)],        "1d10"),
+    4:  ([(12, 1)],        "1d12"),
+    5:  ([(6, 1), (8, 1)], "1d6+1d8"),
+    6:  ([(8, 2)],         "2d8"),
+    7:  ([(6, 3)],         "3d6"),
+    8:  ([(10, 2)],        "2d10"),
+    9:  ([(10, 1),(12, 1)],"1d10+1d12"),
+    10: ([(10, 3)],        "3d10"),
+}
+
+def roll_enemy_damage(hd):
+    dice, label = _ENEMY_DAMAGE_TABLE.get(hd, ([(6,1)], "1d6"))
+    total = sum(random.randint(1, s) for s, c in dice for _ in range(c))
+    return total, label
+
+def roll_enemy_hp(hd):
+    """Each enemy HD is 1d8 HP."""
+    return sum(random.randint(1, 8) for _ in range(hd))
+
+# ─── Bestiary ─────────────────────────────────────────────────────────────────
+# Fields:
+#   name, hd, rp, armor (label), attack (name), range (melee/ranged), special (text)
+#   Optional flags: splits, str_disadv, agile, radiator_fists
+
+BESTIARY = [
+    {
+        "name": "Giant Beetle",
+        "hd": 1, "rp": 1, "armor": "Easy",
+        "attack": "Bite", "range": "melee",
+        "special": (
+            "Mandibles: On a critical fumble by the attacker, the beetle latches on "
+            "and shreds their armor (destroyed until repaired)."
+        ),
+    },
+    {
+        "name": "Cultist",
+        "hd": 1, "rp": 0, "armor": "Soft",
+        "attack": "Dagger", "range": "melee",
+        "special": "Fanatical: Fights to the death in service of their dark master.",
+    },
+    {
+        "name": "Skeleton",
+        "hd": 1, "rp": 0, "armor": "Soft",
+        "attack": "Rusty Sword", "range": "melee",
+        "special": (
+            "Resistant: Takes HALF damage from all physical sources "
+            "except bludgeoning (mace, club, etc.)."
+        ),
+    },
+    {
+        "name": "Giant Vampire Bat",
+        "hd": 1, "rp": 0, "armor": "Soft",
+        "attack": "Bite + Drain", "range": "melee",
+        "special": (
+            "Drain: A successful bite deals 1d4 CON damage in addition to HP damage "
+            "(recovers 1 point/day with rest). "
+            "Screech: CON test or stunned and deaf for 1d4 rounds."
+        ),
+    },
+    {
+        "name": "Antmen Warrior",
+        "hd": 2, "rp": 1, "armor": "Easy",
+        "attack": "Claws ×2", "range": "melee",
+        "special": (
+            "Pack Tactics: If two or more Antmen attack one target, "
+            "the defender rolls their dodge with Disadvantage."
+        ),
+    },
+    {
+        "name": "Giant Lizard",
+        "hd": 2, "rp": 0, "armor": "Soft",
+        "attack": "Claws or Spiked Tail", "range": "melee",
+        "special": "Patient Hunter: Disadvantage to spot it while it lies in ambush.",
+    },
+    {
+        "name": "Raider",
+        "hd": 2, "rp": 1, "armor": "Easy",
+        "attack": "Axe", "range": "melee",
+        "special": (
+            "Dirty Fighting: Once per combat the Raider tricks you. "
+            "Must pass a CHA test or suffer Disadvantage on your next 1d3 defense rolls."
+        ),
+    },
+    {
+        "name": "Cultist (Blessed)",
+        "hd": 2, "rp": 1, "armor": "Easy",
+        "attack": "Mace", "range": "melee",
+        "special": (
+            "Immune to mind-altering effects. "
+            "Hideous Reveal: when the alien inside is exposed (on death), "
+            "WIS test or flee; even on success, Disadvantage on attacks against it."
+        ),
+    },
+    {
+        "name": "Demon Dog",
+        "hd": 3, "rp": 1, "armor": "Easy",
+        "attack": "Bite", "range": "melee",
+        "special": (
+            "Split: ANY physical damage causes the Demon Dog to split into TWO copies, "
+            "each with the remaining HP. Magical damage does NOT cause splitting. "
+            "Flame Breath (1/day): 1d8 fire damage; 1-in-6 chance target catches fire (1d6/round)."
+        ),
+        "splits": True,
+    },
+    {
+        "name": "Fungal Killer",
+        "hd": 3, "rp": 1, "armor": "Easy",
+        "attack": "Makeshift Weapon", "range": "melee",
+        "special": (
+            "Spore Cloud (1/hour): CON test or knocked unconscious for 1 minute. "
+            "Blend With Plants: Disadvantage to spot while hiding among foliage/fungi."
+        ),
+    },
+    {
+        "name": "Ape-oid",
+        "hd": 3, "rp": 1, "armor": "Easy",
+        "attack": "Fists ×4 or Bite", "range": "melee",
+        "special": (
+            "Super-duper Strong: ALL Strength tests (including attacks) against "
+            "an Ape-oid are made with Disadvantage."
+        ),
+        "str_disadv": True,
+    },
+    {
+        "name": "Cat Lion",
+        "hd": 3, "rp": 1, "armor": "Easy",
+        "attack": "Claws and Bite", "range": "melee",
+        "special": (
+            "Agile: All attacks against the Cat Lion are made with Disadvantage. "
+            "Shape Changer: Can assume the form of other creatures and gain their abilities."
+        ),
+        "agile": True,
+    },
+    {
+        "name": "Robot",
+        "hd": 3, "rp": 1, "armor": "Easy",
+        "attack": "Laser Beam Eyes", "range": "ranged",
+        "special": (
+            "Immune to spell damage. "
+            "Rocket Boots: Can fly, making melee difficult. "
+            "Ranged attack — Barbarian uses DEX to dodge instead of STR."
+        ),
+    },
+    {
+        "name": "Mutated Giant Spider",
+        "hd": 4, "rp": 2, "armor": "Protected",
+        "attack": "Bite", "range": "melee",
+        "special": (
+            "Venom: CON test after being bitten or suffer a venom effect "
+            "(paralysis, necrosis, CON drain, etc.). "
+            "Web: DEX test or become snagged (STR test to break free)."
+        ),
+    },
+    {
+        "name": "Car Golem",
+        "hd": 4, "rp": 2, "armor": "Protected",
+        "attack": "Radiator Fists", "range": "melee",
+        "special": (
+            "Radiator Fists: Rolls damage TWICE and takes the HIGHER result. "
+            "Smog (1/hour): Blinds everything in a Nearby radius for 2d4 rounds."
+        ),
+        "radiator_fists": True,
+    },
+    {
+        "name": "Giant Praying Mantis",
+        "hd": 4, "rp": 2, "armor": "Protected",
+        "attack": "Claws or Bite", "range": "melee",
+        "special": (
+            "Claws IGNORE enemy Reduction Points (armor). "
+            "Bite Crit: If the dodge roll is a critical failure, make a Luck roll — "
+            "bad result means instant decapitation. "
+            "Camouflage: Disadvantage to spot."
+        ),
+    },
+    {
+        "name": "Pig Raider",
+        "hd": 3, "rp": 1, "armor": "Easy",
+        "attack": "Cleaver", "range": "melee",
+        "special": (
+            "Oink: WIS test or shaken (Disadvantage on all rolls for 1 hour). "
+            "Hog Heaven: First time dropped to 0 HP, 2-in-6 chance to stay at 1d3 HP. "
+            "Blubber: Can absorb the damage of one attack per combat."
+        ),
+    },
+    {
+        "name": "Raider Leader",
+        "hd": 6, "rp": 2, "armor": "Protected",
+        "attack": "Big Sword", "range": "melee",
+        "special": (
+            "Thick Skinned: Once per hour can ignore all damage from one attack. "
+            "Dirty Fighting: CHA test or Disadvantage on next 1d3 defense rolls."
+        ),
+    },
+    {
+        "name": "Mummy",
+        "hd": 6, "rp": 2, "armor": "Protected",
+        "attack": "Fists ×2", "range": "melee",
+        "special": (
+            "Choke: If both fist attacks land, target is being choked — "
+            "STR test (Disadvantage) each round to break free; "
+            "1d4 CON damage per round until 0 (then immediately OofA). "
+            "Mummy Curse: If you reach 0 HP, CON test or become a zombie. "
+            "Magical Resistance: Spells against a Mummy need a Luck roll to work."
+        ),
+    },
+    {
+        "name": "Lightning Man",
+        "hd": 4, "rp": 0, "armor": "Soft",
+        "attack": "Lightning Bolts", "range": "ranged",
+        "special": (
+            "Resistant: Takes HALF damage from all sources; immune to electrical damage. "
+            "Stunner: On a hit, target must make a CON test or be stunned for 1 round. "
+            "Weakness: A bucket of water deals 2d6 and stuns for 1 round (no save)."
+        ),
+    },
+]
+
+# ─── Out of Action table (BRE p.13) ──────────────────────────────────────────
+
+OOF_A = {
+    1:  "KO'd — just knocked out.",
+    2:  "KO'd — just knocked out.",
+    3:  "Fat Head: Disadvantage on all tests for the next hour.",
+    4:  "Cracked Bones: STR, DEX & CON temporarily −2 for one day.",
+    5:  "Cracked Skull: INT & WIS temporarily −2 for one day.",
+    6:  "Crippled: STR or DEX permanently reduced by 2.",
+    7:  "Brain Damage: INT or WIS permanently reduced by 2.",
+    8:  "Scared and Battered: CHA permanently reduced by 2.",
+    9:  "Limb Lost: Needs a prosthetic to replace it.",
+    10: "Dead.",
+}
+
+# ─── Barbarian character generation ─────────────────────────────────────────
+
+STAT_ORDER = ["STR", "DEX", "CON", "INT", "WIS", "CHA"]
+
+LIFE_EVENTS = [
+    "You were a slave and escaped.",
+    "Your mother was killed by croc-men.",
+    "Your village was sacked by a Sorcerer; most were taken captive.",
+    "You bravely fought off bandits as a young teenager.",
+    "Resting under a tree, a spirit appeared and spoke to you.",
+    "You almost died in ancient ruins — a family member dragged you out.",
+    "You landed the killing blow on a great rhino-lion on a village hunt.",
+    "The love of your young life died in your arms during a raider attack.",
+]
+
+TRINKETS = [
+    "A memento from a lost love sold into slavery.",
+    "A dagger from your father — he died defending you with it.",
+    "A thick, battered cloak.",
+    "An Ancient Earth 'flashlight' — miraculously, it still works.",
+    "A collapsible cooking pot set.",
+    "A necklace of fangs — spoils of your very first hunt.",
+]
+
+BARB_NAMES = ["Kragg", "Vorka", "Syla", "Dremm", "Thonn", "Zerx", "Ulda", "Bhrak", "Gorva", "Skexx"]
+
+def generate_barbarian(log):
+    """
+    Roll up a level-1 Barbarian following BRE rules.
+    Returns a dict with everything needed for combat.
+    """
+    log.append("=" * 66)
+    log.append("STEP 1 — GENERATING YOUR BARBARIAN")
+    log.append("=" * 66)
+    log.append("Stats are rolled 3d6 in order: STR, DEX, CON, INT, WIS, CHA.")
+    log.append("Rule: if a stat is 15 or higher, the NEXT stat rolls 2d6+2 instead of 3d6.\n")
+
+    stats = {}
+    use_reduced_next = False
+    for stat in STAT_ORDER:
+        if use_reduced_next:
+            rolls = [random.randint(1, 6) for _ in range(2)]
+            val = sum(rolls) + 2
+            dice_label = "2d6+2"
+            use_reduced_next = False
+        else:
+            rolls = [random.randint(1, 6) for _ in range(3)]
+            val = sum(rolls)
+            dice_label = "3d6"
+
+        stats[stat] = val
+        log.append(f"  {stat:3s}: {dice_label} → {rolls} = {val}")
+
+        if val >= 15:
+            log.append(f"        ↑ {val} ≥ 15! The next stat will use 2d6+2.")
+            use_reduced_next = True
+
+    hp_roll = random.randint(1, 10)
+    max_hp = hp_roll + 4
+    log.append(f"\nStarting HP: 1d10 + 4 → rolled {hp_roll} + 4 = {max_hp} HP")
+
+    starting_weapons = ["short sword", "spear", "axe", "mace", "spiked club"]
+    weapon = random.choice(starting_weapons)
+    log.append(f"Weapon: {weapon}  (damage: 1d8, EXPLODING on max roll)")
+    log.append("Armor:  loincloth → LOIN CLOTH WARRIOR ability grants Medium Armor (2 RP)")
+
+    log.append(f"\nLife Event: {random.choice(LIFE_EVENTS)}")
+    log.append(f"Trinket:    {random.choice(TRINKETS)}")
+
+    return {
+        "name": random.choice(BARB_NAMES),
+        "stats": stats,
+        "hp": max_hp,
+        "max_hp": max_hp,
+        "rp": 2,          # Medium armor via Loin Cloth Warrior
+        "weapon": weapon,
+        # Once-per-combat ability flags
+        "avid_used": False,
+        "shout_used": False,
+        "shout_active": False,
+    }
+
+# ─── Attack resolution ────────────────────────────────────────────────────────
+
+def barb_attacks(barb, enemy, log, powerful_opp=False, force_adv=False, force_disadv=False):
+    """
+    Barbarian attacks the enemy.
+    Returns effective damage dealt (after enemy RP).
+
+    BRE rule: roll d20 under STR to hit (melee).
+      • Roll 1  → Critical hit: damage doubled.
+      • Roll 20 → Fumble: attack fails and something bad happens.
+    """
+    str_val = barb["stats"]["STR"]
+
+    # Battle Shout: skip the roll entirely
+    if barb["shout_active"]:
+        log.append("  [BATTLE SHOUT ACTIVE] This roll is an AUTOMATIC SUCCESS — no d20 needed.")
+        barb["shout_active"] = False
+        hit, crit = True, False
+    else:
+        # Determine advantage/disadvantage
+        has_disadv = (powerful_opp or force_disadv) and not force_adv
+        has_adv    = force_adv and not (powerful_opp or force_disadv)
+
+        if has_disadv:
+            reason = "POWERFUL OPPONENT" if powerful_opp else "special ability"
+            d20, r1, r2 = roll_disadv(20)
+            log.append(f"  DISADVANTAGE [{reason}]: rolled {r1} and {r2} — using the HIGHER: {d20}")
+        elif has_adv:
+            d20, r1, r2 = roll_adv(20)
+            log.append(f"  ADVANTAGE: rolled {r1} and {r2} — using the LOWER: {d20}")
+        else:
+            d20 = roll(20)
+            log.append(f"  d20 attack roll (need LESS than STR {str_val}): rolled {d20}")
+
+        if d20 == 1:
+            hit, crit = True, True
+            log.append("  → CRITICAL SUCCESS! (rolled 1) Damage will be DOUBLED!")
+        elif d20 == 20:
+            hit, crit = False, False
+            log.append("  → FUMBLE! (rolled 20) The attack fails — weapon nearly slips from your hand!")
+            return 0
+        elif d20 < str_val:
+            hit, crit = True, False
+            log.append(f"  → HIT! ({d20} < {str_val})")
+        else:
+            hit, crit = False, False
+            log.append(f"  → MISS! ({d20} ≥ {str_val})")
+
+    if not hit:
+        return 0
+
+    # Damage roll (exploding)
+    raw, dmg_rolls = exploding_damage(8, log)
+    log.append(f"  Damage (1d8, exploding): rolls {dmg_rolls} → raw total {raw}")
+
+    if crit:
+        raw *= 2
+        log.append(f"  Critical DOUBLES the damage → {raw}")
+
+    # Armor absorption
+    eff = max(0, raw - enemy["rp"])
+    if enemy["rp"] > 0:
+        log.append(f"  Enemy armor ({enemy['armor']}, {enemy['rp']} RP) absorbs {enemy['rp']} → {eff} damage gets through")
+    else:
+        log.append(f"  No enemy armor — full {raw} damage!")
+        eff = raw
+
+    return eff
+
+
+def enemy_attacks(enemy, barb, log, powerful_opp=False):
+    """
+    Enemy attacks the Barbarian.
+    BRE rule: the PLAYER rolls d20 under their defense stat to dodge.
+      • Roll 1  → Critical dodge: no damage AND a free attack!
+      • Roll 20 → Critical fail: DOUBLE damage taken.
+    Returns (damage_taken: int, free_attack: bool).
+    """
+    is_ranged = (enemy.get("range") == "ranged")
+    def_stat  = "DEX" if is_ranged else "STR"
+    def_val   = barb["stats"][def_stat]
+
+    if powerful_opp:
+        d20, r1, r2 = roll_disadv(20)
+        log.append(
+            f"  DISADVANTAGE [POWERFUL OPPONENT]: defense ({def_stat} {def_val}) "
+            f"rolled {r1} and {r2} — using the HIGHER: {d20}"
+        )
+    else:
+        d20 = roll(20)
+        log.append(f"  d20 defense roll (need LESS than {def_stat} {def_val}): rolled {d20}")
+
+    if d20 == 1:
+        log.append("  → CRITICAL DODGE! (rolled 1) Attack is completely avoided — AND you get a FREE ATTACK!")
+        return 0, True
+
+    elif d20 == 20:
+        dmg_raw, label = roll_enemy_damage(enemy["hd"])
+        dmg_x2 = dmg_raw * 2
+        log.append("  → CRITICAL FAIL! (rolled 20) Take DOUBLE damage!")
+        log.append(f"  Enemy damage ({label}): {dmg_raw} × 2 = {dmg_x2}")
+        eff = max(0, dmg_x2 - barb["rp"])
+        if barb["rp"]:
+            log.append(f"  Medium armor (2 RP) absorbs 2 → {eff} damage taken")
+        return eff, False
+
+    elif d20 < def_val:
+        log.append(f"  → DODGED! ({d20} < {def_val}) No damage.")
+        return 0, False
+
+    else:
+        dmg, label = roll_enemy_damage(enemy["hd"])
+        log.append(f"  → HIT! ({d20} ≥ {def_val})")
+        log.append(f"  Enemy damage ({label}): {dmg}")
+        eff = max(0, dmg - barb["rp"])
+        if barb["rp"]:
+            log.append(f"  Medium armor (2 RP) absorbs 2 → {eff} damage taken")
+        return eff, False
+
+# ─── Main simulation ──────────────────────────────────────────────────────────
+
+def simulate():
+    log = []
+
+    # ── Step 1: Generate Barbarian ────────────────────────────────────────────
+    barb = generate_barbarian(log)
+
+    # ── Step 2: Pick enemy ────────────────────────────────────────────────────
+    etemplate = random.choice(BESTIARY)
+    enemy = dict(etemplate)
+    enemy["hp"]     = roll_enemy_hp(enemy["hd"])
+    enemy["max_hp"] = enemy["hp"]
+
+    log.append("\n" + "=" * 66)
+    log.append("STEP 2 — THE ENEMY (randomly chosen from the Bestiary)")
+    log.append("=" * 66)
+    log.append(f"  Name:    {enemy['name']}")
+    log.append(f"  HD:      {enemy['hd']}  (HD = level; each HD = 1d8 HP and sets damage tier)")
+    log.append(f"  HP:      {enemy['hp']}  (rolled {enemy['hd']}d8)")
+    log.append(f"  Armor:   {enemy['armor']} — {enemy['rp']} Reduction Point(s)")
+    log.append(f"  Attack:  {enemy['attack']}")
+    log.append(f"  Special: {enemy['special']}")
+
+    # ── Powerful Opponent check ───────────────────────────────────────────────
+    barb_level = 1
+    hd_diff    = enemy["hd"] - barb_level
+    powerful_opp = hd_diff >= 2
+
+    if powerful_opp:
+        log.append(f"\n  ⚠  POWERFUL OPPONENT RULE:")
+        log.append(f"  {enemy['name']} has {enemy['hd']} HD; you are level {barb_level}.")
+        log.append(f"  The difference ({hd_diff}) is ≥ 2, so you suffer DISADVANTAGE")
+        log.append(f"  on BOTH attack rolls AND defense rolls this entire combat.")
+        log.append(f"  (Disadvantage = roll 2d20 and use the HIGHER, worse result.)")
+
+    # ── Barbarian summary ─────────────────────────────────────────────────────
+    log.append("\n" + "=" * 66)
+    log.append(f"STEP 3 — YOUR BARBARIAN: {barb['name']}")
+    log.append("=" * 66)
+    s = barb["stats"]
+    log.append(f"  STR {s['STR']:2d}  DEX {s['DEX']:2d}  CON {s['CON']:2d}  "
+               f"INT {s['INT']:2d}  WIS {s['WIS']:2d}  CHA {s['CHA']:2d}")
+    log.append(f"  HP: {barb['hp']}/{barb['max_hp']}   "
+               f"Armor: Loincloth (2 RP)   Weapon: {barb['weapon']} (1d8)")
+    log.append("\nSPECIAL ABILITIES (all once per combat unless noted):")
+    log.append("  • Attacker     — damage EXPLODES: on max die result, re-roll and add")
+    log.append("  • Avid Fighter — deflect one melee attack, forcing it to fail")
+    log.append("  • Battle Shout — next STR or DEX test is an automatic success")
+    log.append("  • Stout        — Advantage on tests vs Poison and Fear effects")
+
+    # ── Initiative ────────────────────────────────────────────────────────────
+    log.append("\n" + "=" * 66)
+    log.append("STEP 4 — INITIATIVE")
+    log.append("=" * 66)
+    log.append("Both sides roll 1d20. The LOWEST result goes first.")
+    log.append("Roll exactly 1  → Advantage on your first attack.")
+    log.append("Roll exactly 20 → Disadvantage on all rolls this round.\n")
+
+    bi = roll(20)
+    ei = roll(20)
+    log.append(f"  {barb['name']} rolls: {bi}")
+    log.append(f"  {enemy['name']} rolls: {ei}")
+
+    while bi == ei:
+        log.append("  TIE — re-rolling both...")
+        bi = roll(20)
+        ei = roll(20)
+        log.append(f"  {barb['name']}: {bi}   {enemy['name']}: {ei}")
+
+    barb_first       = bi < ei
+    init_adv_barb    = (bi == 1)
+    init_disadv_barb = (bi == 20)
+
+    if barb_first:
+        log.append(f"\n  → {barb['name']} goes FIRST! ({bi} < {ei})")
+    else:
+        log.append(f"\n  → {enemy['name']} goes FIRST! ({ei} < {bi})")
+
+    if init_adv_barb:
+        log.append(f"  ★ Rolled 1! {barb['name']} has ADVANTAGE on the very first attack roll!")
+    if init_disadv_barb:
+        log.append(f"  ✗ Rolled 20! {barb['name']} suffers DISADVANTAGE on all rolls in Round 1!")
+
+    # ── Combat rounds ─────────────────────────────────────────────────────────
+    first_round = True
+    for rnd in range(1, 31):
+        log.append("\n" + "─" * 66)
+        log.append(f"ROUND {rnd}")
+        log.append("─" * 66)
+        log.append(f"  {barb['name']} HP: {barb['hp']}/{barb['max_hp']}   |   "
+                   f"{enemy['name']} HP: {enemy['hp']}/{enemy['max_hp']}")
+
+        turn_order = ["barb", "enemy"] if barb_first else ["enemy", "barb"]
+
+        for who in turn_order:
+            if barb["hp"] <= 0 or enemy["hp"] <= 0:
+                break
+
+            # ── Barbarian's turn ──────────────────────────────────────────────
+            if who == "barb":
+                log.append(f"\n  ▶ {barb['name']}'s ATTACK TURN")
+                log.append(f"  Melee attack: roll d20 and try to score LESS than STR ({s['STR']}).")
+
+                # AI: trigger Battle Shout when HP ≤ 40% or vs powerful opponent
+                if not barb["shout_used"] and (powerful_opp or barb["hp"] <= barb["max_hp"] * 0.4):
+                    log.append(f"\n  [{barb['name']} uses BATTLE SHOUT!]")
+                    log.append(f"  Once per combat: the next STR or DEX test is an automatic success.")
+                    barb["shout_active"] = True
+                    barb["shout_used"]   = True
+
+                # Resolve advantage/disadvantage modifiers
+                force_adv    = (first_round and init_adv_barb)
+                force_disadv = (first_round and init_disadv_barb)
+
+                # Ape-oid: all STR tests (incl. attacks) at disadvantage
+                if enemy.get("str_disadv"):
+                    log.append(f"  [{enemy['name']} is SUPER-DUPER STRONG — your STR rolls have Disadvantage!]")
+                    force_disadv = True
+                    force_adv    = False
+
+                # Cat Lion / Agile enemies: attacks against them have disadvantage
+                if enemy.get("agile") and not force_adv:
+                    log.append(f"  [{enemy['name']} is AGILE — attacks against it suffer Disadvantage!]")
+                    force_disadv = True
+                    force_adv    = False
+
+                dmg = barb_attacks(
+                    barb, enemy, log,
+                    powerful_opp=(powerful_opp and not force_adv),
+                    force_adv=force_adv,
+                    force_disadv=force_disadv,
+                )
+
+                if dmg > 0:
+                    enemy["hp"] -= dmg
+                    log.append(f"  ★ {enemy['name']} takes {dmg} damage! "
+                               f"HP: {enemy['hp']}/{enemy['max_hp']}")
+
+                    # Demon Dog splits on physical damage
+                    if enemy.get("splits") and enemy["hp"] > 0:
+                        log.append(f"\n  ⚠  DEMON DOG SPLITS!")
+                        log.append(f"  Physical damage causes the Demon Dog to split into TWO copies,")
+                        log.append(f"  each with {enemy['hp']} HP.")
+                        log.append(f"  (Full rule: magical damage does NOT trigger splitting.)")
+                        log.append(f"  (Simulation continues with the single original copy.)")
+
+                if enemy["hp"] <= 0:
+                    log.append(f"\n  ☠  {enemy['name']} is DEFEATED!")
+                    break
+
+            # ── Enemy's turn ──────────────────────────────────────────────────
+            else:
+                log.append(f"\n  ▶ {enemy['name']}'s ATTACK TURN")
+                is_ranged = (enemy.get("range") == "ranged")
+                def_stat  = "DEX" if is_ranged else "STR"
+                log.append(
+                    f"  {'Ranged' if is_ranged else 'Melee'} attack — "
+                    f"you roll d20 and try to score LESS than {def_stat} "
+                    f"({barb['stats'][def_stat]}) to dodge."
+                )
+
+                # AI: use Avid Fighter when HP ≤ 50% or vs powerful opp (melee only)
+                if (not barb["avid_used"]
+                        and not is_ranged
+                        and (powerful_opp or barb["hp"] <= barb["max_hp"] * 0.5)):
+                    log.append(f"\n  [{barb['name']} uses AVID FIGHTER!]")
+                    log.append(f"  Once per combat: automatically deflect one incoming melee attack.")
+                    log.append(f"  {enemy['name']}'s swing is knocked aside — NO damage this turn!")
+                    barb["avid_used"] = True
+                    continue
+
+                dmg, free_atk = enemy_attacks(enemy, barb, log, powerful_opp=powerful_opp)
+
+                if free_atk:
+                    log.append(f"\n  [{barb['name']} earns a FREE ATTACK from the critical dodge!]")
+                    log.append(f"  (BRE rule: roll 1 on your defense → counter-attack at no cost.)")
+                    free_dmg = barb_attacks(barb, enemy, log, powerful_opp=False)
+                    if free_dmg > 0:
+                        enemy["hp"] -= free_dmg
+                        log.append(f"  ★ Free attack lands: {enemy['name']} takes {free_dmg} damage! "
+                                   f"HP: {enemy['hp']}/{enemy['max_hp']}")
+                    if enemy["hp"] <= 0:
+                        log.append(f"\n  ☠  {enemy['name']} is DEFEATED by the counter-attack!")
+                        break
+
+                elif dmg > 0:
+                    barb["hp"] -= dmg
+                    log.append(f"  ✗ {barb['name']} takes {dmg} damage! "
+                               f"HP: {barb['hp']}/{barb['max_hp']}")
+
+                if barb["hp"] <= 0:
+                    break
+
+        first_round = False
+
+        if barb["hp"] <= 0 or enemy["hp"] <= 0:
+            break
+
+    # ── Outcome ───────────────────────────────────────────────────────────────
+    log.append("\n" + "=" * 66)
+    log.append("COMBAT RESULT")
+    log.append("=" * 66)
+
+    if enemy["hp"] <= 0 and barb["hp"] > 0:
+        log.append(f"\n  VICTORY! {barb['name']} has slain the {enemy['name']}!")
+        log.append(f"  Surviving HP: {barb['hp']}/{barb['max_hp']}")
+        log.append(
+            f"\n  In BRE, XP is session/quest-based, not per-kill. Defeating a notable "
+            f"opponent like this is exactly the kind of event that earns a level-up!"
+        )
+
+    elif barb["hp"] <= 0:
+        log.append(f"\n  DEFEAT! {barb['name']} has been taken OUT OF ACTION (OofA)!")
+        log.append(
+            "\n  BRE RULE: When a character hits 0 HP they are unconscious (OofA).\n"
+            "  After the fight, roll 1d10 on the Out of Action table:\n"
+        )
+        for k, v in OOF_A.items():
+            log.append(f"    {k:2d}  {v}")
+        ooa_roll = roll(10)
+        log.append(f"\n  {barb['name']} rolls: {ooa_roll}  →  {OOF_A[ooa_roll]}")
+        if ooa_roll < 10:
+            hp_back = roll(4)
+            log.append(f"  Once safe, {barb['name']} regains {hp_back} HP (1d4).")
+        else:
+            log.append(f"  {barb['name']} is dead. Time to roll a new Barbarian!")
+
+    else:
+        log.append("\n  STALEMATE — combat went on for 30 rounds with no winner.")
+
+    # ── Rules cheat sheet ─────────────────────────────────────────────────────
+    log.append("\n" + "=" * 66)
+    log.append("BRE COMBAT QUICK REFERENCE")
+    log.append("=" * 66)
+    log.append("""
+CORE MECHANIC
+  Roll d20 BELOW your stat to succeed. Enemies never roll to hit —
+  you always roll to dodge their attacks.
+
+ATTACKING (Melee)
+  Roll d20 < STR to hit.
+  Roll  1  → Critical: damage DOUBLED.
+  Roll 20  → Fumble: attack fails, bad consequence.
+
+DEFENDING AGAINST ENEMY ATTACKS
+  Roll d20 < STR (melee enemy) or DEX (ranged enemy) to avoid.
+  Roll  1  → Critical dodge: zero damage AND a free counter-attack.
+  Roll 20  → Critical fail: take DOUBLE damage.
+
+BARBARIAN WEAPON DAMAGE
+  1d8, EXPLODING. On a max roll, re-roll and add — keep going
+  as long as you keep rolling the maximum.
+
+ARMOR (Reduction Points)
+  Subtract RP from EVERY hit before applying damage.
+  Loin Cloth Warrior ability: loincloth counts as Medium Armor (2 RP).
+
+POWERFUL OPPONENT (enemy ≥ 2 HD higher than your level)
+  Suffer DISADVANTAGE on every attack roll AND every defense roll.
+
+ADVANTAGE / DISADVANTAGE
+  Advantage  : roll 2d20, use the LOWER  (better) result.
+  Disadvantage: roll 2d20, use the HIGHER (worse)  result.
+
+INITIATIVE
+  Both sides roll 1d20. Lowest goes FIRST.
+  Initiative 1  → Advantage on first attack.
+  Initiative 20 → Disadvantage on all rolls in round 1.
+
+ONCE-PER-COMBAT BARBARIAN ABILITIES
+  Avid Fighter : Declare BEFORE a melee attack lands; it automatically misses.
+  Battle Shout : Declare BEFORE rolling; next STR or DEX test auto-succeeds.
+""")
+
+    return "\n".join(log)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print(simulate())
