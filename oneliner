@@ -7,7 +7,7 @@
 
 EXECUTE=false
 COPY=false
-MODEL="gemma3:12b"
+MODEL="gemma4:e4b"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
