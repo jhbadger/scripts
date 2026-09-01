@@ -1,0 +1,122 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "httpx",
+#   "beautifulsoup4",
+# ]
+# ///
+"""
+Search Anna's Archive for books from a title list.
+
+Uses libgen.bz (no bot protection) as a search backend; results link back
+to Anna's Archive via the MD5 hash shared between both indexes.
+
+Usage:
+  annasSearch titles.txt              # search all formats
+  annasSearch titles.txt -f epub      # epub only
+  annasSearch titles.txt -f pdf -n 5  # top 5 pdf results per title
+"""
+
+import sys
+import re
+import time
+import argparse
+import httpx
+from bs4 import BeautifulSoup
+
+LIBGEN = "https://libgen.bz"
+ANNA = "https://annas-archive.gl"
+UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+HEADERS = {"User-Agent": UA}
+MD5_RE = re.compile(r"[a-f0-9]{32}", re.I)
+
+
+def search(client: httpx.Client, title: str, fmt: str | None, max_results: int) -> list[dict]:
+    params = {"req": title, "column": "title", "res": str(max(25, max_results * 3))}
+    try:
+        resp = client.get(f"{LIBGEN}/index.php", params=params, timeout=20)
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        print(f"  [error fetching '{title}']: {e}", file=sys.stderr)
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    table = soup.find("table", class_="table-striped")
+    if not table:
+        return []
+
+    results: list[dict] = []
+    for row in table.find_all("tr")[1:]:
+        cells = row.find_all("td")
+        if len(cells) < 9:
+            continue
+
+        # Format is in cell 7
+        ext = cells[7].get_text(strip=True).lower()
+        if fmt and ext != fmt.lower():
+            continue
+
+        # Title: first edition.php link NOT inside a <b> tag
+        found_title = ""
+        for a in cells[0].find_all("a", href=lambda h: h and "edition.php" in h):
+            if not a.find_parent("b"):
+                found_title = a.get_text(strip=True)
+                break
+        if not found_title:
+            continue
+
+        # MD5 from mirror links in cell 8
+        md5_match = MD5_RE.search(str(cells[8]))
+        if not md5_match:
+            continue
+        md5 = md5_match.group().lower()
+
+        results.append({
+            "title": found_title,
+            "format": ext,
+            "url": f"{ANNA}/md5/{md5}",
+        })
+
+        if len(results) >= max_results:
+            break
+
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Search Anna's Archive for books from a title list file.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("titles_file", help="File with one book title per line")
+    parser.add_argument("-f", "--format", help="Limit results to file format, e.g. pdf or epub")
+    parser.add_argument("-n", "--max", type=int, default=10, metavar="N",
+                        help="Max results per title (default: 10)")
+    args = parser.parse_args()
+
+    try:
+        with open(args.titles_file) as fh:
+            titles = [line.strip() for line in fh if line.strip()]
+    except FileNotFoundError:
+        sys.exit(f"Error: file not found: {args.titles_file}")
+
+    with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
+        for title in titles:
+            results = search(client, title, args.format, args.max)
+            if not results:
+                fmt_note = f" [{args.format}]" if args.format else ""
+                print(f"# No results{fmt_note}: {title}")
+            else:
+                print(f"# {title}")
+                for r in results:
+                    print(f"  {r['title']} [{r['format']}]")
+                    print(f"  {r['url']}")
+            time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
