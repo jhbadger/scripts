@@ -2,63 +2,57 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "wikipedia",
-#    "truststore"
+#   "wikipedia-api",
+#   "truststore"
 # ]
 # ///
 
-import wikipedia
-import truststore
 import sys
-import requests.exceptions
+import truststore
+truststore.inject_into_ssl()
 
-def lookup_article(query, lang_code):
-    """Looks up a Wikipedia article for the given query in the specified language."""
+import wikipediaapi
+
+USER_AGENT = "NIHBioinformaticsTool/1.0 (contact: user@nih.gov)"
+
+def lookup_article(query: str, lang_code: str = "en"):
+    """Fetches and displays a Wikipedia summary for a given query and language."""
     try:
-        print(f"Searching Wikipedia for: {query}...")
-        # Set language
-        wikipedia.set_lang(lang_code)
+        print(f"Searching Wikipedia ({lang_code}) for: {query}...")
         
-        # Fetch the page
-        page = wikipedia.page(query, auto_suggest=True)
+        wiki = wikipediaapi.Wikipedia(
+            user_agent=USER_AGENT,
+            language=lang_code,
+            extract_format=wikipediaapi.ExtractFormat.WIKI
+        )
         
-        print("\n" + "="*50)
+        page = wiki.page(query)
+        
+        if not page.exists():
+            print(f"\nError: Article '{query}' does not exist in Wikipedia ({lang_code}).", file=sys.stderr)
+            return
+
+        print("\n" + "=" * 50)
         print(f"Article Title: {page.title}")
-        print("="*50)
+        print("=" * 50)
         print(page.summary)
-        print("\n" + "="*50)
-        
-    except wikipedia.exceptions.PageError:
-        print(f"\nError: Wikipedia page for '{query}' not found in language '{lang_code}'.", file=sys.stderr)
-    except wikipedia.exceptions.DisambiguationError as e:
-        print(f"\nError: Multiple possible matches for '{query}'. Please specify a more precise query.", file=sys.stderr)
-        print("Possible options:", e.options[:5], "...", file=sys.stderr)
-    except requests.exceptions.SSLError as e:
-        print("\n--- SSL/Certificate Error ---", file=sys.stderr)
-        print("Could not connect to Wikipedia due to an SSL certificate verification failure.", file=sys.stderr)
-        print("This often happens in corporate networks or environments with self-signed certificates.", file=sys.stderr)
-        print("Please ensure your system trusts the necessary certificates or configure your environment.", file=sys.stderr)
-        print(f"Details: {e}", file=sys.stderr)
-    except requests.exceptions.RequestException as e:
-        print("\n--- Network/Connection Error ---", file=sys.stderr)
-        print("Failed to connect to Wikipedia. Check your internet connection, firewall, or proxy settings.", file=sys.stderr)
-        print(f"Details: {e}", file=sys.stderr)
+        print("\n" + "=" * 50)
+
     except Exception as e:
-        print(f"\nAn unexpected error occurred: {e}", file=sys.stderr)
+        print(f"\nAn error occurred: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
-    truststore.inject_into_ssl()
-    lang_code = "en" # Default language
+    lang_code = "en"
     search_args = sys.argv[1:]
-    
-    # Check for language flag
-    if len(search_args) > 0 and search_args[0] in ["-l", "--lang"]:
+
+    # Correctly grab the language parameter string at index 1
+    if len(search_args) >= 2 and search_args[0] in ["-l", "--lang"]:
         lang_code = search_args[1]
         search_args = search_args[2:]
-    
+
     if not search_args:
-        print("Usage: python wiki.py [-l <language_code>] <search_term>")
+        print("Usage: ./wiki.py [-l <language_code>] <search_term>", file=sys.stderr)
         sys.exit(1)
-    
+
     search_term = " ".join(search_args)
     lookup_article(search_term, lang_code)
