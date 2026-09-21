@@ -15,8 +15,8 @@ import wikipediaapi
 
 USER_AGENT = "NIHBioinformaticsTool/1.0 (contact: user@nih.gov)"
 
-def lookup_article(query: str, lang_code: str = "en"):
-    """Fetches and displays a Wikipedia summary for a given query and language."""
+def lookup_article(query: str, lang_code: str = "en", show_full: bool = False):
+    """Fetches and displays a Wikipedia summary or full article for a given query and language."""
     try:
         print(f"Searching Wikipedia ({lang_code}) for: {query}...")
         
@@ -35,7 +35,12 @@ def lookup_article(query: str, lang_code: str = "en"):
         print("\n" + "=" * 50)
         print(f"Article Title: {page.title}")
         print("=" * 50)
-        print(page.summary)
+        
+        if show_full:
+            print(page.text)
+        else:
+            print(page.summary)
+            
         print("\n" + "=" * 50)
 
     except Exception as e:
@@ -43,16 +48,34 @@ def lookup_article(query: str, lang_code: str = "en"):
 
 if __name__ == "__main__":
     lang_code = "en"
-    search_args = sys.argv[1:]
+    show_full = False
+    search_term_parts = []
+    
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        
+        if arg in ["-l", "--lang"]:
+            if i + 1 < len(sys.argv):
+                lang_code = sys.argv[i+1]
+                i += 2
+                continue
+            else:
+                print("Error: -l/--lang requires a language code.", file=sys.stderr)
+                sys.exit(1)
+        elif arg in ["-f", "--full"]:
+            show_full = True
+            i += 1
+            continue
+        else:
+            # Assume it's part of the search term
+            search_term_parts.append(arg)
+            i += 1
 
-    # Correctly grab the language parameter string at index 1
-    if len(search_args) >= 2 and search_args[0] in ["-l", "--lang"]:
-        lang_code = search_args[1]
-        search_args = search_args[2:]
-
-    if not search_args:
-        print("Usage: ./wiki.py [-l <language_code>] <search_term>", file=sys.stderr)
+    search_term = " ".join(search_term_parts)
+    
+    if not search_term:
+        print("Usage: ./wiki.py [-l <language_code>] [-f|--full] <search_term>", file=sys.stderr)
         sys.exit(1)
 
-    search_term = " ".join(search_args)
-    lookup_article(search_term, lang_code)
+    lookup_article(search_term, lang_code, show_full)
