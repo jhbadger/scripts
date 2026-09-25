@@ -1,33 +1,62 @@
-#!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.10"
 # dependencies = [
-#   "fastmcp>=2.0",
-#   "pillow>=10.0",
+#     "fastmcp",
+#     "pillow",
 # ]
 # ///
 
-from __future__ import annotations
-
-import base64
 import json
+import os
+import base64
 from pathlib import Path
-from typing import Any
+from typing import Dict, Any
 
 from fastmcp import FastMCP
 from PIL import Image
 
-mcp = FastMCP("SillyTavern Character Cards")
+# Make absolutely sure the root path is fully expanded and resolved immediately
+raw_root = os.environ.get("ST_CARDS_DIR", Path.home() / "lib/src/chatbot/cards")
+CARDS_ROOT = Path(raw_root).expanduser().resolve()
 
-# Optional safety restriction.
-# Set this to the directory containing your cards.
-# Leave as None to allow any local PNG path.
-CARDS_ROOT = Path.home() / "lib/src/chatbot/cards"
-
+def get_default_card_path() -> Path:
+    """Find a default card if no specific path is given."""
+    if CARDS_ROOT.is_dir():
+        png_files = list(CARDS_ROOT.glob("*.png"))
+        if png_files:
+            return png_files[0]
+    raise FileNotFoundError(f"No PNG cards found in directory: {CARDS_ROOT}")
 
 def validate_path(path: str) -> Path:
-    """Validate and resolve a local card path."""
-    card_path = Path(path).expanduser().resolve()
+    """Validate and resolve a local card path or partial card name."""
+    if not path or not str(path).strip():
+        card_path = get_default_card_path()
+        return card_path
+
+    given = Path(path).expanduser()
+
+    # If the LLM passes a direct, valid absolute path to a file, use it
+    if given.is_absolute() and given.is_file():
+        card_path = given.resolve()
+    elif CARDS_ROOT.is_dir():
+        query = str(path).strip()
+        # Search CARDS_ROOT for a partial match
+        matches = list(CARDS_ROOT.glob(f"*{query}*.png"))
+        if not matches:
+            matches = [
+                p
+                for p in CARDS_ROOT.glob("*.png")
+                if query.lower() in p.name.lower()
+            ]
+
+        if matches:
+            card_path = matches[0].resolve()
+        else:
+            raise FileNotFoundError(
+                f"Could not find any card matching '{query}' in {CARDS_ROOT}"
+            )
+    else:
+        card_path = given.resolve()
 
     if card_path.suffix.lower() != ".png":
         raise ValueError("The file must be a PNG")
@@ -35,182 +64,71 @@ def validate_path(path: str) -> Path:
     if not card_path.is_file():
         raise FileNotFoundError(f"Card not found: {card_path}")
 
-    if CARDS_ROOT is not None:
-        root = CARDS_ROOT.expanduser().resolve()
-
-        try:
-            card_path.relative_to(root)
-        except ValueError as exc:
-            raise PermissionError(
-                f"Card must be inside the configured cards directory: {root}"
-            ) from exc
+    # Ensure it resides in the cards directory
+    root_dir = CARDS_ROOT.parent if CARDS_ROOT.is_file() else CARDS_ROOT
+    try:
+        card_path.relative_to(root_dir)
+    except ValueError as exc:
+        raise PermissionError(
+            f"Card must be inside the configured cards directory: {root_dir}"
+        ) from exc
 
     return card_path
 
-
-def read_card(path: str) -> dict[str, Any]:
-    """Extract the embedded SillyTavern character JSON."""
-    card_path = validate_path(path)
-
-    with Image.open(card_path) as image:
-        encoded = image.info.get("chara")
-
-    if not encoded:
-        raise ValueError(
-            "This PNG does not contain SillyTavern 'chara' metadata"
-        )
-
+def extract_chara_data(file_path: Path) -> Dict[str, Any]:
+    """Extract SillyTavern character data from the PNG tEXt chunk."""
     try:
-        if isinstance(encoded, bytes):
-            encoded = encoded.decode("ascii")
+        with Image.open(file_path) as img:
+            img.load()
+            if 'chara' in img.info:
+                encoded_data = img.info['chara']
+                decoded_data = base64.b64decode(encoded_data).decode('utf-8')
+                return json.loads(decoded_data)
+            else:
+                return {"error": "No 'chara' data found in this PNG."}
+    except Exception as e:
+        return {"error": f"Failed to extract character data: {str(e)}"}
 
-        decoded = base64.b64decode(encoded)
-        card = json.loads(decoded.decode("utf-8"))
-    except Exception as exc:
-        raise ValueError(f"Could not decode character card: {exc}") from exc
+mcp = FastMCP("SillyTavernCards")
 
-    if not isinstance(card, dict):
-        raise ValueError("Character-card data is not a JSON object")
+@mcp.tool()
+def get_card_info(path: str) -> str:
+    """Extract and return the text data from a SillyTavern PNG character card. Pass an empty string ("") to use the default card."""
+    try:
+        card_path = validate_path(path)
+        data = extract_chara_data(card_path)
+        return json.dumps(data, indent=2)
+    except Exception as e:
+        return f"Error reading card: {str(e)}"
 
-    return card
-
-
-def card_data(card: dict[str, Any]) -> dict[str, Any]:
-    """Support both V2 cards and older flat card formats."""
-    data = card.get("data")
-
-    if isinstance(data, dict):
-        return data
-
-    return card
-
-
-@mcp.tool
-def inspect_card(path: str) -> dict[str, Any]:
-    """
-    Inspect a SillyTavern PNG character card.
-
-    Returns the character information without the image itself.
-    """
-    card = read_card(path)
-    data = card_data(card)
-
-    return {
-        "spec": card.get("spec"),
-        "spec_version": card.get("spec_version"),
-        "name": data.get("name"),
-        "description": data.get("description"),
-        "personality": data.get("personality"),
-        "scenario": data.get("scenario"),
-        "first_mes": data.get("first_mes"),
-        "alternate_greetings": data.get("alternate_greetings", []),
-        "mes_example": data.get("mes_example"),
-        "system_prompt": data.get("system_prompt"),
-        "post_history_instructions": data.get(
-            "post_history_instructions"
-        ),
-        "tags": data.get("tags", []),
-        "creator": data.get("creator"),
-        "creator_notes": data.get("creator_notes"),
-        "character_version": data.get("character_version"),
-        "has_character_book": bool(data.get("character_book")),
-        "extensions": data.get("extensions", {}),
-    }
-
-
-@mcp.tool
-def load_card(path: str) -> str:
-    """
-    Convert a SillyTavern card into a prompt suitable for a roleplay session.
-    """
-    card = read_card(path)
-    data = card_data(card)
-
-    sections: list[str] = []
-
-    def add_section(title: str, value: Any) -> None:
-        if value:
-            sections.append(f"## {title}\n{value}")
-
-    add_section("Character Name", data.get("name"))
-    add_section("Description", data.get("description"))
-    add_section("Personality", data.get("personality"))
-    add_section("Scenario", data.get("scenario"))
-    add_section("Example Dialogue", data.get("mes_example"))
-    add_section("System Prompt", data.get("system_prompt"))
-    add_section(
-        "Post-History Instructions",
-        data.get("post_history_instructions"),
+@mcp.tool()
+def get_card_image(path: str) -> str:
+    """Gets the character card image. Pass an empty string ("") for the default card."""
+    card_path = validate_path(path)
+    
+    # Read the raw binary data of the image and convert it to a Base64 string
+    with open(card_path, "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+    
+    # Instruct the LLM to output the raw Base64 data as a Markdown image
+    return (
+        f"Image successfully loaded. To show the image to the user, "
+        f"you MUST output exactly this markdown string in your response "
+        f"(do not truncate it!):\n\n"
+        f"![{card_path.stem}](data:image/png;base64,{encoded_string})"
     )
 
-    character_book = data.get("character_book")
-
-    if isinstance(character_book, dict):
-        entries = character_book.get("entries", [])
-
-        if entries:
-            lore = []
-
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-
-                content = entry.get("content")
-                keys = entry.get("keys", [])
-
-                if content:
-                    lore.append(
-                        f"Keys: {', '.join(map(str, keys))}\n"
-                        f"Content: {content}"
-                    )
-
-            if lore:
-                add_section("Character Lorebook", "\n\n".join(lore))
-
-    return "\n\n".join(sections)
-
-
-@mcp.tool
-def get_greeting(
-    path: str,
-    alternate_index: int | None = None,
-) -> str:
-    """
-    Return the card's first greeting or an alternate greeting.
-    """
-    card = read_card(path)
-    data = card_data(card)
-
-    if alternate_index is None:
-        return str(data.get("first_mes", ""))
-
-    greetings = data.get("alternate_greetings", [])
-
-    if not isinstance(greetings, list):
-        raise ValueError("alternate_greetings is not a list")
-
-    if not 0 <= alternate_index < len(greetings):
-        raise IndexError(
-            f"alternate_index must be between 0 and {len(greetings) - 1}"
-        )
-
-    return str(greetings[alternate_index])
-
-
-@mcp.tool
-def list_cards(directory: str) -> list[str]:
-    """List PNG files in a local character-card directory."""
-    folder = Path(directory).expanduser().resolve()
-
-    if not folder.is_dir():
-        raise NotADirectoryError(f"Not a directory: {folder}")
-
-    return sorted(
-        str(path)
-        for path in folder.glob("*.png")
-        if path.is_file()
-    )
-
+@mcp.tool()
+def list_cards() -> str:
+    """List all available PNG character cards in the default directory."""
+    if not CARDS_ROOT.is_dir():
+        return f"Cards directory not found at {CARDS_ROOT}"
+    
+    cards = [p.name for p in CARDS_ROOT.glob("*.png")]
+    if not cards:
+        return f"No PNG cards found in {CARDS_ROOT}"
+    
+    return f"Found {len(cards)} cards in {CARDS_ROOT}:\n" + "\n".join(cards)
 
 if __name__ == "__main__":
     mcp.run()
