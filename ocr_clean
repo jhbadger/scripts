@@ -1,104 +1,398 @@
 #!/usr/bin/env python3
+"""
+Clean up OCR'd / PDF-extracted book Markdown so it converts cleanly to EPUB
+via Pandoc.
 
-import re
+What this fixes:
+  - Running headers and stray page numbers left over from the original
+    page layout (e.g. a lone "42" or "CHAPTER THREE" sitting between two
+    halves of a paragraph), rejoining the paragraph they interrupted.
+  - Spurious "##" headings that are actually reproduced ephemera (ad
+    copy / poster slogans, figure-caption numbers like "2.1.", or an
+    ornamental section-break glyph OCR'd as the letter "o") rather than
+    real section titles. Ad-copy headings become blockquotes, figure
+    numbers get merged back into their caption text, and ornamental
+    breaks become a Markdown thematic break ("***").
+  - Footnote markers. Endnote-style books often render footnote
+    callouts as "$^{7}$" or as literal Unicode superscript digits
+    ("¹²³..."), with numbering that restarts in every chapter. This
+    script turns each callout into a unique Pandoc footnote reference
+    ([^ch3-7]) and turns the book's own endnotes section (organized by
+    chapter) into matching Pandoc footnote definitions
+    ([^ch3-7]: ...). Pandoc then renders them as real, superscript,
+    clickable footnotes/endnotes in the EPUB - no endnotes chapter
+    needed in the body.
+  - Images (``![...](...)``) are never touched, reordered, or dropped.
+
+This is a heuristic cleaner tuned for the common "chapters are `#`
+headings, notes are grouped by chapter under a `## Notes` section"
+layout. Adjust SUSTAIN_HEADINGS / CHAPTER_PATTERNS below for a
+different book's structure.
+
+Usage:
+    python3 clean_ocr_book.py input.md -o output.md
+"""
 import argparse
-import os
-from difflib import SequenceMatcher
+import re
+import sys
+from collections import Counter
 
-def is_similar(line, header_list, threshold=0.85):
-    """Checks if a line is a 'fuzzy' match for any header."""
-    line = line.strip().lower()
-    for h in header_list:
-        if SequenceMatcher(None, line, h.strip().lower()).ratio() > threshold:
-            return True
-    return False
+TERMINAL_PUNCT = set('.?!"\'”’)')
 
-def clean_ocr_text(input_text, headers_list):
-    lines = input_text.splitlines()
-    cleaned_lines = []
-    n = 0
-    for line in lines:
-        n += 1
-        if (n % 1000 == 0):
-            print("Processing line: ", n)
-        # Skip if fuzzy match to header
-        if is_similar(line, headers_list):
-            continue
-        # Skip standalone page numbers
-        if re.match(r'^\s*\d+\s*$', line):
-            continue
-            
-        cleaned_lines.append(line)
-    
-    return "\n".join(cleaned_lines)
+# "##" headings that are genuine section titles and should be left alone.
+SUSTAIN_HEADINGS = {
+    "Abbreviations", "Notes", "Bibliography", "Books, Articles, and Other Sources",
+}
 
-def fix_broken_sentences(text):
-    """
-    Advanced joiner: Handles hyphens and avoids joining 
-    lines that look like code (starts with :)
-    """
-    lines = text.splitlines()
-    result = []
-    i = 0
-    
-    while i < len(lines):
-        curr = lines[i].rstrip()
-        
-        if not curr:
-            result.append("")
-            i += 1
-            continue
+# Ordered chapter sequence: used to (a) track which chapter's footnotes
+# are being read in the body, and (b) map the Notes section's chapter
+# subheadings onto the same short labels, in the same order.
+CHAPTER_PATTERNS = [
+    (re.compile(r'^#\s+Introduction\s*$', re.I), 'intro'),
+    (re.compile(r'^#\s+Chapter\s*1\b', re.I), 'ch1'),
+    (re.compile(r'^#\s+Chapter\s*2\b', re.I), 'ch2'),
+    (re.compile(r'^#\s+Chapter\s*3\b', re.I), 'ch3'),
+    (re.compile(r'^#\s+Chapter\s*4\b', re.I), 'ch4'),
+    (re.compile(r'^#\s+Chapter\s*5\b', re.I), 'ch5'),
+    (re.compile(r'^#\s+Chapter\s*6\b', re.I), 'ch6'),
+    (re.compile(r'^#\s+Epilogue\s*$', re.I), 'epi'),
+]
+CHAPTER_LABEL_ORDER = [label for _, label in CHAPTER_PATTERNS]
 
-        # Look ahead
-        next_idx = i + 1
-        while next_idx < len(lines) and not lines[next_idx].strip():
-            next_idx += 1
-            
-        if next_idx < len(lines):
-            nxt = lines[next_idx].strip()
-            
-            # Logic:
-            # - Current line doesn't end in punctuation
-            # - Current line isn't a FORTH definition (doesn't start with :)
-            # - Next line starts with lowercase
-            is_code = curr.strip().startswith(':') or nxt.startswith(':')
-            ends_with_punc = curr.endswith(('.', '!', '?', ':', ';'))
-            starts_with_lower = nxt and nxt[0].islower()
-            
-            if not ends_with_punc and starts_with_lower and not is_code:
-                # Handle hyphens: "com- \n puter" -> "computer"
-                if curr.endswith('-'):
-                    curr = curr[:-1] + nxt
-                else:
-                    curr = curr + " " + nxt
-                
-                lines[next_idx] = "" # Clear the merged line
-                lines[i] = curr      # Update current line to check again
+SUPERSCRIPT_MAP = str.maketrans('⁰¹²³⁴⁵⁶⁷⁸⁹',
+                                 '0123456789')
+FOOTNOTE_MARKER_RE = re.compile(
+    r'\$\^\{(\d+)\}\$|([⁰¹²³⁴⁵⁶⁷⁸⁹]+)'
+)
+TRAILING_FOOTNOTE_RE = re.compile(
+    r'(\$\^\{\d+\}\$|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)$'
+)
+
+PAGE_NUMBER_RE = re.compile(r'^\d{1,4}$')
+FIGURE_NUM_HEADING_RE = re.compile(r'^\d+\.\d+\.?$')
+NOTE_ENTRY_RE = re.compile(r'^(\d+)\.\s+(.*)$')
+
+CHAPTER_KEYWORD_RE = re.compile(
+    r'(INTRODUCTION|EPILOGUE|BIBLIOGRAPHY|ACKNOWLEDGMENTS|'
+    r'CHAPTER\s+(ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|\d+))',
+    re.I,
+)
+
+
+def split_blocks(text):
+    """Split text into blocks of consecutive non-blank lines."""
+    blocks = []
+    cur = []
+    for line in text.split('\n'):
+        if line.strip() == '':
+            if cur:
+                blocks.append(cur)
+                cur = []
+        else:
+            cur.append(line)
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
+def is_allcaps_header_candidate(text):
+    t = text.strip()
+    if not t or t.startswith(('#', '!', '|', '>')):
+        return False
+    letters = [c for c in t if c.isalpha()]
+    if not letters or any(c.islower() for c in letters):
+        return False
+    if len(t) > 70 or len(t.split()) > 8:
+        return False
+    return True
+
+
+def remove_running_headers_and_page_numbers(blocks):
+    # Junk lines (running heads / page numbers) are usually their own
+    # standalone block, but inside non-blank-line-separated endnote runs
+    # they can also show up embedded mid-block - so filter line by line,
+    # not block by block, and drop any block left empty afterward.
+    all_lines = [line.strip() for b in blocks for line in b]
+    freq = Counter(t for t in all_lines if is_allcaps_header_candidate(t))
+
+    cleaned = []
+    dropped = []
+    for b in blocks:
+        new_block = []
+        for line in b:
+            t = line.strip()
+            if PAGE_NUMBER_RE.match(t):
+                dropped.append(('page-number', t))
                 continue
+            if is_allcaps_header_candidate(t) and (freq[t] >= 2 or CHAPTER_KEYWORD_RE.search(t)):
+                dropped.append(('running-header', t))
+                continue
+            new_block.append(line)
+        if new_block:
+            cleaned.append(new_block)
+    return cleaned, dropped
 
-        result.append(curr)
+
+NEW_ENTRY_RE = re.compile(r'^(\d+\.\s|[-*]\s)')
+
+
+def join_continuation(prev, cur):
+    """If `cur` is clearly the tail end of `prev`, return the joined
+    string; otherwise return None.
+
+    A paragraph/note that a page break split in two can leave its
+    second half as its own line/block, with no blank line and no "N."
+    marker, abutting whatever junk line used to separate the pages.
+    The tell is that `prev` doesn't end with sentence-final punctuation
+    - real paragraphs and notes always do in edited prose - so that
+    alone triggers a join, capitalization of `cur` notwithstanding
+    (the tail end of a split sentence can resume on a capitalized
+    proper noun). The one thing it must not do is swallow a genuinely
+    new, marker-less entry, so a `cur` that looks like a fresh numbered
+    or bulleted item blocks the join.
+    """
+    prev, cur = prev.rstrip(), cur.lstrip()
+    if not prev or not cur or NEW_ENTRY_RE.match(cur):
+        return None
+    if prev.startswith(('#', '!', '|', '>')) or cur.startswith(('#', '!', '|', '>')):
+        return None
+    check = TRAILING_FOOTNOTE_RE.sub('', prev)
+    if not check or check[-1] in TERMINAL_PUNCT:
+        return None
+    if prev.endswith('-') and len(prev) > 1 and prev[-2].isalpha():
+        return prev[:-1] + cur
+    return prev + ' ' + cur
+
+
+def merge_continuation_lines(lines):
+    """Apply join_continuation across consecutive lines within a block."""
+    merged = []
+    for line in lines:
+        if merged:
+            joined = join_continuation(merged[-1], line)
+            if joined is not None:
+                merged[-1] = joined
+                continue
+        merged.append(line)
+    return merged
+
+
+def merge_split_paragraphs(blocks):
+    """Merge continuation lines within each block, then check whether a
+    whole block is itself just the tail end of the previous block (the
+    case when the junk line(s) that used to separate them were their
+    own block(s), now dropped entirely rather than just filtered out of
+    a shared one). Compares the previous block's last line against the
+    next block's first line, so it works regardless of either block's
+    length.
+    """
+    blocks = [merge_continuation_lines(b) for b in blocks]
+    merged = []
+    for b in blocks:
+        b = list(b)
+        if merged:
+            joined = join_continuation(merged[-1][-1], b[0])
+            if joined is not None:
+                merged[-1][-1] = joined
+                b = b[1:]
+                if not b:
+                    continue
+        merged.append(b)
+    return merged
+
+
+def convert_footnote_markers(blocks):
+    chapter_label = None
+    for block in blocks:
+        if len(block) == 1 and block[0].strip() == '## Notes':
+            break
+        if len(block) == 1:
+            stripped = block[0].strip()
+            for pat, label in CHAPTER_PATTERNS:
+                if pat.match(stripped):
+                    chapter_label = label
+                    break
+        if chapter_label is None:
+            continue
+
+        def repl(m, label=chapter_label):
+            num = m.group(1) or m.group(2).translate(SUPERSCRIPT_MAP)
+            return f'[^{label}-{num}]'
+
+        for idx, line in enumerate(block):
+            block[idx] = FOOTNOTE_MARKER_RE.sub(repl, line)
+    return blocks
+
+
+def extract_notes_and_insert_definitions(blocks):
+    """Pull the chapter-grouped endnotes into Pandoc footnote definitions.
+
+    Two OCR quirks make this more than a simple numbered-list parse:
+      - Some entries lose their leading "N." marker (the source PDF
+        likely rendered the number as a separate text run that didn't
+        survive extraction). Each chapter's entries are renumbered
+        sequentially as they're read: a printed number is trusted when
+        present, and a missing marker just gets the next number due.
+      - Entries are sometimes blank-line-separated (one block per note)
+        and sometimes not (a whole run of notes packed into one block,
+        one per line) - inconsistently, even within the same book. So
+        once inside the Notes section, entries are read line by line
+        rather than block by block.
+    """
+    out = []
+    defs = []
+    seen_labels = set()
+    in_notes = False
+    chapter_idx = -1
+    expected_num = 1
+
+    for b in blocks:
+        if not in_notes:
+            if len(b) == 1 and b[0].strip() == '## Notes':
+                in_notes = True
+            else:
+                out.append(b)
+            continue
+
+        ended_on = None
+        for line in b:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith('## '):
+                heading_text = stripped[3:].strip()
+                if heading_text in SUSTAIN_HEADINGS:
+                    ended_on = line
+                    break
+                chapter_idx += 1
+                expected_num = 1
+                continue
+            if 0 <= chapter_idx < len(CHAPTER_LABEL_ORDER):
+                m = NOTE_ENTRY_RE.match(stripped)
+                if m:
+                    num, note_text = int(m.group(1)), m.group(2)
+                else:
+                    num, note_text = expected_num, stripped
+                label = f'{CHAPTER_LABEL_ORDER[chapter_idx]}-{num}'
+                if defs and defs[-1][0] == label:
+                    # The previous line was auto-numbered as if it were
+                    # its own marker-less note, but this explicit "N."
+                    # proves that number was already taken - so the
+                    # previous line was actually the unmarked tail end
+                    # of the note before IT (itself likely cut off
+                    # mid-sentence by a page break), not a new note.
+                    # Fold it back into that one.
+                    bogus_label, bogus_text = defs.pop()
+                    if defs:
+                        defs[-1][1] = (defs[-1][1].rstrip() + ' ' + bogus_text.lstrip()).strip()
+                    seen_labels.discard(bogus_label)
+                seen_labels.add(label)
+                defs.append([label, note_text])
+                expected_num = num + 1
+
+        if ended_on is not None:
+            in_notes = False
+            for label, note_text in defs:
+                out.append([f'[^{label}]: {note_text}'])
+            out.append([ended_on])
+
+    if in_notes:  # Notes ran to end of file with no trailing section
+        for label, note_text in defs:
+            out.append([f'[^{label}]: {note_text}'])
+
+    return out, seen_labels
+
+
+def demote_spurious_headings(blocks):
+    out = []
+    i = 0
+    while i < len(blocks):
+        b = blocks[i]
+        if len(b) == 1 and b[0].strip().startswith('## '):
+            text = b[0].strip()[3:].strip()
+            if text in SUSTAIN_HEADINGS:
+                out.append(b)
+            elif text == 'o':
+                out.append(['***'])
+            elif FIGURE_NUM_HEADING_RE.match(text):
+                if (i + 1 < len(blocks) and len(blocks[i + 1]) == 1
+                        and not blocks[i + 1][0].lstrip().startswith(('#', '!'))):
+                    out.append([f'{text} {blocks[i + 1][0].strip()}'])
+                    i += 2
+                    continue
+                out.append([text])
+            else:
+                out.append(['> ' + text])
+        else:
+            out.append(b)
         i += 1
+    return out
 
-    return "\n".join(result)
+
+REF_RE = re.compile(r'\[\^([\w-]+)\](?!:)')
+
+
+def find_referenced_labels(blocks):
+    # (?!:) excludes a definition line's own "[^label]:" from counting
+    # as a use of that label.
+    refs = set()
+    for b in blocks:
+        for line in b:
+            refs.update(REF_RE.findall(line))
+    return refs
+
+
+def blocks_to_text(blocks):
+    return '\n\n'.join('\n'.join(b) for b in blocks) + '\n'
+
+
+def clean(text):
+    blocks = split_blocks(text)
+    blocks, dropped = remove_running_headers_and_page_numbers(blocks)
+    blocks = merge_split_paragraphs(blocks)
+    blocks = convert_footnote_markers(blocks)
+    blocks, defined_labels = extract_notes_and_insert_definitions(blocks)
+    blocks = demote_spurious_headings(blocks)
+
+    referenced = find_referenced_labels(blocks)
+    return blocks_to_text(blocks), dropped, referenced, defined_labels
+
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input")
-    parser.add_argument("-t", "--headers")
-    parser.add_argument("-o", "--output", default="final_clean.md")
-    args = parser.parse_args()
-    with open(args.headers, 'r') as f: headers = f.readlines()
-    with open(args.input, 'r') as f: content = f.read()
-    # Pipeline
-    text = clean_ocr_text(content, headers)
-    text = fix_broken_sentences(text)
-    
-    # Final polish: remove triple newlines and weird artifacts
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    
-    with open(args.output, 'w') as f:
-        f.write(text)
-    print(f"Refined text saved to {args.output}")
+    ap = argparse.ArgumentParser(description=__doc__,
+                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('input', help='source Markdown file (OCR output)')
+    ap.add_argument('-o', '--output', required=True, help='path to write cleaned Markdown')
+    ap.add_argument('--show-dropped', action='store_true',
+                     help='print every removed page-number/running-header line to stderr')
+    args = ap.parse_args()
 
-if __name__ == "__main__":
+    with open(args.input, encoding='utf-8') as f:
+        text = f.read()
+
+    cleaned_text, dropped, referenced, defined = clean(text)
+
+    with open(args.output, 'w', encoding='utf-8') as f:
+        f.write(cleaned_text)
+
+    print(f'Removed {len(dropped)} page-number/running-header lines.', file=sys.stderr)
+    if args.show_dropped:
+        for kind, t in dropped:
+            print(f'  [{kind}] {t!r}', file=sys.stderr)
+
+    missing_defs = referenced - defined
+    unused_defs = defined - referenced
+    if missing_defs:
+        print(f'WARNING: {len(missing_defs)} footnote references have no definition: '
+              f'{sorted(missing_defs)[:10]}{" ..." if len(missing_defs) > 10 else ""}',
+              file=sys.stderr)
+    if unused_defs:
+        print(f'WARNING: {len(unused_defs)} footnote definitions are never referenced: '
+              f'{sorted(unused_defs)[:10]}{" ..." if len(unused_defs) > 10 else ""}',
+              file=sys.stderr)
+    if not missing_defs and not unused_defs:
+        print(f'All {len(defined)} footnotes matched to a reference. Good.', file=sys.stderr)
+
+
+if __name__ == '__main__':
     main()
