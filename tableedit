@@ -1,0 +1,911 @@
+#!/usr/bin/env python3
+"""
+tableedit - A zero-dependency, nano-style terminal TSV/CSV/XLSX table editor.
+Works out-of-the-box on macOS (Darwin), Ubuntu, RedHat/RHEL, and other UNIX systems.
+Includes built-in R-friendly data cleaning (whitespace trimming, header sanitization, integer coercion).
+Detects Excel date columns and renders them as YYYY-MM-DD text.
+"""
+
+import curses
+import csv
+import datetime
+import os
+import re
+import sys
+import termios
+import zipfile
+import xml.etree.ElementTree as ET
+
+
+# Built-in Excel number format IDs that represent dates/times
+BUILTIN_DATE_FMT_IDS = {14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47}
+
+
+def col_letters_to_index(letters):
+    """Convert Excel column letters (e.g. 'A', 'Z', 'AA') to 0-based column index."""
+    idx = 0
+    for ch in letters:
+        idx = idx * 26 + (ord(ch.upper()) - ord('A') + 1)
+    return idx - 1
+
+
+def format_excel_number(raw_val):
+    """
+    Ensure integer-like numbers from Excel XML (e.g. '1.0' or '1e0') are coerced
+    cleanly to '1' while preserving true decimals (e.g. '1.25').
+    """
+    raw_val = raw_val.strip()
+    try:
+        # Check if it's a valid float
+        fval = float(raw_val)
+        if fval.is_integer() and not ('e' in raw_val.lower() and abs(fval) >= 1e15):
+            return str(int(round(fval)))
+    except ValueError:
+        pass
+    return raw_val
+
+
+def _looks_purely_numeric(code):
+    """True if the code only has number-ish tokens (#, 0, ., comma, %, etc.)."""
+    return bool(re.fullmatch(r'[#0.,%\s\-+eE()]*', code))
+
+
+def _is_date_format_code(code):
+    """Heuristic: does a format code string denote a date/time?"""
+    if not code:
+        return False
+    # Strip quoted literals and bracketed color/condition tokens
+    stripped = re.sub(r'"[^"]*"', '', code)
+    stripped = re.sub(r'\[[^\]]*\]', '', stripped)
+    # Look for date/time field characters (y, m, d, h, s)
+    # 'm' is ambiguous (month vs minute) but its presence still implies date/time
+    return bool(re.search(r'[yYdDhHsS]', stripped)) and not _looks_purely_numeric(stripped)
+
+
+def excel_serial_to_date(serial):
+    """Convert an Excel date serial number to 'YYYY-MM-DD' (1900 date system)."""
+    try:
+        n = float(serial)
+    except (ValueError, TypeError):
+        return None
+    # Epoch 1899-12-30 accounts for Excel's fictitious 1900 leap year
+    base = datetime.datetime(1899, 12, 30)
+    try:
+        dt = base + datetime.timedelta(days=n)
+    except (OverflowError, ValueError):
+        return None
+    # If there's a fractional part, it's a datetime; keep date-only per spec
+    return dt.strftime('%Y-%m-%d')
+
+
+def _parse_date_styles(z):
+    """
+    Return a set of cellXfs indices (the 's' attribute values) whose number
+    format is a date/time. Reads xl/styles.xml from the open zipfile.
+    """
+    date_style_indices = set()
+    if 'xl/styles.xml' not in z.namelist():
+        return date_style_indices
+
+    root = ET.fromstring(z.read('xl/styles.xml'))
+
+    # Map custom numFmtId -> format code
+    custom_fmt = {}
+    for elem in root.iter():
+        if elem.tag.endswith('}numFmt') or elem.tag == 'numFmt':
+            fmt_id = elem.attrib.get('numFmtId')
+            code = elem.attrib.get('formatCode', '')
+            if fmt_id is not None:
+                try:
+                    custom_fmt[int(fmt_id)] = code
+                except ValueError:
+                    pass
+
+    # Walk cellXfs; its order defines the 's' index
+    cell_xfs = None
+    for elem in root.iter():
+        if elem.tag.endswith('}cellXfs') or elem.tag == 'cellXfs':
+            cell_xfs = elem
+            break
+    if cell_xfs is None:
+        return date_style_indices
+
+    idx = 0
+    for xf in cell_xfs:
+        if not (xf.tag.endswith('}xf') or xf.tag == 'xf'):
+            continue
+        num_fmt_id = xf.attrib.get('numFmtId')
+        is_date = False
+        if num_fmt_id is not None:
+            try:
+                fid = int(num_fmt_id)
+            except ValueError:
+                fid = -1
+            if fid in BUILTIN_DATE_FMT_IDS:
+                is_date = True
+            elif fid in custom_fmt and _is_date_format_code(custom_fmt[fid]):
+                is_date = True
+        if is_date:
+            date_style_indices.add(idx)
+        idx += 1
+
+    return date_style_indices
+
+
+def read_xlsx(filepath):
+    """
+    Zero-dependency native XLSX reader using Python's built-in zipfile and XML.
+    Returns (rows, date_col_indices) where date_col_indices is a set of 0-based
+    column indices in which at least one date cell was detected and converted.
+    """
+    rows = []
+    date_cols = set()
+    with zipfile.ZipFile(filepath, 'r') as z:
+        # 1. Load shared strings table if present
+        shared_strings = []
+        if 'xl/sharedStrings.xml' in z.namelist():
+            root = ET.fromstring(z.read('xl/sharedStrings.xml'))
+            for si in root.iter():
+                if si.tag.endswith('}si') or si.tag == 'si':
+                    texts = [
+                        t.text for t in si.iter()
+                        if (t.tag.endswith('}t') or t.tag == 't') and t.text
+                    ]
+                    shared_strings.append("".join(texts))
+
+        # 1b. Determine which style indices correspond to date/time formats
+        date_styles = _parse_date_styles(z)
+
+        # 2. Locate the first worksheet XML
+        sheet_files = sorted(
+            [f for f in z.namelist() if f.startswith('xl/worksheets/sheet') and f.endswith('.xml')]
+        )
+        if not sheet_files:
+            raise ValueError("No worksheet found inside .xlsx archive.")
+
+        sheet_root = ET.fromstring(z.read(sheet_files[0]))
+        parsed_rows = []
+        max_col = 0
+
+        for elem in sheet_root.iter():
+            if elem.tag.endswith('}row') or elem.tag == 'row':
+                row_dict = {}
+                cur_col = 0
+                for c in elem:
+                    if not (c.tag.endswith('}c') or c.tag == 'c'):
+                        continue
+                    ref = c.attrib.get('r', '')
+                    m = re.match(r'^([A-Za-z]+)', ref)
+                    if m:
+                        cur_col = col_letters_to_index(m.group(1))
+
+                    cell_type = c.attrib.get('t', '')
+                    val = ""
+                    if cell_type == 'inlineStr':
+                        texts = [
+                            t.text for t in c.iter()
+                            if (t.tag.endswith('}t') or t.tag == 't') and t.text
+                        ]
+                        val = "".join(texts)
+                    else:
+                        v_elem = next(
+                            (child for child in c if child.tag.endswith('}v') or child.tag == 'v'),
+                            None
+                        )
+                        if v_elem is not None and v_elem.text is not None:
+                            raw_val = v_elem.text
+                            if cell_type == 's':  # Shared string index
+                                try:
+                                    val = shared_strings[int(raw_val)]
+                                except (ValueError, IndexError):
+                                    val = raw_val
+                            elif cell_type == 'b':  # Boolean
+                                val = "TRUE" if raw_val == "1" else "FALSE"
+                            elif cell_type in ('str', 'e'):  # Formula string or error
+                                val = raw_val
+                            else:
+                                # Numeric: check if the cell's style marks it as a date
+                                style_idx = c.attrib.get('s')
+                                is_date_cell = False
+                                if style_idx is not None:
+                                    try:
+                                        is_date_cell = int(style_idx) in date_styles
+                                    except ValueError:
+                                        is_date_cell = False
+                                if is_date_cell:
+                                    converted = excel_serial_to_date(raw_val)
+                                    if converted is not None:
+                                        val = converted
+                                        date_cols.add(cur_col)
+                                    else:
+                                        val = format_excel_number(raw_val)
+                                else:
+                                    val = format_excel_number(raw_val)
+
+                    row_dict[cur_col] = str(val)
+                    if cur_col + 1 > max_col:
+                        max_col = cur_col + 1
+                    cur_col += 1
+
+                parsed_rows.append(row_dict)
+
+        max_col = max(max_col, 1)
+        for r_dict in parsed_rows:
+            rows.append([r_dict.get(c_idx, "") for c_idx in range(max_col)])
+
+    return rows, date_cols
+
+
+def detect_delimiter(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in ('.tsv', '.tab', '.xlsx'):
+        return '\t'
+    elif ext == '.csv':
+        return ','
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                sample = f.read(4096)
+                if '\t' in sample and sample.count('\t') >= sample.count(','):
+                    return '\t'
+                return ','
+        except Exception:
+            pass
+    return '\t'
+
+
+def load_table(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    from_xlsx = False
+    date_cols = set()
+
+    if ext == '.xlsx':
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"File not found: {filepath}")
+        rows, date_cols = read_xlsx(filepath)
+        delim = '\t'
+        filepath = os.path.splitext(filepath)[0] + '.tsv'
+        from_xlsx = True
+    else:
+        delim = detect_delimiter(filepath)
+        if not os.path.exists(filepath):
+            rows = [["Col1", "Col2", "Col3"], ["", "", ""]]
+        else:
+            rows = []
+            with open(filepath, 'r', encoding='utf-8', errors='replace', newline='') as f:
+                reader = csv.reader(f, delimiter=delim)
+                for row in reader:
+                    rows.append(row)
+
+    if not rows:
+        rows = [["Col1", "Col2"], ["", ""]]
+
+    max_cols = max(len(r) for r in rows)
+    if max_cols == 0:
+        rows = [["Col1"], [""]]
+        max_cols = 1
+    for r in rows:
+        while len(r) < max_cols:
+            r.append("")
+
+    if len(rows) == 1:
+        rows.append([""] * max_cols)
+
+    return rows, delim, filepath, from_xlsx, date_cols
+
+
+def save_table(filepath, rows, delim=None):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == '.xlsx':
+        filepath = os.path.splitext(filepath)[0] + '.tsv'
+        ext = '.tsv'
+
+    if delim is None:
+        if ext in ('.tsv', '.tab'):
+            delim = '\t'
+        elif ext == '.csv':
+            delim = ','
+        else:
+            delim = '\t'
+    with open(filepath, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f, delimiter=delim, lineterminator='\n')
+        writer.writerows(rows)
+    return delim, filepath
+
+
+def sanitize_r_header(name):
+    """
+    Sanitize a column header for R (data.table / tidyverse friendly):
+    - Strips leading/trailing whitespace
+    - Replaces spaces and non-alphanumeric chars (!@#$%^&* etc.) with '_'
+    - Collapses multiple underscores into a single '_'
+    - Strips leading/trailing '_'
+    """
+    s = str(name).strip()
+    # Replace any sequence of characters that is not alphanumeric or '_' with '_'
+    s = re.sub(r'[^0-9a-zA-Z_]+', '_', s)
+    # Collapse multiple underscores
+    s = re.sub(r'_+', '_', s).strip('_')
+    if not s:
+        return "V1"
+    if s[0].isdigit():
+        s = "X" + s
+    return s
+
+
+class TableEditor:
+    def __init__(self, stdscr, filepath):
+        self.stdscr = stdscr
+        self.rows, self.delim, self.filepath, from_xlsx, self.date_cols = load_table(filepath)
+        self.dirty = from_xlsx
+
+        self.cur_row = 1 if len(self.rows) > 1 else 0
+        self.cur_col = 0
+
+        self.row_offset = 1
+        self.col_offset = 0
+
+        if from_xlsx:
+            if self.date_cols:
+                date_names = ", ".join(
+                    str(self.rows[0][c]) for c in sorted(self.date_cols)
+                    if c < len(self.rows[0])
+                )
+                self.status_msg = (
+                    f"Imported .xlsx! Date cols -> YYYY-MM-DD: [{date_names}] | "
+                    f"Target: '{os.path.basename(self.filepath)}' (t: Trim | h: Clean Header | ^S: Save)"
+                )
+            else:
+                self.status_msg = (
+                    f"Imported .xlsx! (No date columns detected) | "
+                    f"Target: '{os.path.basename(self.filepath)}' (t: Trim | h: Clean Header | ^S: Save)"
+                )
+        else:
+            self.status_msg = "Enter/e: Edit | t: Trim Spaces | h: R-Clean Header | ^O/s: SaveAs | ^S/S: QuickSave | ^X/q: Quit"
+
+        self.search_query = ""
+        self.max_col_width = 32
+        self.min_col_width = 8
+
+        self.init_curses()
+
+    def init_curses(self):
+        curses.raw()
+        curses.curs_set(0)
+        self.stdscr.keypad(True)
+        curses.start_color()
+        curses.use_default_colors()
+
+        try:
+            fd = sys.stdin.fileno()
+            attrs = termios.tcgetattr(fd)
+            attrs[0] &= ~(termios.IXON | termios.IXOFF)
+            if hasattr(termios, 'VDISCARD') and termios.VDISCARD < len(attrs[6]):
+                attrs[6][termios.VDISCARD] = 0
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        except Exception:
+            pass
+
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)    # Frozen Column Header
+        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_GREEN)   # Selected Cell
+        curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLUE)    # Top/Bottom Status Bars
+        curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # Cell Being Edited
+        curses.init_pair(5, curses.COLOR_CYAN, -1)                    # Row Index Column
+        curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_WHITE)   # Nano Shortcut Keys
+        curses.init_pair(7, curses.COLOR_RED, -1)                     # Date [D] marker
+
+    def get_col_widths(self):
+        num_cols = len(self.rows[0])
+        widths = [self.min_col_width] * num_cols
+        sample_indices = [0] + list(range(max(1, self.row_offset - 10), min(len(self.rows), self.row_offset + 60)))
+        for r_idx in sample_indices:
+            row = self.rows[r_idx]
+            for c_idx, val in enumerate(row):
+                w = min(max(len(str(val)) + 2, self.min_col_width), self.max_col_width)
+                if w > widths[c_idx]:
+                    widths[c_idx] = w
+        return widths
+
+    def adjust_viewport(self, max_y, max_x, col_widths, row_num_width):
+        usable_rows = max(1, max_y - 5)
+        if self.cur_row >= 1:
+            if self.cur_row < self.row_offset:
+                self.row_offset = self.cur_row
+            elif self.cur_row >= self.row_offset + usable_rows:
+                self.row_offset = self.cur_row - usable_rows + 1
+
+        usable_width = max(10, max_x - row_num_width - 1)
+        if self.cur_col < self.col_offset:
+            self.col_offset = self.cur_col
+        else:
+            while self.col_offset < self.cur_col:
+                span_width = sum(col_widths[c] + 1 for c in range(self.col_offset, self.cur_col + 1))
+                if span_width > usable_width:
+                    self.col_offset += 1
+                else:
+                    break
+
+    def format_cell(self, text, width):
+        text = str(text).replace('\n', ' ').replace('\r', '')
+        if len(text) > width - 1:
+            return text[:width - 2] + "…"
+        return text.ljust(width)
+
+    def draw(self):
+        self.stdscr.erase()
+        max_y, max_x = self.stdscr.getmaxyx()
+        if max_y < 7 or max_x < 25:
+            self.stdscr.addstr(0, 0, "Terminal too small!")
+            self.stdscr.refresh()
+            return
+
+        col_widths = self.get_col_widths()
+        row_num_width = max(5, len(str(len(self.rows) - 1)) + 2)
+        self.adjust_viewport(max_y, max_x, col_widths, row_num_width)
+
+        # 1. Top Title Bar
+        mod_str = " [Modified]" if self.dirty else ""
+        delim_name = "TSV" if self.delim == '\t' else "CSV"
+        pos_label = "HEADER" if self.cur_row == 0 else f"Row {self.cur_row}/{len(self.rows)-1}"
+        title = f" tableedit | {os.path.basename(self.filepath)} ({delim_name}){mod_str} | {pos_label}, Col {self.cur_col+1}/{len(self.rows[0])} "
+        self.stdscr.attron(curses.color_pair(3) | curses.A_BOLD)
+        self.stdscr.addstr(0, 0, title[:max_x - 1].ljust(max_x - 1))
+        self.stdscr.attroff(curses.color_pair(3) | curses.A_BOLD)
+
+        # Determine visible columns
+        usable_width = max_x - row_num_width - 1
+        vis_cols = []
+        used_w = 0
+        for c in range(self.col_offset, len(self.rows[0])):
+            w = col_widths[c]
+            if used_w + w + 1 > usable_width and len(vis_cols) > 0:
+                break
+            vis_cols.append((c, min(w, usable_width - used_w - 1)))
+            used_w += w + 1
+
+        # 2. Frozen Header Row (Row 0 of self.rows)
+        self.stdscr.attron(curses.color_pair(1) | curses.A_BOLD)
+        self.stdscr.addstr(1, 0, " # ".rjust(row_num_width) + "│")
+        self.stdscr.attroff(curses.color_pair(1) | curses.A_BOLD)
+
+        x_pos = row_num_width + 1
+        for c_idx, w in vis_cols:
+            if self.cur_row == 0 and self.cur_col == c_idx:
+                base_attr = curses.color_pair(2) | curses.A_BOLD
+            else:
+                base_attr = curses.color_pair(1) | curses.A_BOLD
+
+            is_date_col = c_idx in self.date_cols
+            marker = " [D]" if is_date_col else ""
+            # Reserve room for the marker so names + marker fit within the column
+            name_width = max(1, w - len(marker))
+            name_str = self.format_cell(self.rows[0][c_idx], name_width)
+
+            try:
+                # Header name in the normal (cyan/green) header color
+                self.stdscr.addstr(1, x_pos, name_str, base_attr)
+                drawn = len(name_str)
+                if is_date_col:
+                    # [D] marker in red, so it reads against a dark terminal
+                    self.stdscr.addstr(1, x_pos + drawn, marker, curses.color_pair(7) | curses.A_BOLD)
+                    drawn += len(marker)
+                # Pad out any remaining cell width in the base color
+                if drawn < w:
+                    self.stdscr.addstr(1, x_pos + drawn, " " * (w - drawn), base_attr)
+                self.stdscr.addstr(1, x_pos + w, "│", curses.color_pair(1))
+            except curses.error:
+                pass
+            x_pos += w + 1
+
+        # 3. Header Separator Line
+        sep_line = "─" * row_num_width + "┼" + "─" * max(0, max_x - row_num_width - 2)
+        try:
+            self.stdscr.addstr(2, 0, sep_line[:max_x - 1], curses.color_pair(5))
+        except curses.error:
+            pass
+
+        # 4. Data Rows
+        usable_rows = max_y - 5
+        for i in range(usable_rows):
+            r_idx = self.row_offset + i
+            screen_y = 3 + i
+            if r_idx >= len(self.rows):
+                break
+
+            r_num_str = f"{r_idx} ".rjust(row_num_width) + "│"
+            try:
+                self.stdscr.addstr(screen_y, 0, r_num_str, curses.color_pair(5))
+            except curses.error:
+                pass
+
+            x_pos = row_num_width + 1
+            for c_idx, w in vis_cols:
+                cell_str = self.format_cell(self.rows[r_idx][c_idx], w)
+                is_selected = (r_idx == self.cur_row and c_idx == self.cur_col)
+                attr = (curses.color_pair(2) | curses.A_BOLD) if is_selected else curses.A_NORMAL
+                try:
+                    self.stdscr.addstr(screen_y, x_pos, cell_str, attr)
+                    self.stdscr.addstr(screen_y, x_pos + len(cell_str), "│", curses.color_pair(5))
+                except curses.error:
+                    pass
+                x_pos += w + 1
+
+        # 5. Status / Full Cell Preview Line (max_y - 2)
+        cur_val = self.rows[self.cur_row][self.cur_col]
+        date_flag = " (date col)" if self.cur_col in self.date_cols else ""
+        status_text = f" {self.status_msg}   [Cell: {repr(cur_val)}{date_flag}]"
+        try:
+            self.stdscr.attron(curses.color_pair(3))
+            self.stdscr.addstr(max_y - 2, 0, status_text[:max_x - 1].ljust(max_x - 1))
+            self.stdscr.attroff(curses.color_pair(3))
+        except curses.error:
+            pass
+
+        # 6. Nano-Style Shortcut Bar (max_y - 1)
+        shortcuts = [
+            ("Enter/e", "Edit"),
+            ("t", "TrimWS"),
+            ("h", "CleanHdr"),
+            ("^O/s", "SaveAs"),
+            ("^S/S", "Save"),
+            ("^W/f", "Find"),
+            ("^R", "+Row"),
+            ("^T", "+Col"),
+            ("^D", "DelCol"),
+            ("^K", "DelRow"),
+            ("^X/q", "Exit")
+        ]
+        x_pos = 0
+        for key_str, desc in shortcuts:
+            if x_pos + len(key_str) + len(desc) + 3 >= max_x:
+                break
+            try:
+                self.stdscr.addstr(max_y - 1, x_pos, key_str, curses.color_pair(6) | curses.A_BOLD)
+                x_pos += len(key_str)
+                self.stdscr.addstr(max_y - 1, x_pos, f" {desc}  ", curses.A_NORMAL)
+                x_pos += len(desc) + 3
+            except curses.error:
+                pass
+
+        self.stdscr.refresh()
+
+    def prompt_input(self, prompt_label, initial=""):
+        max_y, max_x = self.stdscr.getmaxyx()
+        buf = list(initial)
+        cursor = len(buf)
+        curses.curs_set(1)
+
+        while True:
+            self.stdscr.move(max_y - 2, 0)
+            self.stdscr.clrtoeol()
+            prefix = f" {prompt_label}: "
+            avail = max(5, max_x - len(prefix) - 2)
+
+            start_idx = max(0, cursor - avail + 1)
+            visible_buf = "".join(buf[start_idx:start_idx + avail])
+
+            try:
+                self.stdscr.attron(curses.color_pair(4) | curses.A_BOLD)
+                self.stdscr.addstr(max_y - 2, 0, (prefix + visible_buf).ljust(max_x - 1))
+                self.stdscr.attroff(curses.color_pair(4) | curses.A_BOLD)
+                self.stdscr.move(max_y - 2, min(max_x - 2, len(prefix) + (cursor - start_idx)))
+            except curses.error:
+                pass
+
+            self.stdscr.refresh()
+            ch = self.stdscr.getch()
+
+            if ch in (10, 13, curses.KEY_ENTER):
+                curses.curs_set(0)
+                return "".join(buf)
+            elif ch in (27, 7, 3):
+                curses.curs_set(0)
+                return None
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                if cursor > 0:
+                    buf.pop(cursor - 1)
+                    cursor -= 1
+            elif ch == curses.KEY_DC:
+                if cursor < len(buf):
+                    buf.pop(cursor)
+            elif ch == curses.KEY_LEFT:
+                if cursor > 0:
+                    cursor -= 1
+            elif ch == curses.KEY_RIGHT:
+                if cursor < len(buf):
+                    cursor += 1
+            elif ch in (curses.KEY_HOME, 1):
+                cursor = 0
+            elif ch in (curses.KEY_END, 5):
+                cursor = len(buf)
+            elif ch == 21:
+                buf.clear()
+                cursor = 0
+            elif 32 <= ch <= 126:
+                buf.insert(cursor, chr(ch))
+                cursor += 1
+
+    def edit_current_cell(self):
+        old_val = self.rows[self.cur_row][self.cur_col]
+        col_name = self.rows[0][self.cur_col]
+        label = f"Edit Header [{col_name}]" if self.cur_row == 0 else f"Edit ({self.cur_row}, {col_name}) [Esc=Cancel]"
+        new_val = self.prompt_input(label, old_val)
+        if new_val is not None and new_val != old_val:
+            self.rows[self.cur_row][self.cur_col] = new_val
+            self.dirty = True
+            self.status_msg = "Cell updated."
+        else:
+            self.status_msg = "Edit cancelled."
+
+    def trim_whitespace_all(self):
+        """Strip leading and trailing whitespace across all cells in the table."""
+        changed = 0
+        for r_idx, row in enumerate(self.rows):
+            for c_idx, val in enumerate(row):
+                trimmed = str(val).strip()
+                if trimmed != val:
+                    self.rows[r_idx][c_idx] = trimmed
+                    changed += 1
+        if changed > 0:
+            self.dirty = True
+            self.status_msg = f"Trimmed leading/trailing whitespace in {changed} cell(s)."
+        else:
+            self.status_msg = "No leading/trailing whitespace found."
+
+    def clean_headers_or_table(self):
+        """Sanitize column names (or whole table) for R."""
+        choice = self.prompt_input(
+            "Clean: [h] Headers (R-safe: spaces & !@#$ -> '_') | [a] All cells (spaces -> '_')",
+            "h"
+        )
+        if not choice:
+            self.status_msg = "Clean cancelled."
+            return
+
+        choice = choice.strip().lower()
+        changed = 0
+        if choice == 'h':
+            for c_idx, val in enumerate(self.rows[0]):
+                cleaned = sanitize_r_header(val)
+                if cleaned != val:
+                    self.rows[0][c_idx] = cleaned
+                    changed += 1
+            if changed > 0:
+                self.dirty = True
+                self.status_msg = f"Sanitized {changed} column header(s) for R!"
+            else:
+                self.status_msg = "Headers are already R-clean."
+        elif choice == 'a':
+            for c_idx, val in enumerate(self.rows[0]):
+                cleaned = sanitize_r_header(val)
+                if cleaned != val:
+                    self.rows[0][c_idx] = cleaned
+                    changed += 1
+            for r_idx in range(1, len(self.rows)):
+                for c_idx, val in enumerate(self.rows[r_idx]):
+                    cleaned = re.sub(r'\s+', '_', str(val).strip())
+                    if cleaned != val:
+                        self.rows[r_idx][c_idx] = cleaned
+                        changed += 1
+            if changed > 0:
+                self.dirty = True
+                self.status_msg = f"Cleaned headers and replaced spaces with '_' in {changed} cell(s)."
+            else:
+                self.status_msg = "No spaces or dirty headers found."
+        else:
+            self.status_msg = "Unknown option (use 'h' or 'a')."
+
+    def save_prompt(self, quick=False):
+        if quick:
+            target = self.filepath
+        else:
+            target = self.prompt_input("Save file as (Enter to overwrite, Esc to cancel)", self.filepath)
+            if not target:
+                self.status_msg = "Save cancelled."
+                return False
+
+        try:
+            new_delim = None if target != self.filepath else self.delim
+            self.delim, self.filepath = save_table(target, self.rows, new_delim)
+            self.dirty = False
+            self.status_msg = f"Saved {len(self.rows)-1} rows to '{self.filepath}'."
+            return True
+        except Exception as e:
+            self.status_msg = f"Error saving: {e}"
+            return False
+
+    def search_table(self, find_next=False):
+        if not find_next or not self.search_query:
+            q = self.prompt_input("Search text (Esc to cancel)", self.search_query)
+            if not q:
+                self.status_msg = "Search cancelled."
+                return
+            self.search_query = q
+
+        q_lower = self.search_query.lower()
+        total_rows = len(self.rows)
+        total_cols = len(self.rows[0])
+
+        start_idx = self.cur_row * total_cols + self.cur_col + 1
+        total_cells = total_rows * total_cols
+
+        for offset in range(total_cells):
+            idx = (start_idx + offset) % total_cells
+            r = idx // total_cols
+            c = idx % total_cols
+            if q_lower in str(self.rows[r][c]).lower():
+                self.cur_row, self.cur_col = r, c
+                self.status_msg = f"Found '{self.search_query}' at Row {r}, Col {c+1}"
+                return
+
+        self.status_msg = f"'{self.search_query}' not found."
+
+    def run(self):
+        while True:
+            self.draw()
+            ch = self.stdscr.getch()
+
+            # Navigation
+            if ch == curses.KEY_UP:
+                if self.cur_row > 0:
+                    self.cur_row -= 1
+            elif ch == curses.KEY_DOWN:
+                if self.cur_row < len(self.rows) - 1:
+                    self.cur_row += 1
+            elif ch == curses.KEY_LEFT:
+                if self.cur_col > 0:
+                    self.cur_col -= 1
+            elif ch == curses.KEY_RIGHT or ch == 9:
+                if self.cur_col < len(self.rows[0]) - 1:
+                    self.cur_col += 1
+            elif ch == curses.KEY_BTAB:
+                if self.cur_col > 0:
+                    self.cur_col -= 1
+            elif ch == curses.KEY_PPAGE:
+                max_y, _ = self.stdscr.getmaxyx()
+                self.cur_row = max(1, self.cur_row - (max_y - 5))
+            elif ch == curses.KEY_NPAGE:
+                max_y, _ = self.stdscr.getmaxyx()
+                self.cur_row = min(len(self.rows) - 1, self.cur_row + (max_y - 5))
+            elif ch == curses.KEY_HOME:
+                self.cur_col = 0
+            elif ch == curses.KEY_END:
+                self.cur_col = len(self.rows[0]) - 1
+
+            # Edit Cell (Enter or 'e')
+            elif ch in (10, 13, curses.KEY_ENTER, ord('e'), ord('E')):
+                self.edit_current_cell()
+
+            # 't' or Ctrl+L (12): Trim leading & trailing whitespace across entire table
+            elif ch in (12, ord('t'), ord('T')):
+                self.trim_whitespace_all()
+
+            # 'h': Sanitize headers for R (or replace spaces globally)
+            elif ch in (ord('h'), ord('H')):
+                self.clean_headers_or_table()
+
+            # Ctrl+O (15) or 's': Save / Save As
+            elif ch in (15, ord('s')):
+                self.save_prompt(quick=False)
+
+            # Ctrl+S (19) or 'S': Quick Save
+            elif ch in (19, ord('S')):
+                self.save_prompt(quick=True)
+
+            # Ctrl+W (23) or 'f': Search
+            elif ch in (23, ord('f')):
+                self.search_table(find_next=False)
+
+            # Ctrl+N (14) or 'n': Find Next
+            elif ch in (14, ord('n')):
+                self.search_table(find_next=True)
+
+            # Ctrl+R (18): Insert Row Below
+            elif ch == 18:
+                num_cols = len(self.rows[0])
+                insert_at = self.cur_row + 1
+                self.rows.insert(insert_at, [""] * num_cols)
+                self.cur_row = insert_at
+                self.dirty = True
+                self.status_msg = f"Inserted new row at {insert_at}."
+
+            # Ctrl+T (20): Insert Column Right
+            elif ch == 20:
+                insert_col = self.cur_col + 1
+                col_name = self.prompt_input("New column name", f"Col{insert_col+1}")
+                if col_name is not None:
+                    for r_idx, row in enumerate(self.rows):
+                        row.insert(insert_col, col_name if r_idx == 0 else "")
+                    # Shift existing date-column indices to account for the insert
+                    self.date_cols = {
+                        (c + 1 if c >= insert_col else c) for c in self.date_cols
+                    }
+                    self.cur_col = insert_col
+                    self.dirty = True
+                    self.status_msg = f"Inserted column '{col_name}'."
+
+            # Ctrl+D (4): Delete Current Column
+            elif ch == 4:
+                num_cols = len(self.rows[0])
+                if num_cols <= 1:
+                    self.status_msg = "Cannot delete the last remaining column!"
+                else:
+                    del_col = self.cur_col
+                    col_name = self.rows[0][del_col]
+                    confirm = self.prompt_input(
+                        f"Delete column '{col_name}' and all its data? (y/n)", "n"
+                    )
+                    if confirm and confirm.strip().lower().startswith('y'):
+                        for row in self.rows:
+                            if del_col < len(row):
+                                row.pop(del_col)
+                        # Drop the deleted column from date_cols and shift the rest down
+                        self.date_cols = {
+                            (c - 1 if c > del_col else c)
+                            for c in self.date_cols if c != del_col
+                        }
+                        if self.cur_col >= len(self.rows[0]):
+                            self.cur_col = len(self.rows[0]) - 1
+                        self.dirty = True
+                        self.status_msg = f"Deleted column '{col_name}'."
+                    else:
+                        self.status_msg = "Column delete cancelled."
+
+            # Ctrl+K (11): Delete Current Row
+            elif ch == 11:
+                if self.cur_row == 0:
+                    self.status_msg = "Cannot delete the frozen header row!"
+                elif len(self.rows) <= 2:
+                    self.rows[1] = [""] * len(self.rows[0])
+                    self.dirty = True
+                    self.status_msg = "Cleared last remaining data row."
+                else:
+                    self.rows.pop(self.cur_row)
+                    if self.cur_row >= len(self.rows):
+                        self.cur_row = len(self.rows) - 1
+                    self.dirty = True
+                    self.status_msg = "Row deleted."
+
+            # Ctrl+U (21): Clear Current Cell
+            elif ch == 21:
+                if self.rows[self.cur_row][self.cur_col] != "":
+                    self.rows[self.cur_row][self.cur_col] = ""
+                    self.dirty = True
+                    self.status_msg = "Cell cleared."
+
+            # Ctrl+X (24), Ctrl+C (3), or 'q': Exit
+            elif ch in (24, 3, ord('q'), ord('Q')):
+                if self.dirty:
+                    ans = self.prompt_input("Save modified table before exiting? (y/n/Esc)", "y")
+                    if ans is None:
+                        self.status_msg = "Exit cancelled."
+                        continue
+                    elif ans.lower().startswith('y'):
+                        if self.save_prompt(quick=False):
+                            break
+                    elif ans.lower().startswith('n'):
+                        break
+                else:
+                    break
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
+        print("Usage: tableedit <file.tsv|file.csv|file.xlsx>")
+        print("A lightweight, nano-style terminal table editor for TSV, CSV, and XLSX files.")
+        sys.exit(0)
+
+    filepath = sys.argv[1]
+    os.environ.setdefault('ESCDELAY', '25')
+
+    try:
+        curses.wrapper(lambda stdscr: TableEditor(stdscr, filepath).run())
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
