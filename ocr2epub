@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "mistralai>=2.9,<3",
+#    "mistralai>=3.2"
 # ]
 # ///
 
@@ -10,33 +10,53 @@ import argparse
 import pickle
 import base64
 import re
+import os
 import mistralai
 
 def main():
     parser = argparse.ArgumentParser(description='oct2epub')
     parser.add_argument('-i', '--input', help='Input pkl ocr file')
     parser.add_argument('-o', '--output', help='Output markdown file')
+    parser.add_argument('-s', '--start-image-num', type=int, help='Optional starting number for image numbering')
     args = parser.parse_args()
 
     if args.input and args.output:
+        img_counter = args.start_image_num
+        
         with open(args.output, 'w') as o:
             with open(args.input, 'rb') as f:
                 data = pickle.load(f)
                 for page in data.pages:
-                    pg = re.sub(r'^#','\n#', page.markdown)
+                    pg = page.markdown
+                    
+                    if page.images:
+                        for image in page.images:
+                            old_id = image.id  # e.g., "img-0.jpeg"
+                            ext = os.path.splitext(old_id)[1] or ".jpeg"
+                            
+                            if img_counter is not None:
+                                new_id = f"img-{img_counter}{ext}"
+                                img_counter += 1
+                            else:
+                                new_id = old_id
+                                
+                            # Update the reference in the markdown text
+                            pg = pg.replace(old_id, new_id)
+                            
+                            # Decode and save image with the updated name
+                            img = image.image_base64.split(",")[1]
+                            decoded_data = base64.b64decode(img)
+                            with open(new_id, 'wb') as f2:
+                                f2.write(decoded_data)
+
+                    # Text formatting and cleaning
+                    pg = re.sub(r'^#','\n#', pg)
                     pg = re.sub(r'-\n','', pg)
                     pg = re.sub(r'<br>',' ', pg)
                     pg = re.sub(r'<BR>',' ', pg)
                     print(pg, file=o)
-                    if page.images:
-                        for image in page.images:
-                            img = image.image_base64.split(",")[1]
-                            decoded_data = base64.b64decode(img)
-                            with open(image.id, 'wb') as f2:
-                                f2.write(decoded_data)
     else:
         print('Please provide -i or --input and -o or --output option.')
 
-    
 if __name__ == "__main__":
     main()
