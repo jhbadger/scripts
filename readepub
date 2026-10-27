@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """readepub - a dependency-free terminal EPUB reader (Python 3.8+, stdlib only).
 
+MathML equations are rendered as Unicode text (stacked fractions, matrices, roots,
+scripts); inline math is flattened to one line.
+
 Images are shown inline, in place, when the terminal supports a graphics
 protocol (kitty/Ghostty/WezTerm via the kitty protocol, iTerm2/WezTerm via the
 iTerm2 protocol); otherwise an "[Image: alt]" placeholder is shown.
@@ -169,6 +172,455 @@ class Book:
         return toc
 
 
+# ------------------------------------------------- MathML -> Unicode text boxes
+# A Box is a block of equal-width text lines with a baseline row, so fractions,
+# matrices and scripts can be laid out in 2-D (display math) or flattened to a
+# single line (inline math). Italic/bold use the \x01-\x04 style markers.
+
+class N:
+    __slots__ = ('tag', 'attrs', 'kids')
+
+    def __init__(self, tag, attrs):
+        self.tag, self.attrs, self.kids = tag, attrs, []
+
+
+def elems(n):
+    return [k for k in n.kids if isinstance(k, N)]
+
+
+def ntext(n):
+    return ''.join(k if isinstance(k, str) else ntext(k) for k in n.kids)
+
+
+_INVIS = dict.fromkeys(map(ord, '\u2061\u2062\u2063\u2064'))
+_MARK = re.compile(r'[\x01-\x04]')
+
+
+def clean(s):
+    return ' '.join(s.translate(_INVIS).replace('\xa0', ' ').split())
+
+
+def unmark(s):
+    return _MARK.sub('', s)
+
+
+class Ctx:
+    def __init__(self, linear=False, tight=False, upright=False):
+        self.linear, self.tight, self.upright = linear, tight, upright
+
+    def sub(self, **kw):
+        c = Ctx(self.linear, self.tight, self.upright)
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+
+class Box:
+    def __init__(self, lines, base=0):
+        lines = lines or ['']
+        self.w = max(vlen(l) for l in lines)
+        self.lines = [l + ' ' * (self.w - vlen(l)) for l in lines]
+        self.base, self.h = base, len(lines)
+
+    def is_space(self):
+        return self.h == 1 and self.w > 0 and not unmark(self.lines[0]).strip()
+
+
+def tbox(t):
+    return Box([t])
+
+
+def hcat(boxes):
+    boxes = [b for b in boxes if b.w or b.h > 1]
+    if not boxes:
+        return tbox('')
+    asc = max(b.base for b in boxes)
+    desc = max(b.h - 1 - b.base for b in boxes)
+    lines = []
+    for r in range(asc + desc + 1):
+        row = []
+        for b in boxes:
+            i = r - (asc - b.base)
+            row.append(b.lines[i] if 0 <= i < b.h else ' ' * b.w)
+        lines.append(''.join(row))
+    return Box(lines, asc)
+
+
+def centered(b, w, align='center'):
+    left = {'left': 0, 'right': w - b.w}.get(align, (w - b.w) // 2)
+    return Box([' ' * left + l + ' ' * (w - b.w - left) for l in b.lines], b.base)
+
+
+def _pairs(src, dst):
+    assert len(src) == len(dst)
+    return dict(zip(src, dst))
+
+
+SUPM = _pairs('0123456789+-=()abcdefghijklmnoprstuvwxyzABDEGHIJKLMNOPRTUWβγδθφχ',
+              '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻᴬᴮᴰᴱᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾᴿᵀᵁᵂᵝᵞᵟᶿᵠᵡ')
+SUPM.update({'⊤': 'ᵀ', '*': '*', '∗': '*', '′': '′'})
+SUBM = _pairs('0123456789+-=()aehijklmnoprstuvxβγρφχ',
+              '₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓᵦᵧᵨᵩᵪ')
+COMB = {'¯': '\u0305', '‾': '\u0305', '―': '\u0305', '^': '\u0302', 'ˆ': '\u0302',
+        '~': '\u0303', '˜': '\u0303', '→': '\u20d7', '˙': '\u0307', '¨': '\u0308',
+        'ˇ': '\u030c', '´': '\u0301', '`': '\u0300'}
+FENCE = {'(': '⎛⎜⎝', ')': '⎞⎟⎠', '[': '⎡⎢⎣', ']': '⎤⎥⎦', '{': '⎧⎪⎩', '}': '⎫⎪⎭',
+         '|': '│││', '‖': '║║║'}
+REL = set('=≠≈≡<>≤≥≪≫∈∉∋⊂⊃⊆⊇⊄→←↔⇒⇐⇔⟹⟸⟶↦∝∼≃≅≜≔:∣∥⊥⊨⊢≲≳≺≻') | {
+    ':=', '<=', '>=', '!=', '->', '=>'}
+BIN = set('+-−±∓×÷⋅·∗∘⊙⊕⊗⊖∪∩∧∨⊎∖*')
+CLOSE = set(')]}⟩⌉⌋|‖')
+BIGOPS = set('∑∏∐∫∬∭∮⋃⋂⋁⋀⨁⨂')
+
+
+def mapped(b, table):
+    if b is None:
+        return ''
+    if b.h != 1:
+        return None
+    t = unmark(b.lines[0]).rstrip().replace('−', '-')
+    return ''.join(table[c] for c in t) if all(c in table for c in t) else None
+
+
+def balanced(s):
+    if not (s.startswith('(') and s.endswith(')')):
+        return False
+    depth = 0
+    for i, ch in enumerate(s):
+        depth += (ch == '(') - (ch == ')')
+        if depth == 0 and i < len(s) - 1:
+            return False
+    return True
+
+
+def atom(b):
+    s = b.lines[0] if b.h == 1 else ' '.join(l.strip() for l in b.lines)
+    p = unmark(s).strip()
+    return s if (len(p) == 1 or re.fullmatch(r"[\w.′']+", p) or balanced(p)) else '(' + s + ')'
+
+
+def r_tok(n, c):
+    return tbox(clean(ntext(n)))
+
+
+def r_mi(n, c):
+    s = clean(ntext(n))
+    upright = c.upright or n.attrs.get('mathvariant') == 'normal'
+    if len(s) == 1 and s.isalpha() and ord(s) < 0x10000 and not upright:
+        s = '\x03' + s + '\x04'
+    return tbox(s)
+
+
+def r_mtext(n, c):
+    return tbox(' '.join(ntext(n).replace('\xa0', ' ').translate(_INVIS).split()).join(
+        [' ' if ntext(n)[:1].isspace() else '', ' ' if ntext(n)[-1:].isspace() else '']))
+
+
+def r_mspace(n, c):
+    m = re.match(r'[\d.]+', n.attrs.get('width', ''))
+    return tbox(' ') if m and float(m.group(0)) >= 0.15 else tbox('')
+
+
+def fence_box(ch, asc, desc):
+    h = asc + desc + 1
+    if h == 1 or ch not in FENCE:
+        return tbox(ch)
+    top, mid, bot = FENCE[ch]
+    lines = [top] + [mid] * (h - 2) + [bot]
+    if ch in '{}' and h >= 3:
+        lines[h // 2] = '⎨' if ch == '{' else '⎬'
+    return Box(lines, asc)
+
+
+def opname(k):
+    if k.tag in ('mi', 'mo'):
+        return clean(ntext(k))
+    if k.tag in ('msub', 'msup', 'msubsup', 'munder', 'mover', 'munderover'):
+        e = elems(k)
+        return opname(e[0]) if e else ''
+    return ''
+
+
+def r_row(n, c):
+    kids = elems(n)
+    if not kids:
+        return tbox('')
+    texts = [clean(ntext(k)) if k.tag == 'mo' else
+             (opname(k) if k.tag in ('mover', 'munder', 'munderover')
+              and opname(k) in REL else None) for k in kids]
+    stretch = [not c.linear and k.tag == 'mo' and k.attrs.get('stretchy') == 'true'
+               and texts[i] in FENCE for i, k in enumerate(kids)]
+    boxes = [None if stretch[i] else render(k, c) for i, k in enumerate(kids)]
+    real = [b for b in boxes if b]
+    asc = max((b.base for b in real), default=0)
+    desc = max((b.h - 1 - b.base for b in real), default=0)
+    for i, k in enumerate(kids):
+        if stretch[i]:
+            boxes[i] = fence_box(texts[i], asc, desc)
+    out = []
+
+    def push(b):
+        if b.is_space() and out and out[-1].is_space():
+            return
+        out.append(b)
+
+    last = len(kids) - 1
+    for i, (k, b) in enumerate(zip(kids, boxes)):
+        s = texts[i]
+        padl = padr = False
+        if s is not None and not c.tight:
+            if s in REL:
+                padl, padr = i > 0, i < last
+            elif s in BIN:
+                prev = kids[i - 1] if i else None
+                padl = padr = (prev is not None and i < last and not (
+                    prev.tag == 'mo' and texts[i - 1] not in CLOSE))
+            elif s in (',', ';'):
+                padr = i < last
+        if padl:
+            push(tbox(' '))
+        push(b)
+        if padr:
+            push(tbox(' '))
+        if c.linear and not c.tight and k.tag == 'mfrac' and i < last and texts[i + 1] is None:
+            push(tbox(' '))
+        if not c.tight:
+            nm = opname(k)
+            if nm and (nm in BIGOPS or (len(nm) >= 2 and nm.isalpha())):
+                j = i + 1
+                while j <= last and texts[j] == '':
+                    j += 1
+                if j <= last:
+                    first = unmark(boxes[j].lines[0])[:1]
+                    if first and first not in ' ([{⟨,;.)':
+                        push(tbox(' '))
+    return hcat(out)
+
+
+def r_first(n, c):
+    e = [k for k in elems(n) if not k.tag.startswith('annotation')]
+    return render(e[0], c) if e else tbox('')
+
+
+def r_mstyle(n, c):
+    v = n.attrs.get('mathvariant')
+    b = r_row(n, c.sub(upright=True) if v else c)
+    if v and v.startswith('bold') and b.h == 1 and re.search('[A-Za-z]', unmark(b.lines[0])):
+        b = tbox('\x01' + b.lines[0] + '\x02')
+    return b
+
+
+def r_phantom(n, c):
+    b = r_row(n, c)
+    return Box([re.sub(r'[^ ]', ' ', unmark(l)) for l in b.lines], b.base)
+
+
+def r_frac(n, c):
+    e = elems(n)
+    num, den = render(e[0], c), render(e[1], c)
+    bar = n.attrs.get('linethickness') != '0'
+    if c.linear:
+        if not bar:
+            return tbox('(%s %s)' % (num.lines[0], den.lines[0]))
+        return tbox(atom(num) + '/' + atom(den))
+    w = max(num.w, den.w) + 2
+    lines = [centered(num, w).lines, ['─' * w] if bar else [], centered(den, w).lines]
+    flat = [l for part in lines for l in part]
+    return Box(flat, num.h)
+
+
+def r_sqrt(n, c):
+    b = r_row(n, c)
+    if c.linear:
+        return tbox('√' + atom(b))
+    if b.h == 1 and b.w <= 1:
+        return tbox('√' + b.lines[0])
+    top = ' ' + '‾' * b.w
+    rad = ['√' if i == b.base else ' ' for i in range(b.h)]
+    return hcat([Box([top] + rad, b.base + 1), Box([' '] + b.lines, b.base + 1)])
+
+
+def r_root(n, c):
+    e = elems(n)
+    inner = r_sqrt(_wrap(e[0]), c)
+    idx = render(e[1], c.sub(tight=True)) if len(e) > 1 else None
+    m = mapped(idx, SUPM) if idx else ''
+    pre = tbox(m) if m is not None else tbox('(' + unmark(idx.lines[0]) + ')')
+    return hcat([pre, inner])
+
+
+def _wrap(node):
+    w = N('mrow', {})
+    w.kids = [node]
+    return w
+
+
+def attach(base, sub, sup, c):
+    ms, mp = mapped(sub, SUBM), mapped(sup, SUPM)
+    if ms is not None and mp is not None:
+        return hcat([base, tbox(ms + mp)])
+    if c.linear:
+        def part(b, m, mark):
+            if b is None:
+                return ''
+            return m if m is not None else mark + atom(b)
+        return hcat([base, tbox(part(sub, ms, '_') + part(sup, mp, '^'))])
+    bh = base.h
+    items = []
+    if sup:
+        items.append((0 if bh > 1 else -sup.h, sup))
+    if sub:
+        items.append((bh - sub.h if bh > 1 else 1, sub))
+    lo = min([0] + [s for s, _ in items])
+    hi = max([bh - 1] + [s + b.h - 1 for s, b in items])
+    w = max(b.w for _, b in items)
+    rows = [' ' * w] * (hi - lo + 1)
+    for s, b in items:
+        for i, l in enumerate(b.lines):
+            rows[s - lo + i] = l + ' ' * (w - b.w)
+    return hcat([base, Box(rows, base.base - lo)])
+
+
+def r_script(n, c):
+    e = elems(n)
+    ct = c.sub(tight=True)
+    base = render(e[0], c)
+    r = [render(k, ct) for k in e[1:]]
+    if n.tag == 'msub':
+        return attach(base, r[0], None, c)
+    if n.tag == 'msup':
+        return attach(base, None, r[0], c)
+    return attach(base, r[0], r[1], c)
+
+
+def add_accent(b, comb):
+    if b.h != 1:
+        return None
+    s, out, seen = b.lines[0], [], 0
+    vis = [i for i, ch in enumerate(s) if ch > '\x04' and not ch.isspace()]
+    targets = set(vis) if comb == '\u0305' else set(vis[-1:])
+    for i, ch in enumerate(s):
+        out.append(ch + (comb if i in targets else ''))
+    return Box([''.join(out)], 0) if vis else None
+
+
+def r_limits(n, c):
+    e = elems(n)
+    ct = c.sub(tight=True)
+    base = render(e[0], c)
+    under = over = None
+    if n.tag == 'munder':
+        under = render(e[1], ct)
+    elif n.tag == 'mover':
+        over = render(e[1], ct)
+    else:
+        under, over = render(e[1], ct), render(e[2], ct)
+    if over is not None and under is None and over.h == 1:
+        ot = clean(ntext(e[1]))
+        comb = COMB.get(ot) or (ot if len(ot) == 1 and unicodedata.combining(ot) else None)
+        acc = add_accent(base, comb) if comb else None
+        if acc:
+            return acc
+    if c.linear:
+        return attach(base, under, over, c)
+    parts = [p for p in (over, base, under) if p is not None]
+    w = max(p.w for p in parts)
+    lines = [l for p in parts for l in centered(p, w).lines]
+    return Box(lines, (over.h if over else 0) + base.base)
+
+
+def r_table(n, c):
+    rows = []
+    for tr in elems(n):
+        cells = elems(tr)
+        if tr.tag == 'mlabeledtr':
+            cells = cells[1:]
+        rows.append(cells)
+    if not rows:
+        return tbox('')
+    tab_align = (n.attrs.get('columnalign') or 'center').split()
+    if c.linear:
+        return tbox('; '.join(' '.join(render(td, c).lines[0] for td in r) for r in rows))
+    grid = [[render(td, c) for td in r] for r in rows]
+    ncol = max(len(r) for r in grid)
+    widths = [max((r[j].w for r in grid if j < len(r)), default=0) for j in range(ncol)]
+    gap = 1 if len(set(tab_align)) > 1 or 'right' in tab_align else 2
+    rowboxes = []
+    for r, cells in zip(grid, rows):
+        parts = []
+        for j in range(ncol):
+            if j >= len(r):
+                parts.append(tbox(' ' * widths[j]))
+                continue
+            al = cells[j].attrs.get('columnalign') or tab_align[min(j, len(tab_align) - 1)]
+            parts.append(centered(r[j], widths[j], al))
+            if j < ncol - 1:
+                parts.append(tbox(' ' * gap))
+        rowboxes.append(hcat(parts))
+    spaced = any(b.h > 1 for b in rowboxes)
+    lines = []
+    for i, b in enumerate(rowboxes):
+        if i and spaced:
+            lines.append(' ' * b.w)
+        lines.extend(b.lines)
+    w = max(b.w for b in rowboxes)
+    return Box([l + ' ' * (w - vlen(l)) for l in lines], (len(lines) - 1) // 2)
+
+
+def r_fenced(n, c):
+    op, cl = n.attrs.get('open', '('), n.attrs.get('close', ')')
+    seps = n.attrs.get('separators', ',').split() or [',']
+    kids = elems(n)
+
+    def mo(s, stretchy=False):
+        m = N('mo', {'stretchy': 'true'} if stretchy else {})
+        m.kids = [s]
+        return m
+    row = N('mrow', {})
+    row.kids = [mo(op, True)]
+    for i, k in enumerate(kids):
+        if i:
+            row.kids.append(mo(seps[min(i - 1, len(seps) - 1)]))
+        row.kids.append(k)
+    row.kids.append(mo(cl, True))
+    return r_row(row, c)
+
+
+RENDER = {
+    'mi': r_mi, 'mn': r_tok, 'mo': r_tok, 'ms': r_tok, 'mtext': r_mtext, 'mspace': r_mspace,
+    'mrow': r_row, 'math': r_first, 'semantics': r_first, 'mstyle': r_mstyle,
+    'mphantom': r_phantom, 'mfrac': r_frac, 'msqrt': r_sqrt, 'mroot': r_root,
+    'msub': r_script, 'msup': r_script, 'msubsup': r_script,
+    'munder': r_limits, 'mover': r_limits, 'munderover': r_limits,
+    'mtable': r_table, 'mfenced': r_fenced,
+}
+
+
+def render(n, c):
+    return RENDER.get(n.tag, r_row)(n, c)
+
+
+def trim_lines(lines):
+    lines = [l.rstrip() for l in lines]
+    while lines and not unmark(lines[0]).strip():
+        lines.pop(0)
+    while lines and not unmark(lines[-1]).strip():
+        lines.pop()
+    lead = min((vlen(l) - vlen(l.lstrip()) for l in lines if unmark(l).strip()), default=0)
+    return [l[lead:] for l in lines]
+
+
+def tex_fallback(root):
+    def find(n):
+        for k in elems(n):
+            if k.tag == 'annotation' and 'tex' in k.attrs.get('encoding', ''):
+                return ntext(k)
+            r = find(k)
+            if r:
+                return r
+    return ' '.join((find(root) or ntext(root)).split())
+
+
 # ------------------------------------------------------- XHTML -> text blocks
 
 BLOCK = {'p', 'div', 'section', 'article', 'aside', 'header', 'footer', 'main', 'nav',
@@ -190,6 +642,7 @@ class Extractor(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.blocks, self.buf, self.anchors = [], [], []
+        self.mstack = []
         self.skip = self.pre = self.bq = self.bold = self.ital = self.cell = 0
         self.lists = []
         self.prefix = self.align = None
@@ -213,6 +666,20 @@ class Extractor(HTMLParser):
         self.prefix = self.align = None
         self.kind = 'p'
 
+    def finish_math(self):
+        root, self.mstack = self.mstack[0], []
+        block = root.attrs.get('display') == 'block'
+        try:
+            lines = trim_lines(render(root, Ctx(linear=not block, upright=bool(self.ital))).lines)
+        except Exception:
+            lines = [tex_fallback(root)]
+        if block:
+            self.flush()
+            self.emit_anchors()
+            self.blocks.append(('p', '\n'.join(lines), 0, None, True, 'center'))
+        else:
+            self.buf.append(' '.join(lines).replace(' ', '\x05'))
+
     def emit_anchors(self):
         self.blocks.extend(('anchor', i) for i in self.anchors)
         self.anchors = []
@@ -223,6 +690,14 @@ class Extractor(HTMLParser):
             self.skip += 1
             return
         if self.skip:
+            return
+        if self.mstack:
+            node = N(tag, a)
+            self.mstack[-1].kids.append(node)
+            self.mstack.append(node)
+            return
+        if tag == 'math':
+            self.mstack = [N('math', a)]
             return
         if tag in BLOCK:
             self.flush()
@@ -278,6 +753,15 @@ class Extractor(HTMLParser):
             return
         if self.skip:
             return
+        if self.mstack:
+            if tag == 'math':
+                self.finish_math()
+            else:
+                for i in range(len(self.mstack) - 1, 0, -1):
+                    if self.mstack[i].tag == tag:
+                        del self.mstack[i:]
+                        break
+            return
         if tag in BOLD and self.bold:
             self.bold -= 1
             if not self.bold:
@@ -300,6 +784,9 @@ class Extractor(HTMLParser):
 
     def handle_data(self, data):
         if self.skip:
+            return
+        if self.mstack:
+            self.mstack[-1].kids.append(data)
             return
         data = data.replace('\xa0', '\x05')
         if not self.pre:
@@ -569,6 +1056,8 @@ class Reader:
                 while segs and not re.sub(r'[\x01-\x05\s]', '', segs[-1]):
                     segs.pop()
                 first = True
+                if pre and align == 'center':
+                    indent += max(0, (textw - max((vlen(x) for x in segs), default=0)) // 2)
                 for seg in segs:
                     if pre:
                         lines = [clip(' ' * indent + seg.expandtabs(4), cols - margin - 1)]
@@ -577,7 +1066,7 @@ class Reader:
                               if prefix and first else ' ' * indent)
                         lines = wrap(seg, textw, fp, ' ' * indent) or ['']
                     for ln in lines:
-                        if align == 'center':
+                        if align == 'center' and not pre:
                             ln = ' ' * ((textw - vlen(ln)) // 2) + ln
                         rows.append(('t', style(ln, st), margin))
                     first = False
