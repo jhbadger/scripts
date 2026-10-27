@@ -1,0 +1,1020 @@
+#!/usr/bin/env python3
+"""readepub - a dependency-free terminal EPUB reader (Python 3.8+, stdlib only).
+
+Images are shown inline, in place, when the terminal supports a graphics
+protocol (kitty/Ghostty/WezTerm via the kitty protocol, iTerm2/WezTerm via the
+iTerm2 protocol); otherwise an "[Image: alt]" placeholder is shown.
+
+Keys: space/f/PgDn page down   b/PgUp page up   j/k/arrows scroll a line
+      right/left (or n/p when no search is active) next/previous chapter
+      g/G top/bottom   / search   n/N next/previous match (Esc clears)
+      t table of contents (j/k, Enter)   q quit
+
+Kitty-protocol terminals only accept PNG; JPEG/GIF images are converted with
+`sips` (macOS) or ImageMagick if one is installed, else shown as placeholders.
+"""
+import argparse
+import base64
+import json
+import math
+import os
+import posixpath
+import re
+import select
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import unicodedata
+import xml.etree.ElementTree as ET
+import zipfile
+from html.parser import HTMLParser
+from urllib.parse import unquote
+
+PNG_SIG = b'\x89PNG\r\n\x1a\n'
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
+ANSI_GAP = r'(?:\x1b\[[0-9;]*m)*'
+DIM, RESET = '\x1b[2m', '\x1b[0m'
+
+
+# ---------------------------------------------------------------- EPUB access
+
+def local(tag):
+    return tag.rsplit('}', 1)[-1] if isinstance(tag, str) else ''
+
+
+def decode(data):
+    if data.startswith(b'\xef\xbb\xbf'):
+        data = data[3:]
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        return data.decode('cp1252', 'replace')
+
+
+class NavParser(HTMLParser):
+    """Extracts (depth, text, href) from an EPUB3 <nav epub:type="toc">."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.in_toc = False
+        self.depth = 0
+        self.entries = []
+        self.href = None
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == 'nav' and 'toc' in (a.get('epub:type') or a.get('type') or ''):
+            self.in_toc = True
+        elif self.in_toc and tag == 'ol':
+            self.depth += 1
+        elif self.in_toc and tag == 'a' and a.get('href') is not None:
+            self.href, self.text = a['href'], []
+
+    def handle_endtag(self, tag):
+        if tag == 'nav':
+            self.in_toc = False
+        elif self.in_toc and tag == 'ol':
+            self.depth -= 1
+        elif self.in_toc and tag == 'a' and self.href is not None:
+            title = ' '.join(''.join(self.text).split())
+            self.entries.append((max(0, self.depth - 1), title, self.href))
+            self.href = None
+
+    def handle_data(self, data):
+        if self.href is not None:
+            self.text.append(data)
+
+
+class Book:
+    def __init__(self, path):
+        self.path = path
+        self.z = zipfile.ZipFile(path)
+        self.names = {n.lower(): n for n in self.z.namelist()}
+        container = ET.fromstring(self.read('META-INF/container.xml'))
+        opf_path = next(e.get('full-path') for e in container.iter()
+                        if local(e.tag) == 'rootfile')
+        self.opf_dir = posixpath.dirname(opf_path)
+        opf = ET.fromstring(self.read(opf_path))
+        self.title = os.path.basename(path)
+        manifest, spine, toc_id = {}, [], None
+        for e in opf.iter():
+            t = local(e.tag)
+            if t == 'title' and self.title == os.path.basename(path) and e.text:
+                self.title = e.text.strip()
+            elif t == 'item':
+                manifest[e.get('id')] = (self.resolve(self.opf_dir, e.get('href', '')),
+                                         e.get('media-type', ''), e.get('properties', ''))
+            elif t == 'itemref':
+                spine.append(e.get('idref'))
+            elif t == 'spine':
+                toc_id = e.get('toc')
+        self.chapters = [manifest[i][0] for i in spine if i in manifest]
+        self.index = {p: i for i, p in enumerate(self.chapters)}
+        self.toc = self._load_toc(manifest, toc_id)
+        self.chapter_title = {}
+        for _, title, path, _frag in self.toc:
+            self.chapter_title.setdefault(path, title)
+
+    @staticmethod
+    def resolve(base_dir, href):
+        href = unquote(href.split('#', 1)[0].split('?', 1)[0])
+        return posixpath.normpath(posixpath.join(base_dir, href)) if href else ''
+
+    def read(self, path):
+        name = path if path in self.z.namelist() else self.names.get(path.lower())
+        return self.z.read(name) if name else None
+
+    def _load_toc(self, manifest, toc_id):
+        raw = []  # (depth, title, path, frag)
+        nav = next((v for v in manifest.values() if 'nav' in v[2].split()), None)
+        ncx = manifest.get(toc_id) or next(
+            (v for v in manifest.values() if v[1] == 'application/x-dtbncx+xml'), None)
+        try:
+            if nav and self.read(nav[0]):
+                p = NavParser()
+                p.feed(decode(self.read(nav[0])))
+                base = posixpath.dirname(nav[0])
+                for depth, title, href in p.entries:
+                    raw.append((depth, title, self.resolve(base, href or nav[0]),
+                                href.partition('#')[2] if href else ''))
+            if not raw and ncx and self.read(ncx[0]):
+                base = posixpath.dirname(ncx[0])
+
+                def walk(el, depth):
+                    for c in el:
+                        if local(c.tag) != 'navPoint':
+                            continue
+                        title = src = None
+                        for d in c:
+                            if local(d.tag) == 'navLabel':
+                                title = ' '.join(''.join(d.itertext()).split())
+                            elif local(d.tag) == 'content':
+                                src = d.get('src', '')
+                        if src is not None:
+                            raw.append((depth, title or '', self.resolve(base, src),
+                                        unquote(src.partition('#')[2])))
+                        walk(c, depth + 1)
+                root = ET.fromstring(self.read(ncx[0]))
+                for m in root.iter():
+                    if local(m.tag) == 'navMap':
+                        walk(m, 0)
+        except Exception:
+            raw = []
+        toc = [e for e in raw if e[2] in self.index]
+        if not toc:
+            toc = [(0, 'Section %d' % (i + 1), p, '') for i, p in enumerate(self.chapters)]
+        return toc
+
+
+# ------------------------------------------------------- XHTML -> text blocks
+
+BLOCK = {'p', 'div', 'section', 'article', 'aside', 'header', 'footer', 'main', 'nav',
+         'figure', 'figcaption', 'blockquote', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'table',
+         'tr', 'pre', 'body', 'address', 'details', 'summary', 'caption', 'tbody', 'thead',
+         'tfoot', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
+HEADINGS = {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
+SKIP = {'script', 'style', 'head', 'title'}
+BOLD = HEADINGS | {'b', 'strong', 'th', 'dt'}
+ITAL = {'i', 'em', 'cite', 'var', 'dfn'}
+# inline style markers inside text: \x01/\x02 bold on/off, \x03/\x04 italic on/off,
+# \x05 non-breaking space
+
+
+class Extractor(HTMLParser):
+    """Produces blocks: ('p'|'li'|'row', text, indent, prefix, pre, align),
+    ('img', src, alt), ('hr',), ('anchor', id)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks, self.buf, self.anchors = [], [], []
+        self.skip = self.pre = self.bq = self.bold = self.ital = self.cell = 0
+        self.lists = []
+        self.prefix = self.align = None
+        self.kind = 'p'
+
+    def flush(self):
+        text = ''.join(self.buf)
+        self.buf = []
+        if self.bold:
+            self.buf.append('\x01')
+        if self.ital:
+            self.buf.append('\x03')
+        if not re.sub(r'[\x01-\x05\s]', '', text):
+            return
+        indent = self.bq * 4 + len(self.lists) * 3
+        if self.prefix:
+            indent = max(indent, 3)
+        self.emit_anchors()
+        self.blocks.append(('li' if self.prefix else self.kind, text, indent, self.prefix,
+                            bool(self.pre), self.align))
+        self.prefix = self.align = None
+        self.kind = 'p'
+
+    def emit_anchors(self):
+        self.blocks.extend(('anchor', i) for i in self.anchors)
+        self.anchors = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag in SKIP:
+            self.skip += 1
+            return
+        if self.skip:
+            return
+        if tag in BLOCK:
+            self.flush()
+        if a.get('id'):
+            self.anchors.append(a['id'])
+        if tag == 'br':
+            self.buf.append('\n')
+        elif tag in ('img', 'image'):
+            src = a.get('src') or a.get('xlink:href') or a.get('href')
+            if src:
+                self.flush()
+                self.emit_anchors()
+                self.blocks.append(('img', src, a.get('alt', '')))
+        elif tag == 'hr':
+            self.emit_anchors()
+            self.blocks.append(('hr',))
+        elif tag in ('ul', 'ol'):
+            try:
+                start = int(a.get('start', 1)) - 1
+            except ValueError:
+                start = 0
+            self.lists.append([tag, start])
+        elif tag == 'li':
+            if self.lists and self.lists[-1][0] == 'ol':
+                self.lists[-1][1] += 1
+                self.prefix = '%d.' % self.lists[-1][1]
+            else:
+                self.prefix = '•'
+        elif tag == 'blockquote':
+            self.bq += 1
+        elif tag == 'pre':
+            self.pre += 1
+        elif tag == 'tr':
+            self.kind, self.cell = 'row', 0
+        elif tag in ('td', 'th'):
+            if self.cell:
+                self.buf.append(' │ ')
+            self.cell += 1
+        elif tag in ('h1', 'h2'):
+            self.align = 'center'
+        if tag in BOLD:
+            self.bold += 1
+            if self.bold == 1:
+                self.buf.append('\x01')
+        if tag in ITAL:
+            self.ital += 1
+            if self.ital == 1:
+                self.buf.append('\x03')
+
+    def handle_endtag(self, tag):
+        if tag in SKIP:
+            self.skip = max(0, self.skip - 1)
+            return
+        if self.skip:
+            return
+        if tag in BOLD and self.bold:
+            self.bold -= 1
+            if not self.bold:
+                self.buf.append('\x02')
+        if tag in ITAL and self.ital:
+            self.ital -= 1
+            if not self.ital:
+                self.buf.append('\x04')
+        if tag in BLOCK:
+            self.flush()
+        if tag in ('li', 'tr') or tag in HEADINGS:
+            self.prefix = self.align = None
+            self.kind = 'p'
+        if tag == 'blockquote':
+            self.bq = max(0, self.bq - 1)
+        elif tag == 'pre':
+            self.pre = max(0, self.pre - 1)
+        elif tag in ('ul', 'ol') and self.lists:
+            self.lists.pop()
+
+    def handle_data(self, data):
+        if self.skip:
+            return
+        data = data.replace('\xa0', '\x05')
+        if not self.pre:
+            data = re.sub(r'[ \t\r\n\f\v]+', ' ', data)
+        self.buf.append(data)
+
+
+def vlen(s):
+    n = 0
+    for c in s:
+        if c == '\x05':
+            n += 1
+        elif c < '\x05':
+            continue
+        elif unicodedata.category(c) in ('Mn', 'Me', 'Cf'):
+            continue
+        else:
+            n += 2 if unicodedata.east_asian_width(c) in 'WF' else 1
+    return n
+
+
+def wrap(text, width, first, rest):
+    words = text.split()
+    lines, cur, curw, prefix = [], [], 0, first
+    for w in words:
+        ww = vlen(w)
+        while ww > max(8, width - len(prefix)):
+            if cur:
+                lines.append(prefix + ' '.join(cur))
+                prefix, cur, curw = rest, [], 0
+                continue
+            avail, acc, take = max(8, width - len(prefix)), 0, 0
+            for i, c in enumerate(w):
+                cw = vlen(c)
+                if acc + cw > avail:
+                    break
+                acc, take = acc + cw, i + 1
+            take = max(take, 1)
+            lines.append(prefix + w[:take])
+            prefix, w = rest, w[take:]
+            ww = vlen(w)
+        if not w:
+            continue
+        if cur and curw + 1 + ww > width - len(prefix):
+            lines.append(prefix + ' '.join(cur))
+            prefix, cur, curw = rest, [], 0
+        curw += ww + (1 if cur else 0)
+        cur.append(w)
+    if cur:
+        lines.append(prefix + ' '.join(cur))
+    return lines
+
+
+def clip(s, width):
+    out, n = [], 0
+    for c in s:
+        n += vlen(c)
+        if n > width:
+            break
+        out.append(c)
+    return ''.join(out)
+
+
+def style(line, st):
+    """Turn style markers into ANSI, carrying bold/italic state (st) across lines."""
+    out = []
+    if st[0]:
+        out.append('\x1b[1m')
+    if st[1]:
+        out.append('\x1b[3m')
+    for c in line:
+        if c == '\x01':
+            st[0] = 1
+            out.append('\x1b[1m')
+        elif c == '\x02':
+            st[0] = 0
+            out.append('\x1b[22m')
+        elif c == '\x03':
+            st[1] = 1
+            out.append('\x1b[3m')
+        elif c == '\x04':
+            st[1] = 0
+            out.append('\x1b[23m')
+        elif c == '\x05':
+            out.append(' ')
+        else:
+            out.append(c)
+    if st[0] or st[1]:
+        out.append(RESET)
+    return ''.join(out)
+
+
+# ------------------------------------------------------------- image helpers
+
+def image_size(d):
+    try:
+        if d.startswith(PNG_SIG):
+            return struct.unpack('>II', d[16:24])
+        if d[:3] == b'GIF':
+            return struct.unpack('<HH', d[6:10])
+        if d[:2] == b'\xff\xd8':
+            i = 2
+            while i + 9 < len(d):
+                if d[i] != 0xFF:
+                    i += 1
+                    continue
+                m = d[i + 1]
+                if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7:
+                    i += 2
+                    continue
+                if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+                    h, w = struct.unpack('>HH', d[i + 5:i + 9])
+                    return w, h
+                i += 2 + struct.unpack('>H', d[i + 2:i + 4])[0]
+        if d[:4] == b'RIFF' and d[8:12] == b'WEBP':
+            if d[12:16] == b'VP8X':
+                return (int.from_bytes(d[24:27], 'little') + 1,
+                        int.from_bytes(d[27:30], 'little') + 1)
+            if d[12:16] == b'VP8 ':
+                w, h = struct.unpack('<HH', d[26:30])
+                return w & 0x3FFF, h & 0x3FFF
+            if d[12:16] == b'VP8L':
+                bits = int.from_bytes(d[21:25], 'little')
+                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    except Exception:
+        pass
+    return None
+
+
+def to_png(data):
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, 'in'), os.path.join(d, 'out.png')
+        with open(src, 'wb') as f:
+            f.write(data)
+        for cmd in (['sips', '-s', 'format', 'png', src, '--out', dst],
+                    ['magick', src, dst], ['convert', src, dst]):
+            if shutil.which(cmd[0]):
+                try:
+                    subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+                    with open(dst, 'rb') as f:
+                        return f.read()
+                except Exception:
+                    continue
+    return None
+
+
+def detect_graphics():
+    env = os.environ
+    if env.get('TMUX') or env.get('STY'):
+        return None  # needs passthrough; use --images to force
+    tp, term = env.get('TERM_PROGRAM', ''), env.get('TERM', '')
+    if tp in ('iTerm.app', 'WezTerm') or env.get('LC_TERMINAL') == 'iTerm2':
+        return 'iterm'
+    if ('kitty' in term or 'ghostty' in term or env.get('KITTY_WINDOW_ID')
+            or tp == 'ghostty'):
+        return 'kitty'
+    return None
+
+
+# -------------------------------------------------------------------- reader
+
+class Reader:
+    def __init__(self, book, gfx):
+        self.book, self.gfx = book, gfx
+        self.blocks_cache, self.layout_cache = {}, {}
+        self.payloads, self.seqs = {}, {}
+        self.cell = (8, 16)
+        self.ci = 0
+        self.top = 0
+        self.rows, self.anchors = [], {}
+        self.size = (80, 24)
+        self.mode = 'read'
+        self.sel = 0
+        self.pending = []
+        self.query, self.hit, self.msg = '', None, ''
+        self.dirty = True
+
+    # ---- content
+    def blocks(self, ci):
+        if ci not in self.blocks_cache:
+            data = self.book.read(self.book.chapters[ci])
+            p = Extractor()
+            if data is not None:
+                p.feed(decode(data))
+                p.flush()
+            self.blocks_cache[ci] = p.blocks
+        return self.blocks_cache[ci]
+
+    def payload(self, path):
+        if path not in self.payloads:
+            data = self.book.read(path)
+            if data is None or path.lower().endswith('.svg') or data[:5] == b'<?xml':
+                data = None
+            elif self.gfx == 'kitty' and not data.startswith(PNG_SIG):
+                size = image_size(data)
+                data = to_png(data)
+                if data and size:
+                    self.payloads[path + '#size'] = size
+            self.payloads[path] = data
+        return self.payloads[path]
+
+    def fit(self, path, cols, rn):
+        data = self.payload(path)
+        size = self.payloads.get(path + '#size') or image_size(data) or (800, 600)
+        w, h = max(size[0], 1), max(size[1], 1)
+        cw, ch = self.cell
+        maxc, maxr = max(1, cols - 2), max(1, rn - 3)
+        c = min(maxc, max(1, math.ceil(w / cw)))
+        r = max(1, round(h * c * cw / (w * ch)))
+        if r > maxr:
+            r = maxr
+            c = max(1, min(maxc, round(w * r * ch / (h * cw))))
+        return c, r
+
+    def image_seq(self, path, c, r):
+        key = (path, c, r)
+        if key not in self.seqs:
+            b64 = base64.b64encode(self.payload(path)).decode()
+            if self.gfx == 'iterm':
+                seq = ('\x1b]1337;File=inline=1;width=%d;height=%d;'
+                       'preserveAspectRatio=1:%s\x07' % (c, r, b64))
+            else:
+                chunks = [b64[i:i + 4096] for i in range(0, len(b64), 4096)] or ['']
+                parts = []
+                for n, ch in enumerate(chunks):
+                    more = 1 if n < len(chunks) - 1 else 0
+                    head = ('a=T,f=100,c=%d,r=%d,C=1,q=2,' % (c, r)) if n == 0 else ''
+                    parts.append('\x1b_G%sm=%d;%s\x1b\\' % (head, more, ch))
+                seq = ''.join(parts)
+            self.seqs[key] = seq
+        return self.seqs[key]
+
+    def layout(self, ci, cols, rn):
+        key = (ci, cols, rn)
+        if key in self.layout_cache:
+            return self.layout_cache[key]
+        textw = min(max(20, cols - 4), 80)
+        margin = (cols - textw) // 2
+        rows, anchors, prev = [], {}, None
+        base = posixpath.dirname(self.book.chapters[ci])
+
+        def gap(kind):
+            if prev is not None and not (kind == prev and kind in ('li', 'row')):
+                rows.append(('t', '', 0))
+
+        for b in self.blocks(ci):
+            k = b[0]
+            if k == 'anchor':
+                anchors.setdefault(b[1], len(rows))
+                continue
+            gap(k)
+            if k == 'hr':
+                rows.append(('t', DIM + '─' * textw + RESET, margin))
+            elif k == 'img':
+                path = Book.resolve(base, b[1])
+                if self.gfx and self.payload(path):
+                    c, r = self.fit(path, cols, rn)
+                    for n in range(r):
+                        rows.append(('i', path, n, r, c, (cols - c) // 2, b[2]))
+                else:
+                    label = b[2] or posixpath.basename(path)
+                    rows.append(('t', DIM + '[Image: %s]' % label + RESET, margin))
+            else:
+                _, text, indent, prefix, pre, align = b
+                st = [0, 0]
+                segs = text.split('\n')
+                while segs and not re.sub(r'[\x01-\x05\s]', '', segs[-1]):
+                    segs.pop()
+                first = True
+                for seg in segs:
+                    if pre:
+                        lines = [clip(' ' * indent + seg.expandtabs(4), cols - margin - 1)]
+                    else:
+                        fp = (' ' * max(0, indent - len(prefix) - 1) + prefix + ' '
+                              if prefix and first else ' ' * indent)
+                        lines = wrap(seg, textw, fp, ' ' * indent) or ['']
+                    for ln in lines:
+                        if align == 'center':
+                            ln = ' ' * ((textw - vlen(ln)) // 2) + ln
+                        rows.append(('t', style(ln, st), margin))
+                    first = False
+            prev = k
+        self.layout_cache[key] = (rows, anchors)
+        return rows, anchors
+
+    # ---- navigation
+    @property
+    def h(self):
+        return max(1, self.size[1] - 1)
+
+    @property
+    def max_top(self):
+        return max(0, len(self.rows) - self.h)
+
+    def relayout(self):
+        self.rows, self.anchors = self.layout(self.ci, *self.size)
+
+    def goto(self, ci, frag=None, end=False):
+        self.ci = max(0, min(ci, len(self.book.chapters) - 1))
+        self.relayout()
+        self.top = self.anchors.get(frag, 0) if frag else 0
+        if end:
+            self.top = self.max_top
+        self.top = min(self.top, self.max_top)
+        self.dirty = True
+
+    def span(self, i):
+        r = self.rows[i]
+        return (i - r[2], i - r[2] + r[3]) if r[0] == 'i' else None
+
+    def page_down(self):
+        if self.top >= self.max_top:
+            if self.ci + 1 < len(self.book.chapters):
+                self.goto(self.ci + 1)
+            return
+        new = max(self.top + 1, self.top + self.h - 2)
+        if new < len(self.rows) and self.span(new):
+            s, e = self.span(new)
+            new = s if s > self.top else e
+        self.top, self.dirty = min(new, self.max_top), True
+
+    def page_up(self):
+        if self.top <= 0:
+            if self.ci > 0:
+                self.goto(self.ci - 1, end=True)
+            return
+        new = max(0, self.top - self.h + 2)
+        if new < len(self.rows) and self.span(new):
+            s, e = self.span(new)
+            new = s if s < new else new
+        self.top, self.dirty = new, True
+
+    def scroll(self, n):
+        self.top = max(0, min(self.max_top, self.top + n))
+        self.dirty = True
+
+    # ---- drawing
+    def render(self):
+        cols, rn = self.size
+        out = []
+        if self.gfx == 'kitty':
+            out.append('\x1b_Ga=d,d=A,q=2\x1b\\')
+        out.append('\x1b[2J')
+        if self.mode == 'toc':
+            self.render_toc(out)
+        else:
+            for y in range(self.h):
+                i = self.top + y
+                if i >= len(self.rows):
+                    break
+                r = self.rows[i]
+                if r[0] == 't':
+                    out.append('\x1b[%d;%dH%s%s' % (y + 1, r[2] + 1, self.highlight(r[1]), RESET))
+                    continue
+                _, path, k, n, c, x, alt = r
+                if k == 0 and i + n <= self.top + self.h:
+                    out.append('\x1b[%d;%dH%s' % (y + 1, x + 1, self.image_seq(path, c, n)))
+                elif k == 0 or i == self.top:
+                    out.append('\x1b[%d;%dH%s[Image continues — scroll]%s'
+                               % (y + 1, max(0, (cols - 24) // 2) + 1, DIM, RESET))
+            title = self.book.chapter_title.get(self.book.chapters[self.ci],
+                                                posixpath.basename(self.book.chapters[self.ci]))
+            pct = min(100, (self.top + self.h) * 100 // max(1, len(self.rows)))
+            bar = ' %s · %d/%d · %d%% · ' % (
+                title, self.ci + 1, len(self.book.chapters), pct)
+            bar += self.msg or ('/%s · n/N match · Esc clear' % self.query if self.query
+                                else 'space/b page · n/p chapter · / search · t toc · q quit')
+            self.msg = ''
+            out.append('\x1b[%d;1H\x1b[7m%s\x1b[0m' % (rn, clip(bar, cols).ljust(cols)))
+        sys.stdout.write(''.join(out))
+        sys.stdout.flush()
+        self.dirty = False
+
+    def render_toc(self, out):
+        cols, rn = self.size
+        toc = self.book.toc
+        top = max(0, min(self.sel - self.h // 2, len(toc) - self.h))
+        for y in range(self.h):
+            i = top + y
+            if i >= len(toc):
+                break
+            d, title = toc[i][0], toc[i][1]
+            line = clip('  ' * d + title, cols - 4)
+            mark = '\x1b[7m' if i == self.sel else ''
+            out.append('\x1b[%d;3H%s %s \x1b[0m' % (y + 1, mark, line))
+        out.append('\x1b[%d;1H\x1b[7m%s\x1b[0m' % (
+            rn, clip(' Contents · j/k move · Enter open · t/q back', cols).ljust(cols)))
+
+    # ---- input
+    KEYS = {'\x1b[A': 'up', '\x1b[B': 'down', '\x1b[C': 'right', '\x1b[D': 'left',
+            '\x1b[5~': 'pgup', '\x1b[6~': 'pgdn', '\x1b[H': 'home', '\x1b[F': 'end',
+            '\x1b[1~': 'home', '\x1b[4~': 'end', '\x1bOA': 'up', '\x1bOB': 'down',
+            '\x1bOC': 'right', '\x1bOD': 'left', '\x1bOH': 'home', '\x1bOF': 'end'}
+
+    def read_key(self, timeout):
+        if self.pending:
+            return self.pending.pop(0)
+        fd = sys.stdin.fileno()
+        if not select.select([fd], [], [], timeout)[0]:
+            return None
+        data = os.read(fd, 64).decode('utf-8', 'ignore')
+        keys, i = [], 0
+        while i < len(data):
+            if data[i] == '\x1b':
+                for n in (4, 3):
+                    if data[i:i + n] in self.KEYS:
+                        keys.append(self.KEYS[data[i:i + n]])
+                        i += n
+                        break
+                else:
+                    keys.append('esc')
+                    i += 1
+            else:
+                keys.append(data[i])
+                i += 1
+        self.pending = keys[1:]
+        return keys[0] if keys else None
+
+    # ---- search
+    def prompt(self, label):
+        """Line input on the status row; returns None if cancelled."""
+        cols, rn = self.size
+        text = ''
+        while True:
+            line = clip(label + text, cols - 1)
+            sys.stdout.write('\x1b[%d;1H\x1b[0m%s\x1b[K\x1b[?25h' % (rn, line))
+            sys.stdout.flush()
+            k = self.read_key(0.25)
+            if k is None:
+                self.check_resize()
+                cols, rn = self.size
+                if self.dirty:
+                    self.render()
+                continue
+            if k in ('\r', '\n'):
+                break
+            if k in ('esc', '\x03'):
+                text = None
+                break
+            if k in ('\x7f', '\x08'):
+                text = text[:-1]
+            elif len(k) == 1 and k >= ' ':
+                text += k
+        sys.stdout.write('\x1b[?25l')
+        return text
+
+    @staticmethod
+    def norm(text):
+        return ' '.join(re.sub(r'[\x01-\x04]', '', text).replace('\x05', ' ').split()).lower()
+
+    def chapter_text(self, ci):
+        """Cheap per-chapter plain text (no layout) used to skip chapters without hits."""
+        cache = self.__dict__.setdefault('_ctext', {})
+        if ci not in cache:
+            cache[ci] = self.norm(' '.join(b[1] for b in self.blocks(ci) if b[0] in ('p', 'li', 'row')))
+        return cache[ci]
+
+    def chapter_hits(self, ci):
+        """Sorted row numbers where the query starts in chapter ci."""
+        rows, _ = self.layout(ci, *self.size)
+        text, starts = [], []
+        pos = 0
+        for i, r in enumerate(rows):
+            if r[0] != 't':
+                continue
+            plain = ANSI_RE.sub('', r[1]).strip().lower()
+            if not plain:
+                continue
+            starts.append((pos, i))
+            text.append(plain)
+            pos += len(plain) + 1
+        joined = ' '.join(text)
+        hits, at = [], joined.find(self.query)
+        while at >= 0:
+            row = starts[0][1]
+            for p, i in starts:
+                if p > at:
+                    break
+                row = i
+            if not hits or hits[-1] != row:
+                hits.append(row)
+            at = joined.find(self.query, at + 1)
+        return hits
+
+    def find(self, forward=True):
+        n = len(self.book.chapters)
+        if self.hit and self.hit[0] == self.ci and self.top <= self.hit[1] < self.top + self.h:
+            cur = self.hit[1]
+        else:
+            cur = self.top - 1 if forward else self.top
+        for step in range(n + 1):
+            ci = (self.ci + (step if forward else -step)) % n
+            if step and ci == self.ci and step < n:
+                continue
+            if self.query not in self.chapter_text(ci):
+                continue
+            hits = self.chapter_hits(ci)
+            if step == 0:
+                hits = [r for r in hits if (r > cur if forward else r < cur)]
+            elif step == n:  # wrapped all the way round to the starting chapter
+                hits = [r for r in hits if (r <= cur if forward else r >= cur)]
+            if hits:
+                row = hits[0] if forward else hits[-1]
+                if ci != self.ci:
+                    self.goto(ci)
+                self.top = max(0, min(self.max_top, row - self.h // 3))
+                self.hit, self.dirty = (ci, row), True
+                return True
+        self.msg = 'Not found: %s' % self.query
+        self.dirty = True
+        return False
+
+    def search(self):
+        text = self.prompt('/')
+        if text is None or not self.norm(text):
+            self.dirty = True
+            return
+        self.query, self.hit = self.norm(text), None
+        self.find(True)
+
+    def highlight(self, line):
+        if not self.query:
+            return line
+        pat = ANSI_GAP.join(re.escape(c) for c in self.query)
+        return re.sub(pat, lambda m: '\x1b[7m' + m.group(0) + '\x1b[27m', line, flags=re.I)
+
+    def open_toc(self):
+        self.mode = 'toc'
+        path = self.book.chapters[self.ci]
+        cur = 0
+        for i, e in enumerate(self.book.toc):
+            if self.book.index[e[2]] <= self.ci:
+                cur = i
+        self.sel = cur
+        self.dirty = True
+
+    def handle(self, k):
+        if k in ('q', 'Q', '\x03', '\x04'):
+            return False
+        if self.mode == 'toc':
+            n = len(self.book.toc)
+            if k in ('j', 'down'):
+                self.sel = min(n - 1, self.sel + 1)
+            elif k in ('k', 'up'):
+                self.sel = max(0, self.sel - 1)
+            elif k == 'pgdn' or k == ' ':
+                self.sel = min(n - 1, self.sel + self.h)
+            elif k == 'pgup' or k == 'b':
+                self.sel = max(0, self.sel - self.h)
+            elif k in ('g', 'home'):
+                self.sel = 0
+            elif k in ('G', 'end'):
+                self.sel = n - 1
+            elif k in ('\r', '\n'):
+                _, _, path, frag = self.book.toc[self.sel]
+                self.mode = 'read'
+                self.goto(self.book.index[path], frag)
+            elif k in ('t', 'esc'):
+                self.mode = 'read'
+            self.dirty = True
+            return True
+        if k in (' ', 'f', 'pgdn', '\x06'):
+            self.page_down()
+        elif k in ('b', 'pgup', '\x02'):
+            self.page_up()
+        elif k in ('j', 'down', '\r', '\n'):
+            self.scroll(1)
+        elif k in ('k', 'up'):
+            self.scroll(-1)
+        elif k == '/':
+            self.search()
+        elif k in ('n', 'N') and self.query:
+            self.find(k == 'n')
+        elif k == 'esc' and self.query:
+            self.query, self.hit, self.dirty = '', None, True
+        elif k in ('n', 'right', 'l', ']'):
+            if self.ci + 1 < len(self.book.chapters):
+                self.goto(self.ci + 1)
+        elif k in ('p', 'left', 'h', '['):
+            if self.ci > 0:
+                self.goto(self.ci - 1)
+        elif k in ('g', 'home'):
+            self.top, self.dirty = 0, True
+        elif k in ('G', 'end'):
+            self.top, self.dirty = self.max_top, True
+        elif k == 't':
+            self.open_toc()
+        return True
+
+    def check_resize(self):
+        sz = shutil.get_terminal_size((80, 24))
+        sz = (sz.columns, sz.lines)
+        if sz != self.size:
+            frac = self.top / max(1, len(self.rows))
+            self.size = sz
+            self.cell = cell_px(sys.stdout.fileno())
+            self.layout_cache.clear()
+            self.relayout()
+            self.top = min(self.max_top, int(frac * len(self.rows)))
+            self.dirty = True
+
+    def run(self, chapter, frac=0.0):
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            sys.stdout.write('\x1b[?1049h\x1b[?25l')
+            self.size = (0, 0)
+            self.check_resize()
+            self.goto(chapter)
+            if frac:
+                self.top = min(self.max_top, round(frac * len(self.rows)))
+            while True:
+                self.check_resize()
+                if self.dirty:
+                    self.render()
+                k = self.read_key(0.25)
+                if k is not None and not self.handle(k):
+                    break
+        finally:
+            save_position(self.book.path, self.ci, self.top / max(1, len(self.rows)))
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            if self.gfx == 'kitty':
+                sys.stdout.write('\x1b_Ga=d,d=A,q=2\x1b\\')
+            sys.stdout.write('\x1b[?25h\x1b[?1049l')
+            sys.stdout.flush()
+
+
+STATE_FILE = os.path.join(os.path.expanduser('~'), '.readepub')
+
+
+def _load_state():
+    try:
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def load_position(path):
+    """Return (chapter index, fractional offset) last saved for this book."""
+    try:
+        pos = _load_state()[os.path.realpath(path)]
+        return int(pos['chapter']), float(pos['offset'])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_position(path, chapter, offset):
+    state = _load_state()
+    state[os.path.realpath(path)] = {'chapter': chapter, 'offset': round(offset, 6)}
+    try:
+        tmp = STATE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(state, f, indent=1)
+        os.replace(tmp, STATE_FILE)
+    except OSError:
+        pass
+
+
+def cell_px(fd):
+    try:
+        import fcntl
+        import termios
+        r, c, xp, yp = struct.unpack('HHHH', fcntl.ioctl(fd, termios.TIOCGWINSZ, b'\0' * 8))
+        if r and c and xp and yp:
+            return xp / c, yp / r
+    except Exception:
+        pass
+    return (8, 16)
+
+
+def main():
+    ap = argparse.ArgumentParser(description='Terminal EPUB reader (no dependencies).')
+    ap.add_argument('epub')
+    ap.add_argument('-c', '--chapter', type=int, help='start at chapter N (1-based), ignoring the saved position')
+    ap.add_argument('--images', choices=['auto', 'kitty', 'iterm', 'none'], default='auto',
+                    help='graphics protocol (default: auto-detect)')
+    ap.add_argument('--dump', action='store_true', help='print plain text and exit')
+    ap.add_argument('--toc', action='store_true', help='print table of contents and exit')
+    args = ap.parse_args()
+
+    try:
+        book = Book(args.epub)
+    except Exception as e:
+        sys.exit('readepub: cannot open %s: %s' % (args.epub, e))
+    if not book.chapters:
+        sys.exit('readepub: no readable chapters in %s' % args.epub)
+
+    if args.toc:
+        for d, title, path, frag in book.toc:
+            print('  ' * d + title)
+        return
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    gfx = None if args.images == 'none' else (
+        detect_graphics() if args.images == 'auto' else args.images)
+    if args.dump or not interactive:
+        rd = Reader(book, None)
+        for ci in range(len(book.chapters)):
+            rows, _ = rd.layout(ci, 80, 24)
+            for r in rows:
+                print(' ' * r[2] + re.sub(r'\x1b\[[0-9;]*m', '', r[1]) if r[0] == 't' else '')
+            print()
+        return
+    last = len(book.chapters) - 1
+    if args.chapter:
+        start = (max(0, min(args.chapter - 1, last)), 0.0)
+    else:
+        saved = load_position(args.epub)
+        start = (max(0, min(saved[0], last)), max(0.0, min(saved[1], 1.0))) if saved else (0, 0.0)
+    Reader(book, gfx).run(*start)
+
+
+if __name__ == '__main__':
+    main()
