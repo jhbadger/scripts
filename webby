@@ -976,6 +976,7 @@ ABOUT_HOME = """<html><head><title>webby</title></head><body>
 
 ABOUT_HELP = """<html><head><title>webby help</title></head><body>
 <h1>webby help</h1>
+<p><b>Press q or Esc to leave this page</b> (or b / Left / Backspace to go back).</p>
 <h2>Navigation</h2>
 <pre>
 g, o, Ctrl-L        go to a URL, file or search words (click the URL bar too)
@@ -2650,7 +2651,12 @@ class Browser:
                 self.handle_mouse(*k[1:])
             return
         vh = self.vh
-        if k in ("q", "ctrl-q"):
+        if self.page and self.page.url == "about:help" and k in ("q", "esc"):
+            if self.hpos > 0:                   # leave the help page, don't quit
+                self.go(-1)
+            else:
+                self.navigate("about:home")
+        elif k in ("q", "ctrl-q"):
             self.quit = True
         elif k in ("t", "ctrl-t"):
             self.new_tab()
