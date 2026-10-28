@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+"""tkinvaders - Space Invaders in Python + Tk, standard library only.
+
+Port of the Oberon/Raylib invaders example.
+
+Controls:
+  Left / Right arrow : move ship
+  Space              : fire
+  Enter              : restart after game over / win
+  M                  : mute
+  Esc / Q            : quit
+
+Sound effects are synthesized at startup (same waveforms as the Raylib
+version) and played with afplay (macOS), paplay or aplay if one is available.
+"""
+
+import array
+import atexit
+import math
+import os
+import random
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tkinter as tk
+import wave
+
+W, H = 800, 600
+ROWS, COLS = 5, 11
+NALIENS = ROWS * COLS
+
+CELL_W, CELL_H = 55, 45
+ALIEN_W, ALIEN_H = 36, 28
+
+GRID_X0 = 62
+GRID_Y0 = 80
+GRID_DROP = 20
+
+PLAYER_W, PLAYER_H = 44, 20
+PLAYER_Y = 536
+PLAYER_SPD = 280.0
+
+PBUL_W, PBUL_H = 4, 14
+PBUL_SPD = 500.0
+
+ABUL_W, ABUL_H = 5, 12
+ABUL_SPD = 180.0
+MAX_ABUL = 3
+
+ALIEN_SPD0 = 60.0
+ABUL_INTERVAL = 1.5
+
+PHASE_PLAY, PHASE_OVER, PHASE_WIN = 0, 1, 2
+
+FRAME_MS = 16
+
+BLACK = "#000000"
+WHITE = "#ffffff"
+GREEN = "#00e430"     # Raylib GREEN
+RED = "#e62937"       # Raylib RED
+YELLOW = "#fdf900"    # Raylib YELLOW
+CYAN = "#66bfff"      # Raylib SKYBLUE
+MAGENTA = "#ff00ff"   # Raylib MAGENTA
+
+
+# ── Sound ────────────────────────────────────────────────────────────────────
+
+RATE = 22050
+
+
+def square(phase):
+    return 1.0 if phase % 1.0 < 0.5 else -1.0
+
+
+def gen_shoot():
+    """Square wave sweeping 800 -> 200 Hz with a linear fade, 1/4 s."""
+    n, pa, out = RATE // 4, 0.0, []
+    for i in range(n):
+        frac = i / n
+        pa += (800.0 - 600.0 * frac) / RATE
+        out.append((1.0 - frac) * 0.35 * square(pa))
+    return out
+
+
+def gen_march(phase):
+    """~83 ms square-wave thump, alternating 160 Hz / 100 Hz."""
+    freq = 100.0 if phase & 1 else 160.0
+    n, pa, out = RATE // 12, 0.0, []
+    for i in range(n):
+        t = i / n
+        amp = (t / 0.1 if t < 0.1 else 1.0 - t) * 0.5
+        pa += freq / RATE
+        out.append(amp * square(pa))
+    return out
+
+
+def gen_explode():
+    """Exponentially decaying LCG noise, 0.45 s."""
+    n, seed, out = int(RATE * 0.45), 0xDEADBEEF, []
+    for i in range(n):
+        seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+        noise = (seed >> 16) / 32768.0 - 1.0
+        out.append(math.exp(-5.0 * i / n) * 0.5 * noise)
+    return out
+
+
+class Sound:
+    def __init__(self):
+        self.muted = False
+        self.player = None
+        self.files = {}
+        for cmd in (["afplay"], ["paplay"], ["aplay", "-q"]):
+            if shutil.which(cmd[0]):
+                self.player = cmd
+                break
+        if not self.player:
+            return
+        self.dir = tempfile.mkdtemp(prefix="tkinvaders-")
+        atexit.register(shutil.rmtree, self.dir, True)
+        for name, samples in (("shoot", gen_shoot()),
+                              ("march0", gen_march(0)),
+                              ("march1", gen_march(1)),
+                              ("explode", gen_explode())):
+            path = os.path.join(self.dir, name + ".wav")
+            pcm = array.array("h", (int(max(-1.0, min(1.0, v)) * 32000)
+                                    for v in samples))
+            if sys.byteorder == "big":
+                pcm.byteswap()
+            with wave.open(path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(RATE)
+                w.writeframes(pcm.tobytes())
+            self.files[name] = path
+
+    def play(self, name):
+        path = self.files.get(name)
+        if self.muted or not path:
+            return
+        try:
+            subprocess.Popen(self.player + [path], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+
+
+# ── Game ─────────────────────────────────────────────────────────────────────
+
+def overlaps(ax, ay, aw, ah, bx, by, bw, bh):
+    return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+
+
+def alien_row(i):
+    return i // COLS
+
+
+def alien_col(i):
+    return i % COLS
+
+
+class Invaders:
+    def __init__(self, root):
+        self.root = root
+        self.sound = Sound()
+        root.title("Space Invaders")
+        root.resizable(False, False)
+        self.canvas = tk.Canvas(root, width=W, height=H, bg=BLACK,
+                                highlightthickness=0)
+        self.canvas.pack()
+
+        self.keys = set()          # keys currently held
+        self.release_jobs = {}     # pending key releases (see on_key_release)
+        self.fire_pressed = False  # Space went down since the last frame
+
+        root.bind("<KeyPress>", self.on_key_press)
+        root.bind("<KeyRelease>", self.on_key_release)
+        root.bind("<Escape>", lambda e: root.destroy())
+        root.bind("<q>", lambda e: root.destroy())
+        root.bind("<m>", lambda e: self.toggle_mute())
+        root.bind("<Return>", lambda e: self.restart())
+
+        self.init_game()
+        self.last = time.monotonic()
+        self.tick()
+
+    # ── Input ──
+
+    def on_key_press(self, ev):
+        job = self.release_jobs.pop(ev.keysym, None)
+        if job:
+            self.root.after_cancel(job)
+        if ev.keysym == "space" and "space" not in self.keys:
+            self.fire_pressed = True
+        self.keys.add(ev.keysym)
+
+    def on_key_release(self, ev):
+        # X11 key autorepeat sends release/press pairs while a key is held;
+        # waiting a moment before treating it as released hides those.
+        def release(k=ev.keysym):
+            self.release_jobs.pop(k, None)
+            self.keys.discard(k)
+        job = self.release_jobs.pop(ev.keysym, None)
+        if job:
+            self.root.after_cancel(job)
+        self.release_jobs[ev.keysym] = self.root.after(30, release)
+
+    def toggle_mute(self):
+        self.sound.muted = not self.sound.muted
+
+    def restart(self):
+        if self.phase != PHASE_PLAY:
+            self.init_game()
+
+    # ── State ──
+
+    def init_game(self):
+        self.phase = PHASE_PLAY
+        self.score = 0
+        self.lives = 3
+        self.player_x = W / 2.0
+        self.pb_active = False
+        self.pb_x = self.pb_y = 0.0
+        self.alien_base_x = float(GRID_X0)
+        self.alien_base_y = float(GRID_Y0)
+        self.alien_dx = ALIEN_SPD0
+        self.alien_count = NALIENS
+        self.alien_alive = [True] * NALIENS
+        self.ab_active = [False] * MAX_ABUL
+        self.ab_x = [0.0] * MAX_ABUL
+        self.ab_y = [0.0] * MAX_ABUL
+        self.ab_timer = ABUL_INTERVAL
+        self.anim_tick = 0
+        self.anim_accum = 0.0
+        self.fire_pressed = False
+
+    def alien_cx(self, i):
+        return self.alien_base_x + alien_col(i) * CELL_W + CELL_W // 2
+
+    def alien_cy(self, i):
+        return self.alien_base_y + alien_row(i) * CELL_H + CELL_H // 2
+
+    def alien_speed(self):
+        speed = ALIEN_SPD0 + (NALIENS - self.alien_count) * 3.0
+        return -speed if self.alien_dx < 0 else speed
+
+    # ── Per-frame update ──
+
+    def update(self, dt):
+        # animate aliens
+        self.anim_accum += dt
+        if self.anim_accum >= 0.5:
+            self.anim_accum -= 0.5
+            self.anim_tick = 1 - self.anim_tick
+            self.sound.play(f"march{self.anim_tick}")
+
+        # move player
+        half = PLAYER_W // 2
+        if "Left" in self.keys:
+            self.player_x = max(half, self.player_x - PLAYER_SPD * dt)
+        if "Right" in self.keys:
+            self.player_x = min(W - half, self.player_x + PLAYER_SPD * dt)
+
+        # fire player bullet
+        if self.fire_pressed and not self.pb_active:
+            self.pb_active = True
+            self.pb_x = self.player_x - PBUL_W // 2
+            self.pb_y = float(PLAYER_Y - PBUL_H)
+            self.sound.play("shoot")
+        self.fire_pressed = False
+
+        # move player bullet & check alien hits
+        if self.pb_active:
+            self.pb_y -= PBUL_SPD * dt
+            if self.pb_y + PBUL_H < 0:
+                self.pb_active = False
+            else:
+                for i in range(NALIENS):
+                    if not self.alien_alive[i]:
+                        continue
+                    ax = self.alien_cx(i) - ALIEN_W // 2
+                    ay = self.alien_cy(i) - ALIEN_H // 2
+                    if overlaps(self.pb_x, self.pb_y, PBUL_W, PBUL_H,
+                                ax, ay, ALIEN_W, ALIEN_H):
+                        self.alien_alive[i] = False
+                        self.pb_active = False
+                        self.alien_count -= 1
+                        self.sound.play("explode")
+                        row = alien_row(i)
+                        self.score += 30 if row == 0 else 20 if row < 3 else 10
+                        if self.alien_count == 0:
+                            self.phase = PHASE_WIN
+                        break
+
+        # move alien grid horizontally
+        self.alien_base_x += self.alien_speed() * dt
+
+        # find live bounding edges
+        live = [i for i in range(NALIENS) if self.alien_alive[i]]
+        if live:
+            le = min(self.alien_cx(i) for i in live) - ALIEN_W // 2
+            re = max(self.alien_cx(i) for i in live) - ALIEN_W // 2 + ALIEN_W
+            # reverse and drop when hitting a wall
+            if ((self.alien_dx > 0 and re >= W - 8)
+                    or (self.alien_dx < 0 and le <= 8)):
+                self.alien_dx = -self.alien_dx
+                self.alien_base_y += GRID_DROP
+                if any(self.alien_cy(i) + ALIEN_H // 2 >= PLAYER_Y
+                       for i in live):
+                    self.phase = PHASE_OVER
+
+        # alien shooting: lowest live alien in a random column
+        self.ab_timer -= dt
+        if self.ab_timer <= 0:
+            self.ab_timer = ABUL_INTERVAL * (0.5 + random.random())
+            col = random.randrange(COLS)
+            shooter = next((r * COLS + col for r in range(ROWS - 1, -1, -1)
+                            if self.alien_alive[r * COLS + col]), None)
+            if shooter is None and live:   # column empty: any live alien
+                shooter = live[-1]
+            if shooter is not None:
+                for k in range(MAX_ABUL):
+                    if not self.ab_active[k]:
+                        self.ab_active[k] = True
+                        self.ab_x[k] = self.alien_cx(shooter) - ABUL_W // 2
+                        self.ab_y[k] = self.alien_cy(shooter) + ALIEN_H // 2
+                        break
+
+        # move alien bullets & check player hit
+        for k in range(MAX_ABUL):
+            if not self.ab_active[k]:
+                continue
+            self.ab_y[k] += ABUL_SPD * dt
+            if self.ab_y[k] > H:
+                self.ab_active[k] = False
+            elif overlaps(self.ab_x[k], self.ab_y[k], ABUL_W, ABUL_H,
+                          self.player_x - PLAYER_W // 2, PLAYER_Y,
+                          PLAYER_W, PLAYER_H):
+                self.ab_active[k] = False
+                self.lives -= 1
+                if self.lives <= 0:
+                    self.phase = PHASE_OVER
+
+    # ── Drawing ──
+
+    def rect(self, x, y, w, h, color):
+        self.canvas.create_rectangle(x, y, x + w, y + h, fill=color,
+                                     outline="")
+
+    def text(self, x, y, s, size, color, anchor="n"):
+        self.canvas.create_text(x, y, text=s, fill=color, anchor=anchor,
+                                font=("Courier", -size, "bold"))
+
+    def draw_alien(self, cx, cy, row, tick):
+        x, y = int(cx), int(cy)
+        hw, hh = ALIEN_W // 2, ALIEN_H // 2
+        r = self.rect
+        if row == 0:
+            # top row: flying saucer
+            ry = hh * 0.75
+            self.canvas.create_oval(x - hw, y - ry, x + hw, y + ry,
+                                    fill=MAGENTA, outline="")
+            r(x - hw + 8, y - hh - 2, ALIEN_W - 16, 6, MAGENTA)
+            if tick == 0:
+                r(x - hw, y + hh - 4, 6, 8, MAGENTA)
+                r(x - 4, y + hh - 4, 8, 8, MAGENTA)
+                r(x + hw - 6, y + hh - 4, 6, 8, MAGENTA)
+            else:
+                r(x - hw + 4, y + hh - 2, 6, 6, MAGENTA)
+                r(x - 3, y + hh - 2, 6, 6, MAGENTA)
+                r(x + hw - 10, y + hh - 2, 6, 6, MAGENTA)
+        elif row < 3:
+            # middle rows: crab
+            r(x - hw + 4, y - hh + 4, ALIEN_W - 8, ALIEN_H - 8, CYAN)
+            r(x - 8, y - 3, 6, 6, BLACK)
+            r(x + 2, y - 3, 6, 6, BLACK)
+            if tick == 0:
+                r(x - hw, y - hh, 6, 8, CYAN)
+                r(x + hw - 6, y - hh, 6, 8, CYAN)
+                r(x - hw - 6, y, 8, 6, CYAN)
+                r(x + hw - 2, y, 8, 6, CYAN)
+            else:
+                r(x - hw + 2, y - hh - 4, 6, 8, CYAN)
+                r(x + hw - 8, y - hh - 4, 6, 8, CYAN)
+                r(x - hw - 10, y + 2, 8, 6, CYAN)
+                r(x + hw + 2, y + 2, 8, 6, CYAN)
+        else:
+            # bottom rows: simple bug
+            r(x - hw + 6, y - hh + 4, ALIEN_W - 12, ALIEN_H - 8, GREEN)
+            r(x - 7, y - 2, 5, 8, BLACK)
+            r(x + 2, y - 2, 5, 8, BLACK)
+            if tick == 0:
+                r(x - hw, y - 4, 10, 6, GREEN)
+                r(x + hw - 10, y - 4, 10, 6, GREEN)
+                r(x - hw + 2, y + 6, 8, 6, GREEN)
+                r(x + hw - 10, y + 6, 8, 6, GREEN)
+            else:
+                r(x - hw - 4, y - 2, 10, 6, GREEN)
+                r(x + hw - 6, y - 2, 10, 6, GREEN)
+                r(x - hw, y + 8, 8, 5, GREEN)
+                r(x + hw - 8, y + 8, 8, 5, GREEN)
+
+    def draw_player(self):
+        cx, cy = int(self.player_x), PLAYER_Y
+        half = PLAYER_W // 2
+        self.rect(cx - half, cy, PLAYER_W, PLAYER_H, GREEN)          # base
+        self.rect(cx - 3, cy - 10, 6, 12, GREEN)                     # cannon
+        self.rect(cx - half - 4, cy + PLAYER_H - 8, 10, 8, GREEN)    # feet
+        self.rect(cx + half - 6, cy + PLAYER_H - 8, 10, 8, GREEN)
+
+    def draw(self):
+        c = self.canvas
+        c.delete("all")
+        if self.phase == PHASE_PLAY:
+            self.draw_player()
+            for i in range(NALIENS):
+                if self.alien_alive[i]:
+                    self.draw_alien(self.alien_cx(i), self.alien_cy(i),
+                                    alien_row(i), self.anim_tick)
+            if self.pb_active:
+                self.rect(int(self.pb_x), int(self.pb_y), PBUL_W, PBUL_H,
+                          YELLOW)
+            for k in range(MAX_ABUL):
+                if self.ab_active[k]:
+                    self.rect(int(self.ab_x[k]), int(self.ab_y[k]), ABUL_W,
+                              ABUL_H, RED)
+            ly = PLAYER_Y + PLAYER_H + 6
+            c.create_line(0, ly, W, ly, fill=GREEN)
+            self.text(W // 2, 10, "SPACE INVADERS", 24, WHITE)
+            self.text(10, 10, f"SCORE: {self.score}", 20, YELLOW, "nw")
+            self.text(W - 10, 10, f"LIVES: {self.lives}", 20, YELLOW, "ne")
+        else:
+            won = self.phase == PHASE_WIN
+            self.text(W // 2, H // 2 - 60, "YOU WIN!" if won else "GAME OVER",
+                      52, GREEN if won else RED)
+            self.text(W // 2, H // 2 + 10, f"SCORE: {self.score}", 28, YELLOW)
+            self.text(W // 2, H // 2 + 60, "Press ENTER to play again", 22,
+                      WHITE)
+
+    # ── Main loop ──
+
+    def tick(self):
+        now = time.monotonic()
+        dt = min(now - self.last, 0.05)   # don't jump after a stall
+        self.last = now
+        if self.phase == PHASE_PLAY:
+            self.update(dt)
+        self.draw()
+        # Schedule the next frame relative to this one's start, so slow
+        # drawing doesn't add up to a lower frame rate than necessary.
+        spent = int((time.monotonic() - now) * 1000)
+        self.root.after(max(1, FRAME_MS - spent), self.tick)
+
+
+def main():
+    root = tk.Tk()
+    Invaders(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
