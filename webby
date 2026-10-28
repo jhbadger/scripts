@@ -1,0 +1,2604 @@
+#!/usr/bin/env python3
+"""webby - a dependency-free terminal web browser (Python 3 standard library only).
+
+Usage:  webby [options] [url | file | search words]
+
+Features
+  * HTML rendering with wrapped text, headings, lists, tables, quotes, code,
+    links, forms (text fields, checkboxes, radios, selects, buttons), cookies,
+    redirects, gzip, charset detection, meta-refresh, file:// and data: URLs.
+  * Mouse support (SGR mode): click links / fields / toolbar buttons, wheel to
+    scroll, hover shows the link target.
+  * Inline images on terminals that can show them: the kitty graphics protocol
+    (kitty, Ghostty, ...) and the iTerm2 inline image protocol (iTerm2,
+    WezTerm, mintty, ...).  Kitty needs PNG, so JPEG/GIF/WebP are converted
+    with `magick`/`convert`/`sips` when one of them is installed (sips ships
+    with macOS).  Elsewhere images are shown as [alt text].
+
+Keys (press ? in the browser for the full list)
+  g / Ctrl-L  go to URL (or search)     b / Left   back      f / Right  forward
+  j k / arrows / PgUp PgDn / Space      scroll     Tab       next link/field
+  Enter       follow focused item       /  n  N    search    r  reload
+  i           toggle images             d          save page   q  quit
+"""
+
+import argparse
+import atexit
+import base64
+import codecs
+import collections
+import fcntl
+import html
+import html.parser
+import http.cookiejar
+import mimetypes
+import os
+import pathlib
+import queue
+import re
+import select
+import shutil
+import signal
+import ssl
+import struct
+import subprocess
+import sys
+import tempfile
+import termios
+import threading
+import time
+import tty
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+import zlib
+
+VERSION = "1.0"
+UA = "Mozilla/5.0 (compatible; webby/%s; terminal browser)" % VERSION
+MAX_PAGE = 8 << 20
+MAX_IMG = 10 << 20
+BIG = 240                       # "unlimited" width used to measure table cells
+SEARCH_URL = "https://html.duckduckgo.com/html/?q="
+sys.setrecursionlimit(10000)
+
+# ---------------------------------------------------------------------------
+# Text width and styles
+# ---------------------------------------------------------------------------
+
+CTRL = dict.fromkeys(list(range(0, 9)) + list(range(11, 32)) + list(range(127, 160)))
+_wcache = {}
+
+
+def cw(ch):
+    """Display width of one character."""
+    w = _wcache.get(ch)
+    if w is None:
+        if ord(ch) < 32:
+            w = 0
+        elif unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+            w = 0
+        elif unicodedata.east_asian_width(ch) in "WF":
+            w = 2
+        else:
+            w = 1
+        _wcache[ch] = w
+    return w
+
+
+def sw(s):
+    return sum(cw(c) for c in s)
+
+
+def clip(s, n):
+    """Cut s to display width n (adds an ellipsis when it was shortened)."""
+    if sw(s) <= n:
+        return s
+    out, w = [], 0
+    for ch in s:
+        c = cw(ch)
+        if w + c > n - 1:
+            break
+        out.append(ch)
+        w += c
+    return "".join(out) + "…" if n > 0 else ""
+
+
+# style = (flags, fg, bg, ref); fg/bg are SGR parameter strings; ref is the
+# click target: ("l", id) for a link, ("f", id) for a form field.
+B, I, U, R, D, S = 1, 2, 4, 8, 16, 32
+PLAIN = (0, None, None, None)
+KEEP = object()
+LINK_FG, VISITED_FG, CODE_FG = "38;5;75", "38;5;140", "38;5;180"
+DIM_ST = (0, "38;5;244", None, None)
+FIELD_BG = "48;5;238"
+BAR_BG, STATUS_BG = "48;5;236", "48;5;238"
+
+
+def sty(st, add=0, fg=KEEP, bg=KEEP, ref=KEEP):
+    return (st[0] | add, st[1] if fg is KEEP else fg,
+            st[2] if bg is KEEP else bg, st[3] if ref is KEEP else ref)
+
+
+_sgr = {}
+
+
+def sgr(st):
+    key = st[:3]
+    s = _sgr.get(key)
+    if s is None:
+        f, fg, bg = key
+        p = ["0"]
+        for bit, code in ((B, "1"), (D, "2"), (I, "3"), (U, "4"), (R, "7"), (S, "9")):
+            if f & bit:
+                p.append(code)
+        if fg:
+            p.append(fg)
+        if bg:
+            p.append(bg)
+        s = _sgr[key] = "\x1b[" + ";".join(p) + "m"
+    return s
+
+
+def merge(spans):
+    out = []
+    for t, s in spans:
+        if not t:
+            continue
+        if out and out[-1][1] == s:
+            out[-1] = (out[-1][0] + t, s)
+        else:
+            out.append((t, s))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Lines and word wrapping
+# ---------------------------------------------------------------------------
+
+class Line:
+    """One display line: styled spans plus image placements.
+
+    places: tuple of (img, row, rows, cols, col) - this line shows row `row`
+    (0-based) of an image that is `rows` x `cols` cells, starting at column
+    `col` of the line.
+    """
+    __slots__ = ("spans", "places", "anchors", "w")
+
+    def __init__(self, spans, places=(), anchors=()):
+        self.spans = spans
+        self.places = places
+        self.anchors = anchors
+        self.w = sum(sw(t) for t, _ in spans)
+
+    @property
+    def text(self):
+        return "".join(t for t, _ in self.spans)
+
+    @property
+    def blank(self):
+        return not self.places and not self.text.strip()
+
+
+def indent(line, n, prefix=None):
+    sp = [prefix if prefix else (" " * n, PLAIN)] + line.spans
+    pl = tuple((p[0], p[1], p[2], p[3], p[4] + n) for p in line.places)
+    return Line(sp, pl, line.anchors)
+
+
+def hjoin(cells, left=None, sep=None, right=None):
+    """Join columns of lines side by side. cells = [(lines, width), ...]."""
+    height = max((len(ls) for ls, _ in cells), default=0)
+    out = []
+    for i in range(height):
+        spans, places, anch, x = [], [], [], 0
+        if left:
+            spans.append(left)
+            x += sw(left[0])
+        for k, (ls, wd) in enumerate(cells):
+            if k and sep:
+                spans.append(sep)
+                x += sw(sep[0])
+            ln = ls[i] if i < len(ls) else None
+            pad = wd
+            if ln:
+                spans.extend(ln.spans)
+                places.extend((p[0], p[1], p[2], p[3], p[4] + x) for p in ln.places)
+                anch.extend(ln.anchors)
+                pad = wd - ln.w
+            if pad > 0:
+                spans.append((" " * pad, PLAIN))
+            x += wd
+        if right:
+            spans.append(right)
+        out.append(Line(spans, tuple(places), tuple(anch)))
+    return out
+
+
+def wrap(atoms, w, align=None):
+    """Greedy word wrap. atoms: ('w', text, style) | ('s', ' ', style) | ('br', '', style)."""
+    w = max(w, 1)
+    lines = []
+    cur, curw = [], 0
+    grp, gw = [], 0
+
+    def end():
+        nonlocal cur, curw
+        while cur and cur[-1][2]:
+            cur.pop()
+        spans = merge([(t, s) for t, s, _ in cur])
+        ln = Line(spans)
+        if align in ("center", "right") and ln.w < w:
+            pad = (w - ln.w) // 2 if align == "center" else w - ln.w
+            if pad > 0:
+                ln = Line([(" " * pad, PLAIN)] + spans)
+        lines.append(ln)
+        cur, curw = [], 0
+
+    def put():
+        nonlocal grp, gw, curw
+        if not grp:
+            return
+        if curw and curw + gw > w:
+            end()
+        if gw <= w:
+            for t, s in grp:
+                cur.append((t, s, False))
+            curw += gw
+        else:                                   # word longer than the line
+            for t, s in grp:
+                for ch in t:
+                    c = cw(ch)
+                    if curw + c > w and curw:
+                        end()
+                    cur.append((ch, s, False))
+                    curw += c
+        grp, gw = [], 0
+
+    for kind, text, st in atoms:
+        if kind == "w":
+            grp.append((text, st))
+            gw += sw(text)
+        elif kind == "s":
+            put()
+            if cur and not cur[-1][2] and curw < w:
+                cur.append((" ", st, True))
+                curw += 1
+        else:
+            put()
+            end()
+    put()
+    if any(not c[2] for c in cur):
+        end()
+    return lines
+
+
+class Flow:
+    """A block formatting context: collects inline atoms and finished lines."""
+
+    def __init__(self, w, align=None, pre=False):
+        self.w = max(w, 1)
+        self.align = align
+        self.pre = pre
+        self.pre_start = False
+        self.lines = []
+        self.atoms = []
+        self.gap = False
+        self.pending = []       # anchor names waiting for the next line
+        self.xl = None          # character translation (sup/sub)
+
+    def text(self, s, st):
+        if self.xl:
+            s = s.translate(self.xl)
+        if self.pre:
+            if self.pre_start:
+                self.pre_start = False
+                if s.startswith("\n"):
+                    s = s[1:]
+            for i, part in enumerate(s.split("\n")):
+                if i:
+                    self.atoms.append(("br", "", st))
+                if part:
+                    self.atoms.append(("w", part.expandtabs(8), st))
+            return
+        for m in RE_TOK.finditer(s):
+            tok = m.group()
+            if tok[0] in " \t\n\r\f":
+                self.atoms.append(("s", " ", st))
+            else:
+                self.atoms.append(("w", tok, st))
+
+    def flush(self):
+        if self.atoms:
+            lines = wrap(self.atoms, self.w, self.align)
+            self.atoms = []
+            self._push(lines)
+
+    def add(self, lines, margin=False):
+        self.flush()
+        self._push(lines, margin)
+
+    def _push(self, lines, margin=False):
+        if not lines:
+            return
+        if (margin or self.gap) and self.lines and not self.lines[-1].blank:
+            self.lines.append(Line([]))
+        if self.pending:
+            l0 = lines[0]
+            lines[0] = Line(l0.spans, l0.places, tuple(l0.anchors) + tuple(self.pending))
+            self.pending = []
+        self.lines.extend(lines)
+        self.gap = margin
+
+
+RE_TOK = re.compile(r"[ \t\n\r\f]+|[^ \t\n\r\f]+")
+SUPMAP = str.maketrans("0123456789+-=()ni", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ")
+SUBMAP = str.maketrans("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")
+
+# ---------------------------------------------------------------------------
+# HTML -> tree
+# ---------------------------------------------------------------------------
+
+VOID = frozenset("area base br col embed hr img input link meta param source track wbr".split())
+INLINE = frozenset("a abbr b bdi bdo big cite code data dfn em font i kbd label mark nobr q s "
+                   "samp small span strike strong sub sup time tt u var".split())
+PCLOSE = frozenset("address article aside blockquote center details dir div dl fieldset "
+                   "figcaption figure footer form h1 h2 h3 h4 h5 h6 header hr main menu nav "
+                   "ol p pre section table ul li dd dt".split())
+HEADTAGS = frozenset("title meta link script style base noscript template head html".split())
+IMPLIED = {
+    "li": (frozenset(["li"]), frozenset(["ul", "ol", "menu", "dir"])),
+    "dt": (frozenset(["dt", "dd"]), frozenset(["dl"])),
+    "dd": (frozenset(["dt", "dd"]), frozenset(["dl"])),
+    "tr": (frozenset(["tr"]), frozenset(["table", "thead", "tbody", "tfoot"])),
+    "td": (frozenset(["td", "th"]), frozenset(["tr", "table"])),
+    "th": (frozenset(["td", "th"]), frozenset(["tr", "table"])),
+    "thead": (frozenset(["thead", "tbody", "tfoot"]), frozenset(["table"])),
+    "tbody": (frozenset(["thead", "tbody", "tfoot"]), frozenset(["table"])),
+    "tfoot": (frozenset(["thead", "tbody", "tfoot"]), frozenset(["table"])),
+    "option": (frozenset(["option"]), frozenset(["select", "datalist"])),
+    "optgroup": (frozenset(["option", "optgroup"]), frozenset(["select"])),
+}
+TABLEISH = frozenset("table tr td th thead tbody tfoot caption".split())
+BARRIERS = frozenset(["table", "td", "th", "caption"])
+
+
+class Node:
+    __slots__ = ("tag", "attrs", "children", "parent", "text", "data")
+
+    def __init__(self, tag, attrs=None, text=None):
+        self.tag = tag
+        self.attrs = attrs or {}
+        self.children = []
+        self.parent = None
+        self.text = text
+        self.data = None            # persistent state (field / link id)
+
+    def add(self, c):
+        c.parent = self
+        self.children.append(c)
+
+    def text_content(self):
+        if self.tag is None:
+            return self.text
+        out, stack = [], list(reversed(self.children))
+        while stack:
+            x = stack.pop()
+            if x.tag is None:
+                out.append(x.text)
+            elif x.tag not in SKIP:
+                stack.extend(reversed(x.children))
+        return "".join(out)
+
+
+class Builder(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = Node("#root")
+        self.stack = [self.root]
+        self.title = ""
+        self.base = None
+        self.refresh = None
+
+    def close_p(self):
+        st = self.stack
+        for i in range(len(st) - 1, 0, -1):
+            t = st[i].tag
+            if t == "p":
+                del st[i:]
+                return
+            if t not in INLINE:
+                return
+
+    def implied(self, closes, barriers):
+        st = self.stack
+        for i in range(len(st) - 1, 0, -1):
+            t = st[i].tag
+            if t in closes:
+                del st[i:]
+                return
+            if t in barriers:
+                return
+
+    def handle_starttag(self, tag, attrs):
+        a = {}
+        for k, v in attrs:
+            a.setdefault(k, v or "")
+        st = self.stack
+        if tag not in HEADTAGS:
+            while len(st) > 1 and st[-1].tag == "head":
+                st.pop()
+        if tag == "body":
+            while len(st) > 1 and st[-1].tag not in ("html",):
+                st.pop()
+        if tag in ("html", "body") and any(n.tag == tag for n in st):
+            return
+        if tag in PCLOSE:
+            self.close_p()
+        imp = IMPLIED.get(tag)
+        if imp:
+            self.implied(*imp)
+        if tag == "base" and a.get("href") and not self.base:
+            self.base = a["href"]
+        elif tag == "meta" and a.get("http-equiv", "").lower() == "refresh":
+            m = re.match(r"\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?(.*?)['\"]?\s*)?$",
+                         a.get("content", ""), re.I)
+            if m and m.group(2):
+                self.refresh = (float(m.group(1)), m.group(2))
+        n = Node(tag, a)
+        self.stack[-1].add(n)
+        if tag not in VOID:
+            self.stack.append(n)
+
+    def handle_endtag(self, tag):
+        if tag in VOID or tag in ("html", "body"):
+            return
+        st = self.stack
+        if tag == "table":
+            barrier = ()
+        elif tag in TABLEISH:
+            barrier = ("table",)
+        else:
+            barrier = BARRIERS
+        for i in range(len(st) - 1, 0, -1):
+            t = st[i].tag
+            if t == tag:
+                del st[i:]
+                return
+            if t in barrier:
+                return
+
+    def handle_data(self, data):
+        top = self.stack[-1]
+        if top.tag == "title":
+            self.title += data
+        elif top.tag in ("script", "style"):
+            return
+        elif data:
+            top.add(Node(None, text=data))
+
+
+def parse_html(text):
+    b = Builder()
+    try:
+        b.feed(text)
+        b.close()
+    except Exception:
+        pass
+    return b
+
+
+def text_dom(text):
+    root = Node("#root")
+    pre = Node("pre")
+    root.add(pre)
+    pre.add(Node(None, text=text))
+    return root
+
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+
+_img_ids = [100]
+
+
+class Img:
+    __slots__ = ("url", "state", "data", "fmt", "w", "h", "id", "sent", "page", "cache")
+
+    def __init__(self, url, page):
+        self.url = url
+        self.page = page
+        self.state = "new"          # new -> loading -> ok | fail
+        self.data = None
+        self.fmt = None
+        self.w = self.h = 0
+        _img_ids[0] += 1
+        self.id = _img_ids[0]
+        self.sent = False
+        self.cache = {}
+
+
+def sniff_image(d):
+    """Return (format, width, height) or None, from the file header."""
+    try:
+        if d[:8] == b"\x89PNG\r\n\x1a\n":
+            w, h = struct.unpack(">II", d[16:24])
+            return "png", w, h
+        if d[:6] in (b"GIF87a", b"GIF89a"):
+            w, h = struct.unpack("<HH", d[6:10])
+            return "gif", w, h
+        if d[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 < len(d):
+                if d[i] != 0xFF:
+                    i += 1
+                    continue
+                m = d[i + 1]
+                if m == 0xFF:
+                    i += 1
+                    continue
+                if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7:
+                    i += 2
+                    continue
+                if m in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                    h, w = struct.unpack(">HH", d[i + 5:i + 9])
+                    return "jpeg", w, h
+                i += 2 + struct.unpack(">H", d[i + 2:i + 4])[0]
+        if d[:4] == b"RIFF" and d[8:12] == b"WEBP":
+            c = d[12:16]
+            if c == b"VP8 ":
+                w, h = struct.unpack("<HH", d[26:30])
+                return "webp", w & 0x3FFF, h & 0x3FFF
+            if c == b"VP8L":
+                b = struct.unpack("<I", d[21:25])[0]
+                return "webp", (b & 0x3FFF) + 1, ((b >> 14) & 0x3FFF) + 1
+            if c == b"VP8X":
+                return ("webp", int.from_bytes(d[24:27], "little") + 1,
+                        int.from_bytes(d[27:30], "little") + 1)
+        if d[:2] == b"BM":
+            w, h = struct.unpack("<ii", d[18:26])
+            return "bmp", w, abs(h)
+    except (struct.error, IndexError):
+        pass
+    return None
+
+
+def convert_to_png(data):
+    """Convert any image to PNG with whatever tool is available (or None)."""
+    tools = []
+    for exe, args in (("magick", ["-", "png:-"]), ("convert", ["-", "png:-"])):
+        p = shutil.which(exe)
+        if p:
+            tools.append([p] + args)
+    for cmd in tools:
+        try:
+            r = subprocess.run(cmd, input=data, capture_output=True, timeout=20)
+            if r.returncode == 0 and r.stdout[:4] == b"\x89PNG":
+                return r.stdout
+        except (OSError, subprocess.SubprocessError):
+            pass
+    sips = shutil.which("sips")
+    if sips:
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                src, dst = os.path.join(td, "in"), os.path.join(td, "out.png")
+                with open(src, "wb") as f:
+                    f.write(data)
+                subprocess.run([sips, "-s", "format", "png", src, "--out", dst],
+                               capture_output=True, timeout=20)
+                with open(dst, "rb") as f:
+                    out = f.read()
+                if out[:4] == b"\x89PNG":
+                    return out
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Networking
+# ---------------------------------------------------------------------------
+
+class Resp:
+    __slots__ = ("url", "status", "ctype", "headers", "body")
+
+    def __init__(self, url, status, ctype, headers, body):
+        self.url, self.status, self.ctype, self.headers, self.body = url, status, ctype, headers, body
+
+
+def make_opener(insecure=False):
+    ctx = ssl.create_default_context()
+    # Python 3.13+ enables strict X.509 checks, which reject many real-world
+    # chains (e.g. CA certs without an Authority Key Identifier, proxy CAs).
+    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    if insecure:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    elif not ctx.cert_store_stats().get("x509_ca"):
+        for f in ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt",
+                  "/opt/homebrew/etc/openssl@3/cert.pem", "/usr/local/etc/openssl/cert.pem"):
+            if os.path.exists(f):
+                try:
+                    ctx.load_verify_locations(f)
+                    break
+                except (OSError, ssl.SSLError):
+                    pass
+    jar = http.cookiejar.CookieJar()
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar),
+                                       urllib.request.HTTPSHandler(context=ctx))
+
+
+OPENER = None
+
+
+def safe_url(url):
+    """Percent-encode non-ASCII characters (and IDN hosts) so urllib accepts the URL."""
+    url = re.sub(r"[\s\x00-\x1f]+", "", url) if "\n" in url or "\t" in url else url.strip()
+    p = urllib.parse.urlsplit(url)
+    host = p.hostname or ""
+    netloc = p.netloc
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError:
+        try:
+            ihost = host.encode("idna").decode("ascii")
+            netloc = netloc.replace(host, ihost)
+        except UnicodeError:
+            pass
+    q = lambda s, safe: urllib.parse.quote(s, safe=safe)
+    return urllib.parse.urlunsplit((p.scheme, netloc, q(p.path, "/%:@!$&'()*+,;=~-._"),
+                                    q(p.query, "=&%+/?:@!$'()*,;~-._"), ""))
+
+
+def decompress(body, enc):
+    enc = (enc or "").lower()
+    try:
+        if enc == "gzip" or body[:2] == b"\x1f\x8b":
+            return zlib.decompress(body, 16 + zlib.MAX_WBITS)
+        if enc == "deflate":
+            try:
+                return zlib.decompress(body)
+            except zlib.error:
+                return zlib.decompress(body, -zlib.MAX_WBITS)
+    except zlib.error:
+        pass
+    return body
+
+
+def fetch(url, post=None, referer=None, timeout=20, limit=MAX_PAGE,
+          accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"):
+    global OPENER
+    if OPENER is None:
+        OPENER = make_opener()
+    p = urllib.parse.urlsplit(url)
+    if p.scheme in ("http", "https"):
+        h = {"User-Agent": UA, "Accept": accept, "Accept-Language": "en-US,en;q=0.8",
+             "Accept-Encoding": "gzip, deflate"}
+        if referer:
+            h["Referer"] = referer
+        if post is not None:
+            h["Content-Type"] = "application/x-www-form-urlencoded"
+        req = urllib.request.Request(safe_url(url), data=post, headers=h)
+        try:
+            r = OPENER.open(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            r = e
+        with r:
+            body = r.read(limit + 1)
+            hd = r.headers
+            final = r.geturl()
+            status = getattr(r, "status", None) or r.getcode()
+        if len(body) > limit:
+            body = body[:limit]
+        body = decompress(body, hd.get("Content-Encoding"))
+        ctype = (hd.get("Content-Type") or "").split(";")[0].strip().lower()
+        return Resp(final, status, ctype, hd.get("Content-Type") or "", body)
+    if p.scheme == "file":
+        path = urllib.request.url2pathname(p.path)
+        if os.path.isdir(path):
+            return Resp(url, 200, "text/html", "", dir_listing(path).encode())
+        with open(path, "rb") as f:
+            body = f.read(limit)
+        ctype = mimetypes.guess_type(path)[0] or ""
+        if not ctype and path.lower().endswith((".md", ".txt", ".py", ".c", ".h")):
+            ctype = "text/plain"
+        return Resp(url, 200, ctype, ctype, body)
+    if p.scheme == "data":
+        head, _, payload = url[5:].partition(",")
+        if head.endswith(";base64"):
+            body = base64.b64decode(urllib.parse.unquote(payload) + "===")
+            head = head[:-7]
+        else:
+            body = urllib.parse.unquote_to_bytes(payload)
+        ctype = head.split(";")[0] or "text/plain"
+        return Resp(url, 200, ctype, head, body)
+    raise ValueError("unsupported URL scheme: %s" % (p.scheme or url))
+
+
+def dir_listing(path):
+    rows = ["<h1>Index of %s</h1><ul>" % html.escape(path)]
+    if path != "/":
+        rows.append('<li><a href="..">..</a></li>')
+    for name in sorted(os.listdir(path), key=str.lower):
+        full = os.path.join(path, name)
+        suffix = "/" if os.path.isdir(full) else ""
+        rows.append('<li><a href="%s">%s</a></li>' % (
+            html.escape(urllib.parse.quote(name) + suffix, True), html.escape(name + suffix)))
+    rows.append("</ul>")
+    return "".join(rows)
+
+
+def decode_body(body, ctype_header):
+    enc = None
+    m = re.search(r"charset=[\"']?([\w\-]+)", ctype_header or "", re.I)
+    if m:
+        enc = m.group(1)
+    if body.startswith(b"\xef\xbb\xbf"):
+        enc = "utf-8-sig"
+    elif not enc:
+        m = re.search(rb"<meta[^>]+charset=[\"']?\s*([\w\-]+)", body[:4096], re.I)
+        if m:
+            enc = m.group(1).decode("ascii", "replace")
+    if enc:
+        try:
+            codecs.lookup(enc)
+            return body.decode(enc, "replace").translate(CTRL)
+        except (LookupError, UnicodeError):
+            pass
+    try:
+        return body.decode("utf-8").translate(CTRL)
+    except UnicodeDecodeError:
+        return body.decode("cp1252", "replace").translate(CTRL)
+
+
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
+
+class Form:
+    def __init__(self, attrs):
+        self.action = attrs.get("action", "")
+        self.method = (attrs.get("method") or "get").lower()
+        self.fields = []
+
+
+class Field:
+    def __init__(self, fid, typ, name, form):
+        self.id, self.typ, self.name, self.form = fid, typ, name, form
+        self.value = ""
+        self.checked = False
+        self.options = []           # [value, label]
+        self.sel = 0
+        self.disabled = False
+
+
+class Page:
+    def __init__(self, url, dom, title="", raw=b"", ctype="", base=None, refresh=None):
+        self.url = url
+        self.dom = dom
+        self.title = title.strip()
+        self.raw = raw
+        self.ctype = ctype
+        self.base = urllib.parse.urljoin(url, base) if base else url
+        self.refresh = refresh
+        self.imgs = {}
+        self.fields = {}
+        self.links = {}
+        self.anchors = {}
+        self.download = None
+        self._id = 0
+
+    def next_id(self):
+        self._id += 1
+        return self._id
+
+    def image(self, url, request):
+        im = self.imgs.get(url)
+        if im is None:
+            im = self.imgs[url] = Img(url, self)
+        if im.state == "new":
+            request(im)
+        return im
+
+
+ABOUT_HOME = """<html><head><title>webby</title></head><body>
+<center><h1>webby</h1><p>a tiny terminal web browser</p></center>
+<form action="https://html.duckduckgo.com/html/" method="get">
+<center><input name="q" size="40" placeholder="Search the web"> <input type="submit" value="Search"></center>
+</form>
+<h2>Try</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Main_Page">Wikipedia</a></li>
+<li><a href="https://news.ycombinator.com/">Hacker News</a></li>
+<li><a href="https://text.npr.org/">NPR (text edition)</a></li>
+<li><a href="https://lite.cnn.com/">CNN Lite</a></li>
+<li><a href="https://example.com/">example.com</a></li>
+</ul>
+<p>Press <b>g</b> to enter a URL (or search words), <b>?</b> for help, <b>q</b> to quit.</p>
+</body></html>"""
+
+ABOUT_HELP = """<html><head><title>webby help</title></head><body>
+<h1>webby help</h1>
+<h2>Navigation</h2>
+<pre>
+g, o, Ctrl-L        go to a URL, file or search words (click the URL bar too)
+b, Left, Backspace  back              f, Right   forward
+r, F5               reload            h          home page
+Esc, Ctrl-C         stop loading / clear focus and highlights
+q                   quit
+</pre>
+<h2>Scrolling</h2>
+<pre>
+j, Down, Enter      down one line     k, Up      up one line
+Space, PgDn, Ctrl-F page down         PgUp, Ctrl-B   page up
+Home / End          top / bottom      mouse wheel    scroll
+</pre>
+<h2>Links and forms</h2>
+<pre>
+Tab / Shift-Tab     focus next / previous link or form field
+Enter               activate the focused item
+mouse click         follow a link, edit a field, press a button
+                    (hold Shift to select text with the terminal's own selection)
+</pre>
+<p>Typing in a text field and pressing Enter submits its form.</p>
+<h2>Other</h2>
+<pre>
+/  n  N             search the page, next / previous match
+i                   toggle inline images
+d                   save the current page / download to ~/Downloads
+?                   this help
+</pre>
+<h2>Images</h2>
+<p>Inline images work in terminals that support the kitty graphics protocol
+(kitty, Ghostty) or the iTerm2 image protocol (iTerm2, WezTerm). Use
+--images=kitty|iterm|none to override detection.</p>
+<p><a href="about:home">Home</a></p>
+</body></html>"""
+
+
+def make_page(resp, url=None):
+    url = url or resp.url
+    ctype, body = resp.ctype, resp.body
+    head = body[:512].lstrip().lower()
+    if ctype in ("", "text/plain", "application/octet-stream") and (
+            head.startswith(b"<!doctype html") or head.startswith(b"<html")):
+        ctype = "text/html"
+    if ctype.startswith("image/") and ctype != "image/svg+xml" or (
+            not ctype and sniff_image(body)):
+        b = parse_html('<img src="%s" alt="[image]">' % html.escape(url, True))
+        p = Page(url, b.root, os.path.basename(urllib.parse.urlsplit(url).path) or "image",
+                 body, ctype)
+        return p
+    if ctype in ("text/html", "application/xhtml+xml"):
+        b = parse_html(decode_body(body, resp.headers))
+        return Page(url, b.root, b.title, body, ctype, b.base, b.refresh)
+    if ctype.startswith("text/") or ctype in (
+            "application/json", "application/xml", "application/javascript", "image/svg+xml",
+            "application/rss+xml", "application/atom+xml", "application/x-sh"):
+        return Page(url, text_dom(decode_body(body, resp.headers)), url, body, ctype)
+    name = os.path.basename(urllib.parse.unquote(urllib.parse.urlsplit(url).path)) or "download"
+    b = parse_html("<h1>Download</h1><p>%s</p><p>Type: %s, size: %d bytes</p>"
+                   "<p>Press <b>d</b> to save it to your Downloads folder.</p>" % (
+                       html.escape(name), html.escape(ctype or "unknown"), len(body)))
+    p = Page(url, b.root, name, body, ctype)
+    p.download = name
+    return p
+
+
+def error_page(url, err):
+    msg = str(err) or err.__class__.__name__
+    hint = ""
+    if "CERTIFICATE_VERIFY_FAILED" in msg:
+        hint = "<p>Certificate verification failed. Run webby with --insecure to skip checks.</p>"
+    b = parse_html("<h1>Can't load page</h1><p>%s</p><p>%s</p>%s<p><a href=\"about:home\">Home</a></p>" % (
+        html.escape(url), html.escape(msg), hint))
+    return Page(url, b.root, "Error", b"", "text/html")
+
+
+def load_page(url, post=None, referer=None):
+    if url.startswith("about:"):
+        name = url[6:].split("#")[0] or "home"
+        src = {"home": ABOUT_HOME, "help": ABOUT_HELP, "blank": ""}.get(name)
+        if src is None:
+            raise ValueError("unknown page " + url)
+        b = parse_html(src)
+        return Page(url, b.root, b.title, src.encode(), "text/html")
+    resp = fetch(url, post, referer)
+    page = make_page(resp)
+    page.status = resp.status
+    return page
+
+
+def fetch_image(url, referer):
+    data = fetch(url, referer=referer, limit=MAX_IMG, timeout=25, accept="image/*,*/*;q=0.5").body
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Rendering the tree to lines
+# ---------------------------------------------------------------------------
+
+SKIP = frozenset("head script style template svg noframes datalist canvas map area meta link "
+                 "base title source track param option".split())
+STYLE_TAGS = {
+    "b": (B, None), "strong": (B, None), "i": (I, None), "em": (I, None), "cite": (I, None),
+    "var": (I, None), "dfn": (I, None), "u": (U, None), "ins": (U, None), "s": (S, None),
+    "strike": (S, None), "del": (S, None), "mark": (R, None), "code": (0, CODE_FG),
+    "kbd": (0, CODE_FG), "samp": (0, CODE_FG), "tt": (0, CODE_FG), "small": (0, None),
+}
+HEADINGS = {"h1": "38;5;214", "h2": "38;5;114", "h3": "38;5;81", "h4": None, "h5": None, "h6": None}
+BLOCK = frozenset("address article aside body caption dd details dir div fieldset figcaption "
+                  "figure footer header hgroup html legend main nav section summary tbody thead "
+                  "tfoot tr td th".split())
+RE_HIDDEN = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
+RE_TA = re.compile(r"text-align\s*:\s*(\w+)", re.I)
+TEXT_TYPES = frozenset(["text", "search", "email", "url", "tel", "password", "number", "date",
+                        "datetime-local", "time", "month", "week", "color", "range", ""])
+
+
+def num(v, default=0):
+    try:
+        return int(str(v).strip().rstrip("%px"))
+    except (ValueError, TypeError):
+        return default
+
+
+def alloc(cmin, cmax, avail):
+    """Choose column widths between min and max content widths."""
+    n = len(cmin)
+    if sum(cmax) <= avail:
+        return list(cmax)
+    if avail < n:
+        return [1] * n
+    if sum(cmin) >= avail:
+        tot = sum(cmin)
+        wid = [max(1, c * avail // tot) for c in cmin]
+    else:
+        extra = avail - sum(cmin)
+        diff = [mx - mn for mn, mx in zip(cmin, cmax)]
+        tot = sum(diff) or 1
+        wid = [mn + extra * d // tot for mn, d in zip(cmin, diff)]
+    left = avail - sum(wid)
+    order = sorted(range(n), key=lambda i: -(cmax[i] - wid[i]))
+    k = 0
+    while left > 0 and n:
+        i = order[k % n]
+        if wid[i] < cmax[i] or sum(wid) < avail:
+            wid[i] += 1
+            left -= 1
+        k += 1
+        if k > 10 * n + 1000:
+            break
+    while sum(wid) > avail:
+        i = wid.index(max(wid))
+        wid[i] -= 1
+    return wid
+
+
+class Renderer:
+    def __init__(self, page, width, cell, images, request, visited, term_rows):
+        self.page = page
+        self.width = width
+        self.cell = cell
+        self.images = images
+        self.request = request
+        self.visited = visited
+        self.term_rows = term_rows
+        self.links = page.links
+        self.memo = {}
+        self.minmemo = {}
+        self.list_depth = 0
+        self.form = None
+
+    # -- driver ------------------------------------------------------------
+
+    def render(self):
+        fl = Flow(self.width)
+        self.walk(self.page.dom, PLAIN, fl)
+        fl.flush()
+        return fl.lines
+
+    def resolve(self, href):
+        href = re.sub(r"[\r\n\t]", "", href.strip())
+        if href.startswith("data:"):
+            return href
+        return urllib.parse.urljoin(self.page.base, href)
+
+    def hidden(self, a):
+        return "hidden" in a or (a.get("style") and RE_HIDDEN.search(a["style"]))
+
+    def align(self, n, fl):
+        al = n.attrs.get("align")
+        if not al and n.attrs.get("style"):
+            m = RE_TA.search(n.attrs["style"])
+            al = m.group(1) if m else None
+        if al:
+            al = al.lower()
+            if al in ("center", "middle", "-webkit-center"):
+                return "center"
+            if al == "right":
+                return "right"
+            return "left"
+        return fl.align
+
+    def sub_block(self, n, st, w, align, pre=False):
+        f = Flow(w, align, pre)
+        self.walk(n, st, f)
+        f.flush()
+        return f.lines
+
+    def cell_lines(self, cell, st, w, align):
+        k = (id(cell), w, align)
+        r = self.memo.get(k)
+        if r is None:
+            r = self.memo[k] = self.sub_block(cell, st, w, align)
+        return r
+
+    def walk(self, node, st, fl):
+        for ch in node.children:
+            if ch.tag is None:
+                fl.text(ch.text, st)
+            else:
+                self.element(ch, st, fl)
+
+    # -- elements ----------------------------------------------------------
+
+    def element(self, n, st, fl):
+        t = n.tag
+        a = n.attrs
+        if t in SKIP or self.hidden(a):
+            return
+        nm = a.get("id") or (a.get("name") if t == "a" else None)
+        if nm:
+            fl.pending.append(nm)
+        if t in STYLE_TAGS:
+            add, fg = STYLE_TAGS[t]
+            st = sty(st, add, fg=fg) if (fg and st[3] is None) else sty(st, add)
+            return self.walk(n, st, fl)
+        if t in HEADINGS:
+            fg = HEADINGS[t]
+            st2 = sty(st, B, fg=fg) if (fg and st[3] is None) else sty(st, B)
+            return fl.add(self.sub_block(n, st2, fl.w, self.align(n, fl)), margin=True)
+        h = getattr(self, "t_" + t, None)
+        if h:
+            return h(n, st, fl)
+        if t in BLOCK:
+            return fl.add(self.sub_block(n, st, fl.w, self.align(n, fl)))
+        self.walk(n, st, fl)
+
+    def t_br(self, n, st, fl):
+        fl.atoms.append(("br", "", st))
+
+    def t_center(self, n, st, fl):
+        fl.add(self.sub_block(n, st, fl.w, "center"))
+
+    def t_a(self, n, st, fl):
+        href = (n.attrs.get("href") or "").strip()
+        if href and not href.lower().startswith("javascript:"):
+            url = self.resolve(href)
+            if n.data is None:
+                n.data = self.page.next_id()
+            ref = ("l", n.data)
+            self.links[ref] = url
+            vis = urllib.parse.urldefrag(url)[0] in self.visited
+            st = sty(st, U, fg=VISITED_FG if vis else LINK_FG, ref=ref)
+        self.walk(n, st, fl)
+
+    def t_p(self, n, st, fl):
+        fl.add(self.sub_block(n, st, fl.w, self.align(n, fl)), margin=True)
+
+    def t_div(self, n, st, fl):
+        fl.add(self.sub_block(n, st, fl.w, self.align(n, fl)))
+
+    def t_sup(self, n, st, fl):
+        old, fl.xl = fl.xl, SUPMAP
+        self.walk(n, st, fl)
+        fl.xl = old
+
+    def t_sub(self, n, st, fl):
+        old, fl.xl = fl.xl, SUBMAP
+        self.walk(n, st, fl)
+        fl.xl = old
+
+    def t_q(self, n, st, fl):
+        fl.text("“", st)
+        self.walk(n, st, fl)
+        fl.text("”", st)
+
+    def t_math(self, n, st, fl):
+        fl.text(n.attrs.get("alttext") or n.text_content(), st)
+
+    def t_hr(self, n, st, fl):
+        fl.add([Line([("─" * fl.w, DIM_ST)])], margin=True)
+
+    def t_blockquote(self, n, st, fl):
+        sub = self.sub_block(n, st, max(fl.w - 2, 1), fl.align)
+        fl.add([indent(l, 2, ("│ ", DIM_ST)) for l in sub], margin=True)
+
+    def t_pre(self, n, st, fl):
+        f = Flow(fl.w, None, pre=True)
+        f.pre_start = True
+        self.walk(n, st, f)
+        f.flush()
+        fl.add(f.lines, margin=True)
+
+    def t_dl(self, n, st, fl):
+        fl.add(self.sub_block(n, st, fl.w, fl.align), margin=True)
+
+    def t_dt(self, n, st, fl):
+        fl.add(self.sub_block(n, sty(st, B), fl.w, fl.align))
+
+    def t_dd(self, n, st, fl):
+        sub = self.sub_block(n, st, max(fl.w - 4, 1), fl.align)
+        fl.add([indent(l, 4) for l in sub])
+
+    def t_figcaption(self, n, st, fl):
+        fl.add(self.sub_block(n, sty(st, I), fl.w, self.align(n, fl)))
+
+    def t_summary(self, n, st, fl):
+        fl.add(self.sub_block(n, sty(st, B), fl.w, fl.align))
+
+    def t_fieldset(self, n, st, fl):
+        fl.add(self.sub_block(n, st, fl.w, fl.align), margin=True)
+
+    def t_iframe(self, n, st, fl):
+        src = n.attrs.get("src")
+        if src and not src.startswith(("about:", "javascript:")):
+            self.placeholder(n, st, fl, "frame: " + (n.attrs.get("title") or src), src)
+
+    def t_video(self, n, st, fl):
+        src = n.attrs.get("src")
+        if not src:
+            for ch in n.children:
+                if ch.tag == "source" and ch.attrs.get("src"):
+                    src = ch.attrs["src"]
+                    break
+        self.placeholder(n, st, fl, "video", src)
+
+    t_audio = t_video
+
+    def placeholder(self, n, st, fl, label, src):
+        if src:
+            if n.data is None:
+                n.data = self.page.next_id()
+            ref = ("l", n.data)
+            self.links[ref] = self.resolve(src)
+            st = sty(st, U, fg=LINK_FG, ref=ref)
+        fl.text("[" + label + "]", st)
+
+    # lists
+
+    def t_ul(self, n, st, fl):
+        ordered = n.tag == "ol"
+        items = [c for c in n.children if c.tag == "li"]
+        start = num(n.attrs.get("start"), 1)
+        if ordered and n.attrs.get("reversed") is not None:
+            start = num(n.attrs.get("start"), len(items))
+        nums, k = [], start
+        for li in items:
+            k = num(li.attrs.get("value"), k)
+            nums.append(k)
+            k += 1
+        mw = max([len(str(x)) for x in nums] + [1]) + 2 if ordered else 2
+        out = Flow(fl.w, fl.align)
+        i = 0
+        for ch in n.children:
+            if ch.tag == "li" and not self.hidden(ch.attrs):
+                marker = ("%*d. " % (mw - 2, nums[i])) if ordered else (
+                    "•◦▪"[self.list_depth % 3] + " ")
+                i += 1
+                if ch.attrs.get("id"):
+                    out.pending.append(ch.attrs["id"])
+                out.add(self.item(ch, st, fl.w, marker, mw))
+            elif ch.tag is None:
+                out.text(ch.text, st)
+            else:
+                self.element(ch, st, out)
+        out.flush()
+        fl.add(out.lines, margin=self.list_depth == 0)
+
+    t_ol = t_menu = t_dir = t_ul
+
+    def t_li(self, n, st, fl):
+        fl.add(self.item(n, st, fl.w, "• ", 2))
+
+    def item(self, n, st, w, marker, mw):
+        self.list_depth += 1
+        sub = self.sub_block(n, st, max(w - mw, 1), None)
+        self.list_depth -= 1
+        if not sub:
+            sub = [Line([])]
+        out = []
+        for i, l in enumerate(sub):
+            out.append(indent(l, mw, (marker, DIM_ST) if i == 0 else None))
+        return out
+
+    # images
+
+    def t_img(self, n, st, fl):
+        a = n.attrs
+        alt = (a.get("alt") or "").strip()
+        src = (a.get("data-src") or a.get("data-lazy-src") or a.get("data-original")
+               or a.get("src") or "").strip()
+        if not src:
+            ss = a.get("srcset") or a.get("data-srcset") or ""
+            src = ss.split(",")[0].strip().split(" ")[0] if ss else ""
+        inlink = st[3] is not None
+        label = alt or ("image" if inlink else "")
+        if src and self.images:
+            im = self.page.image(self.resolve(src), self.request)
+            if im.state == "ok" and im.w >= 20 and im.h >= 20:
+                fl.add(self.image_block(im, st, fl.w, fl.align))
+                return
+            if im.state == "ok" and not inlink:
+                label = alt if (alt and len(alt) < 40) else ""
+        if label:
+            fl.text("[" + label + "]", st if inlink else sty(st, D))
+
+    def image_block(self, im, st, w, align):
+        cwp, chp = self.cell
+        nc = max(1, -(-im.w // cwp))
+        nr = max(1, -(-im.h // chp))
+        maxr = max(4, int(self.term_rows * 0.7))
+        s = min(1.0, w / nc, maxr / nr)
+        nc, nr = max(1, int(nc * s)), max(1, int(nr * s))
+        pad = 0
+        if align == "center":
+            pad = max(0, (w - nc) // 2)
+        elif align == "right":
+            pad = max(0, w - nc)
+        lines = []
+        for k in range(nr):
+            spans = ([(" " * pad, PLAIN)] if pad else []) + [(" " * nc, st)]
+            lines.append(Line(spans, ((im, k, nr, nc, pad),)))
+        return lines
+
+    # forms
+
+    def t_form(self, n, st, fl):
+        if n.data is None:
+            n.data = Form(n.attrs)
+        prev, self.form = self.form, n.data
+        fl.add(self.sub_block(n, st, fl.w, fl.align))
+        self.form = prev
+
+    def get_field(self, n):
+        f = n.data
+        if f is not None:
+            return f
+        a = n.attrs
+        t = n.tag
+        if t == "input":
+            typ = (a.get("type") or "text").lower()
+        elif t == "button":
+            typ = (a.get("type") or "submit").lower()
+        else:
+            typ = "select" if t == "select" else "textarea"
+        f = Field(self.page.next_id(), typ, a.get("name"), self.form)
+        f.disabled = "disabled" in a
+        if t == "textarea":
+            v = n.text_content()
+            f.value = v[1:] if v.startswith("\n") else v
+        elif t == "select":
+            for o in self.options(n):
+                f.options.append([o.attrs.get("value", o.text_content().strip()),
+                                  " ".join(o.text_content().split())])
+                if "selected" in o.attrs:
+                    f.sel = len(f.options) - 1
+        else:
+            f.value = a.get("value", "on" if typ in ("checkbox", "radio") else "")
+            f.checked = "checked" in a
+        if self.form is not None:
+            self.form.fields.append(f)
+        n.data = f
+        self.page.fields[f.id] = f
+        return f
+
+    def options(self, n):
+        out = []
+        for c in n.children:
+            if c.tag == "option":
+                out.append(c)
+            elif c.tag == "optgroup":
+                out.extend(self.options(c))
+        return out
+
+    def t_input(self, n, st, fl):
+        f = self.get_field(n)
+        typ = f.typ
+        if typ == "hidden":
+            return
+        base = sty(st, ref=("f", f.id))
+        w = fl.w
+        if typ in ("submit", "button", "reset", "image"):
+            label = f.value or n.attrs.get("alt") or {"reset": "Reset", "button": "Button"}.get(typ, "Submit")
+            text = "[ " + label + " ]"
+            style = sty(base, B, fg="38;5;255", bg="48;5;24")
+        elif typ == "checkbox":
+            text, style = ("[x]" if f.checked else "[ ]"), sty(base, 0, fg="38;5;255", bg=FIELD_BG)
+        elif typ == "radio":
+            text, style = ("(*)" if f.checked else "( )"), sty(base, 0, fg="38;5;255", bg=FIELD_BG)
+        elif typ == "file":
+            text, style = "[ choose file ]", sty(base, 0, fg="38;5;255", bg=FIELD_BG)
+        elif typ in TEXT_TYPES:
+            size = max(5, min(num(n.attrs.get("size"), 20), 40, max(w - 4, 5)))
+            val = "•" * len(f.value) if typ == "password" else f.value
+            if val:
+                style = sty(base, 0, fg="38;5;255", bg=FIELD_BG)
+            else:
+                val = n.attrs.get("placeholder", "")
+                style = sty(base, 0, fg="38;5;245", bg=FIELD_BG)
+            val = val.replace("\n", " ")
+            text = "[" + self.fit(val, size) + "]"
+        else:
+            return
+        fl.atoms.append(("w", text, style))
+
+    def fit(self, val, size):
+        """Pad/clip val to exactly `size` display columns."""
+        val = clip(val, size) if sw(val) > size else val
+        return val + " " * (size - sw(val))
+
+    def t_button(self, n, st, fl):
+        f = self.get_field(n)
+        base = sty(st, ref=("f", f.id))
+        label = " ".join(n.text_content().split()) or f.value or "Button"
+        fl.atoms.append(("w", "[ " + label + " ]", sty(base, B, fg="38;5;255", bg="48;5;24")))
+
+    def t_select(self, n, st, fl):
+        f = self.get_field(n)
+        label = f.options[f.sel][1] if f.options else ""
+        text = "[ " + clip(label, 30) + " ▾ ]"
+        fl.atoms.append(("w", text, sty(st, 0, fg="38;5;255", bg=FIELD_BG, ref=("f", f.id))))
+
+    def t_textarea(self, n, st, fl):
+        f = self.get_field(n)
+        first = (f.value.split("\n") + [""])[0]
+        more = "…" if "\n" in f.value.strip("\n") else ""
+        size = max(8, min(num(n.attrs.get("cols"), 30), 50, max(fl.w - 4, 8)))
+        style = sty(st, 0, fg="38;5;255", bg=FIELD_BG, ref=("f", f.id))
+        fl.atoms.append(("w", "[" + self.fit(first + more, size) + "]", style))
+
+    # tables
+
+    def t_table(self, n, st, fl):
+        lines = self.table(n, st, fl.w, fl.align)
+        if lines is None:
+            return self.walk(n, st, fl)
+        fl.add(lines, margin=True)
+
+    def min_width(self, node):
+        k = id(node)
+        m = self.minmemo.get(k)
+        if m is None:
+            m = 1
+            stack = [node]
+            while stack:
+                x = stack.pop()
+                if x.tag is None:
+                    for word in x.text.split():
+                        m = max(m, sw(word))
+                elif x.tag not in SKIP:
+                    if x.tag == "img":
+                        m = max(m, 8)
+                    stack.extend(x.children)
+            m = self.minmemo[k] = min(m, 40)
+        return m
+
+    def table(self, n, st, w, align):
+        trs, caption = [], [None]
+
+        def collect(node):
+            for c in node.children:
+                if c.tag == "tr":
+                    trs.append(c)
+                elif c.tag in ("thead", "tbody", "tfoot"):
+                    collect(c)
+                elif c.tag == "caption":
+                    caption[0] = c
+
+        collect(n)
+        cells, occ = [], set()
+        for r, tr in enumerate(trs):
+            c = 0
+            for cell in tr.children:
+                if cell.tag not in ("td", "th") or self.hidden(cell.attrs):
+                    continue
+                while (r, c) in occ:
+                    c += 1
+                cs = max(1, min(num(cell.attrs.get("colspan"), 1), 50))
+                rs = max(1, min(num(cell.attrs.get("rowspan"), 1), 50))
+                cells.append((r, c, cell, cs, rs))
+                for dr in range(rs):
+                    for dc in range(cs):
+                        occ.add((r + dr, c + dc))
+                c += cs
+        if not cells:
+            return None
+        ncols = max(c for _, c in occ) + 1
+        if len(cells) == 1 and ncols == 1:
+            return self.sub_block(cells[0][2], st, w, self.align(cells[0][2], Flow(w, align)))
+        bordered = (num(n.attrs.get("border"), 0) > 0 or
+                    any(c[2].tag == "th" for c in cells))
+        sepw, edge = (3, 4) if bordered else (2, 0)
+
+        def cstyle(cell):
+            return sty(st, B) if cell.tag == "th" else st
+
+        cmin, cmax = [1] * ncols, [1] * ncols
+        measured = []
+        for r, c, cell, cs, rs in cells:
+            lines = self.cell_lines(cell, cstyle(cell), BIG, None)
+            mx = max([l.w for l in lines] + [0])
+            mn = min(self.min_width(cell), max(mx, 1))
+            measured.append((mn, mx))
+            if cs == 1:
+                cmin[c] = max(cmin[c], mn)
+                cmax[c] = max(cmax[c], mx)
+        for (r, c, cell, cs, rs), (mn, mx) in zip(cells, measured):
+            if cs > 1:
+                for arr, need in ((cmin, mn), (cmax, mx)):
+                    have = sum(arr[c:c + cs]) + sepw * (cs - 1)
+                    if need > have:
+                        add = need - have
+                        for k in range(cs):
+                            arr[c + k] += add // cs + (1 if k < add % cs else 0)
+        for i in range(ncols):
+            cmax[i] = max(cmax[i], cmin[i])
+        avail = w - edge - sepw * (ncols - 1)
+        widths = alloc(cmin, cmax, avail)
+
+        starts = collections.defaultdict(dict)
+        for r, c, cell, cs, rs in cells:
+            starts[r][c] = (cell, cs)
+        out = []
+        dim = DIM_ST
+        left = right = sep = None
+        if bordered:
+            left, sep, right = ("│ ", dim), (" │ ", dim), (" │", dim)
+        else:
+            sep = ("  ", PLAIN)
+
+        def rule(l, m, r_):
+            return Line([(l + m.join("─" * (x + 2) for x in widths) + r_, dim)])
+
+        if caption[0] is not None:
+            out.extend(self.sub_block(caption[0], sty(st, B), w, "center"))
+        if bordered:
+            out.append(rule("┌", "┬", "┐"))
+        header_done = False
+        for r in range(len(trs)):
+            row = starts.get(r, {})
+            parts, j = [], 0
+            while j < ncols:
+                if j in row:
+                    cell, cs = row[j]
+                    wd = sum(widths[j:j + cs]) + sepw * (cs - 1)
+                    al = self.align(cell, Flow(wd, "center" if cell.tag == "th" else None))
+                    parts.append((self.cell_lines(cell, cstyle(cell), wd, al), wd))
+                    j += cs
+                else:
+                    parts.append(([], widths[j]))
+                    j += 1
+            rl = hjoin(parts, left, sep, right)
+            out.extend(rl)
+            if (bordered and not header_done and row and
+                    all(c[0].tag == "th" for c in row.values())):
+                nxt = starts.get(r + 1, {})
+                if not (nxt and all(c[0].tag == "th" for c in nxt.values())):
+                    out.append(rule("├", "┼", "┤"))
+                    header_done = True
+        if bordered:
+            out.append(rule("└", "┴", "┘"))
+        return out
+
+
+# ---------------------------------------------------------------------------
+# The browser
+# ---------------------------------------------------------------------------
+
+CSI_KEYS = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end", "Z": "btab"}
+SS3_KEYS = dict(CSI_KEYS, P="f1", Q="f2", R="f3", S="f4")
+TILDE_KEYS = {"1": "home", "2": "ins", "3": "del", "4": "end", "5": "pgup", "6": "pgdn",
+              "7": "home", "8": "end", "11": "f1", "15": "f5"}
+KITTY_DELETE = "\x1b_Ga=d,d=a,q=2\x1b\\"
+KITTY_FREE = "\x1b_Ga=d,d=A,q=2\x1b\\"
+
+
+def normalize_url(s):
+    s = s.strip()
+    if not s:
+        return None
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", s) or s.startswith(("about:", "data:", "file:", "mailto:")):
+        return s
+    p = os.path.expanduser(s)
+    if os.path.exists(p):
+        return pathlib.Path(os.path.abspath(p)).as_uri()
+    if " " in s or ("." not in s and ":" not in s and s != "localhost"):
+        return SEARCH_URL + urllib.parse.quote_plus(s)
+    host = s.split("/")[0].split(":")[0]
+    local = host == "localhost" or re.match(r"^[\d.]+$", host) or host.endswith(".local")
+    return ("http://" if local else "https://") + s
+
+
+class Browser:
+    def __init__(self, gfx="auto", maxwidth=110, insecure=False):
+        self.gfx = gfx                  # auto | probe | kitty | iterm | none
+        self.maxwidth = maxwidth
+        self.insecure = insecure
+        self.fd = sys.stdin.fileno()
+        self.rows, self.cols = 24, 80
+        self.cellw, self.cellh = 8, 16
+        self.xoff = 0
+        self.images_on = False
+        self.hist, self.hpos = [], -1
+        self.page = None
+        self.lines, self.links, self.targets = [], {}, []
+        self.top = 0
+        self.focus = self.hover = None
+        self.msg = ""
+        self.query, self.matches, self.match_list, self.mi = "", {}, [], -1
+        self.pending = None
+        self.gen = 0
+        self.visited = set()
+        self.quit = False
+        self.overlay = None
+        self.cursor_shown = False
+        self.panel = None
+        self.prev_frame = None
+        self.prev_places = None
+        self.layout_due = 0
+        self.resized = False
+        self.refreshes = 0
+        self.title_set = None
+        self.ibuf = b""
+        self.keyq = collections.deque()
+        self.events = queue.Queue()
+        self.imgq = queue.Queue()
+        self.workers = []
+        self.wake_r, self.wake_w = os.pipe()
+        os.set_blocking(self.wake_r, False)
+        os.set_blocking(self.wake_w, False)
+
+    # -- terminal ----------------------------------------------------------
+
+    def out(self, s):
+        sys.stdout.write(s)
+        sys.stdout.flush()
+
+    def term_size(self):
+        try:
+            r, c, xp, yp = struct.unpack("4H", fcntl.ioctl(1, termios.TIOCGWINSZ, b"\0" * 8))
+        except OSError:
+            r, c, xp, yp = 0, 0, 0, 0
+        if not r or not c:
+            sz = shutil.get_terminal_size()
+            r, c = sz.lines, sz.columns
+        return r, c, xp, yp
+
+    def update_size(self):
+        r, c, xp, yp = self.term_size()
+        self.rows, self.cols = max(r, 5), max(c, 20)
+        if xp and yp:
+            self.cellw, self.cellh = max(1, round(xp / c)), max(1, round(yp / r))
+        mw = self.maxwidth
+        self.width = self.cols if mw <= 0 else min(self.cols, mw)
+        self.xoff = (self.cols - self.width) // 2
+
+    def detect_gfx(self):
+        env = os.environ
+        if self.gfx in ("kitty", "iterm", "none"):
+            return self.gfx
+        if env.get("TMUX") or env.get("STY"):
+            return "none"
+        tp, term = env.get("TERM_PROGRAM", ""), env.get("TERM", "")
+        if tp in ("iTerm.app", "WezTerm", "mintty") or env.get("LC_TERMINAL") == "iTerm2":
+            return "iterm"
+        if "kitty" in term or env.get("KITTY_WINDOW_ID") or tp == "ghostty" or "ghostty" in term:
+            return "kitty"
+        return "probe"
+
+    def probe(self):
+        """Ask the terminal about kitty graphics support and its cell size."""
+        need_cell = not any(self.term_size()[2:])
+        q = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\" + ("\x1b[16t" if need_cell else "") + "\x1b[c"
+        self.out(q)
+        data, end = b"", time.time() + 0.6
+        while time.time() < end:
+            r, _, _ = select.select([self.fd], [], [], max(0, end - time.time()))
+            if not r:
+                break
+            data += os.read(self.fd, 4096)
+            if re.search(rb"\x1b\[\?[\d;]*c", data):
+                break
+        m = re.search(rb"\x1b\[6;(\d+);(\d+)t", data)
+        if m:
+            self.cellh, self.cellw = int(m.group(1)) or 16, int(m.group(2)) or 8
+        return "kitty" if b"_Gi=31;OK" in data else "none"
+
+    def setup(self):
+        self.old_tio = termios.tcgetattr(self.fd)
+        tty.setraw(self.fd)
+        atexit.register(self.teardown)
+        self.update_size()
+        mode = self.detect_gfx()
+        if mode == "probe":
+            mode = self.probe()
+        self.gfx = mode
+        self.images_on = mode in ("kitty", "iterm")
+        self.out("\x1b[22;0t\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?2004h")
+        signal.signal(signal.SIGWINCH, self.on_winch)
+
+    def teardown(self):
+        if getattr(self, "old_tio", None) is None:
+            return
+        try:
+            self.out((KITTY_FREE if self.gfx == "kitty" else "") +
+                     "\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?25h\x1b[0m\x1b[?1049l\x1b[23;0t")
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_tio)
+        except Exception:
+            pass
+        self.old_tio = None
+
+    def on_winch(self, *_):
+        self.resized = True
+        self.post(None)
+
+    def post(self, ev):
+        if ev is not None:
+            self.events.put(ev)
+        try:
+            os.write(self.wake_w, b"x")
+        except (BlockingIOError, OSError):
+            pass
+
+    def set_title(self, title):
+        t = title or ""
+        if t != self.title_set:
+            self.title_set = t
+            self.out("\x1b]2;webby%s\x07" % (" - " + t.replace("\x07", "").replace("\x1b", "") if t else ""))
+
+    # -- input ---------------------------------------------------------------
+
+    def parse_input(self, data):
+        b = self.ibuf + data
+        i, n, keys = 0, len(b), self.keyq
+        while i < n:
+            c = b[i]
+            if c == 0x1B:
+                if i + 1 >= n:
+                    break
+                nx = b[i + 1]
+                if nx == 0x5B:
+                    j = i + 2
+                    while j < n and not (0x40 <= b[j] <= 0x7E):
+                        j += 1
+                    if j >= n:
+                        break
+                    params, fin = b[i + 2:j].decode("latin1"), chr(b[j])
+                    if params == "200" and fin == "~":
+                        end = b.find(b"\x1b[201~", j + 1)
+                        if end < 0:
+                            break
+                        keys.append(("paste", b[j + 1:end].decode("utf-8", "replace")))
+                        i = end + 6
+                        continue
+                    i = j + 1
+                    if params.startswith("<") and fin in "Mm":
+                        try:
+                            bb, x, y = (int(v) for v in params[1:].split(";"))
+                            keys.append(("mouse", bb, x, y, fin))
+                        except ValueError:
+                            pass
+                        continue
+                    parts = params.split(";")
+                    mod = ""
+                    if len(parts) > 1 and parts[1].isdigit():
+                        m = int(parts[1]) - 1
+                        mod = ("alt-" if m & 2 else "") + ("ctrl-" if m & 4 else "")
+                    name = TILDE_KEYS.get(parts[0]) if fin == "~" else CSI_KEYS.get(fin)
+                    if name:
+                        keys.append(mod + name)
+                elif nx == 0x4F:
+                    if i + 2 >= n:
+                        break
+                    name = SS3_KEYS.get(chr(b[i + 2]))
+                    i += 3
+                    if name:
+                        keys.append(name)
+                else:
+                    keys.append("alt-" + chr(nx))
+                    i += 2
+            else:
+                if c in (13, 10):
+                    keys.append("enter")
+                elif c == 9:
+                    keys.append("tab")
+                elif c in (8, 127):
+                    keys.append("bs")
+                elif c < 32:
+                    keys.append("ctrl-" + chr(c + 96))
+                else:
+                    ln = 1 if c < 0x80 else 2 if c >> 5 == 6 else 3 if c >> 4 == 14 else 4 if c >> 3 == 30 else 1
+                    if i + ln > n:
+                        break
+                    keys.append(b[i:i + ln].decode("utf-8", "replace"))
+                    i += ln - 1
+                i += 1
+        self.ibuf = b[i:]
+
+    def next_key(self):
+        """Wait for a key/mouse event. Returns None when something else needs a redraw."""
+        while True:
+            if self.keyq:
+                return self.keyq.popleft()
+            timeout = None
+            if self.layout_due:
+                timeout = max(0.0, self.layout_due - time.time())
+            if self.ibuf:
+                timeout = 0.05 if timeout is None else min(timeout, 0.05)
+            try:
+                r, _, _ = select.select([self.fd, self.wake_r], [], [], timeout)
+            except InterruptedError:
+                continue
+            redraw = False
+            if self.wake_r in r:
+                try:
+                    os.read(self.wake_r, 4096)
+                except BlockingIOError:
+                    pass
+                redraw = self.process_events()
+            if self.fd in r:
+                data = os.read(self.fd, 65536)
+                if not data:
+                    self.quit = True
+                    return None
+                self.parse_input(data)
+            elif not r and self.ibuf:
+                if self.ibuf == b"\x1b":
+                    self.keyq.append("esc")
+                self.ibuf = b""
+            if self.layout_due and time.time() >= self.layout_due:
+                self.layout_due = 0
+                self.layout()
+                redraw = True
+            if self.keyq:
+                return self.keyq.popleft()
+            if redraw:
+                return None
+
+    def process_events(self):
+        changed = False
+        while True:
+            try:
+                ev = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if ev[0] == "page":
+                self.on_page(ev[1], ev[2])
+                changed = True
+            elif ev[0] == "img":
+                if ev[1].page is self.page:
+                    self.layout_due = self.layout_due or time.time() + 0.25
+        if self.resized:
+            self.resized = False
+            self.update_size()
+            self.layout()
+            self.invalidate()
+            changed = True
+        return changed
+
+    # -- loading -------------------------------------------------------------
+
+    def save_scroll(self):
+        if 0 <= self.hpos < len(self.hist):
+            self.hist[self.hpos]["top"] = self.top
+
+    def navigate(self, url, post=None, mode="push", referer=None):
+        url = (url or "").strip()
+        if not url:
+            return
+        base, frag = urllib.parse.urldefrag(url)
+        scheme = urllib.parse.urlsplit(base).scheme.lower()
+        if scheme not in ("http", "https", "file", "about", "data"):
+            self.msg = "Can't open %s: links" % (scheme or "this")
+            return
+        if (frag and post is None and mode == "push" and self.page and
+                base == urllib.parse.urldefrag(self.page.url)[0]):
+            self.save_scroll()
+            del self.hist[self.hpos + 1:]
+            self.hist.append({"url": url, "page": self.page, "post": None, "top": self.top})
+            self.hpos = len(self.hist) - 1
+            self.jump(frag)
+            return
+        self.save_scroll()
+        self.gen += 1
+        gen = self.gen
+        self.pending = {"gen": gen, "url": url, "post": post, "mode": mode, "frag": frag}
+        threading.Thread(target=self.load_thread, args=(gen, base, post, referer),
+                         daemon=True).start()
+
+    def load_thread(self, gen, url, post, referer):
+        try:
+            page = load_page(url, post, referer)
+        except Exception as e:                  # network errors, bad URLs, ...
+            page = error_page(url, e)
+        self.post(("page", gen, page))
+
+    def on_page(self, gen, page):
+        pend = self.pending
+        if not pend or gen != self.gen:
+            return
+        self.pending = None
+        mode, frag = pend["mode"], pend["frag"]
+        entry = {"url": page.url, "page": page, "post": pend["post"], "top": 0}
+        if mode == "inplace" and 0 <= self.hpos < len(self.hist):
+            entry["top"] = self.hist[self.hpos]["top"]
+            entry["url"] = self.hist[self.hpos]["url"]
+            self.hist[self.hpos] = entry
+        elif mode == "replace" and self.hist:
+            self.hist[self.hpos] = entry
+        else:
+            del self.hist[self.hpos + 1:]
+            self.hist.append(entry)
+            self.hpos = len(self.hist) - 1
+        for e in self.hist[:-15]:
+            e["page"] = None
+        if len(self.hist) > 100:
+            del self.hist[:-100]
+            self.hpos = len(self.hist) - 1
+        self.visited.add(urllib.parse.urldefrag(page.url)[0])
+        self.show(page, entry["top"], frag)
+        if page.refresh and page.refresh[0] <= 5 and self.refreshes < 5:
+            self.refreshes += 1
+            self.navigate(urllib.parse.urljoin(page.url, page.refresh[1]), mode="replace")
+        else:
+            self.refreshes = 0
+
+    def show(self, page, top=0, frag=None):
+        self.clear_gfx()
+        self.page = page
+        self.top = top
+        self.focus = self.hover = None
+        self.query, self.matches, self.match_list, self.mi = "", {}, [], -1
+        self.layout(keep=False)
+        if frag:
+            self.jump(frag)
+        else:
+            self.top = max(0, min(self.top, self.max_top()))
+        self.set_title(page.title)
+        self.invalidate()
+
+    def go(self, delta):
+        pos = self.hpos + delta
+        if not 0 <= pos < len(self.hist):
+            return
+        self.save_scroll()
+        self.hpos = pos
+        e = self.hist[pos]
+        self.pending = None
+        if e["page"] is not None:
+            self.show(e["page"], e["top"], urllib.parse.urldefrag(e["url"])[1] or None)
+        else:
+            self.navigate(e["url"], e["post"], mode="inplace")
+
+    def reload(self):
+        if self.page and self.hist:
+            e = self.hist[self.hpos]
+            self.navigate(e["url"], e["post"], mode="inplace")
+
+    def jump(self, frag):
+        a = self.page.anchors
+        idx = a.get(frag, a.get(urllib.parse.unquote(frag)))
+        if frag in ("", "top"):
+            idx = 0 if idx is None else idx
+        if idx is not None:
+            self.top = min(idx, self.max_top())
+        else:
+            self.msg = "Anchor #%s not found" % frag
+
+    # -- images --------------------------------------------------------------
+
+    def queue_image(self, im):
+        if im.state != "new":
+            return
+        im.state = "loading"
+        self.imgq.put(im)
+        if not self.workers:
+            for _ in range(4):
+                t = threading.Thread(target=self.img_worker, daemon=True)
+                t.start()
+                self.workers.append(t)
+
+    def img_worker(self):
+        while True:
+            im = self.imgq.get()
+            if im.page is not self.page:        # user already left that page
+                im.state = "new"
+                continue
+            try:
+                data = fetch_image(im.url, im.page.url)
+                info = sniff_image(data)
+                if info and self.gfx == "kitty" and info[0] != "png":
+                    data = convert_to_png(data)
+                    info = sniff_image(data) if data else None
+                if info and info[1] > 0 and info[2] > 0:
+                    im.data, (im.fmt, im.w, im.h) = data, info
+                    im.state = "ok"
+                else:
+                    im.state = "fail"
+            except Exception:
+                im.state = "fail"
+            self.post(("img", im))
+
+    def clear_gfx(self):
+        if self.gfx == "kitty":
+            self.out(KITTY_FREE)
+        for e in self.hist:
+            if e["page"]:
+                for im in e["page"].imgs.values():
+                    im.sent = False
+        self.prev_places = None
+
+    # -- layout --------------------------------------------------------------
+
+    def max_top(self):
+        return max(0, len(self.lines) - (self.rows - 2))
+
+    def layout(self, keep=True):
+        p = self.page
+        if not p:
+            return
+        anchor = self.top_anchor() if keep else None
+        try:
+            r = Renderer(p, self.width, (self.cellw, self.cellh), self.images_on,
+                         self.queue_image, self.visited, self.rows)
+            self.lines = r.render()
+        except Exception as e:
+            self.lines = [Line([("Rendering failed: %s: %s" % (e.__class__.__name__, e), PLAIN)])]
+        p.anchors = {}
+        for i, l in enumerate(self.lines):
+            for name in l.anchors:
+                p.anchors.setdefault(name, i)
+        self.links = p.links
+        self.targets, last = [], None
+        for li, l in enumerate(self.lines):
+            for _, s in l.spans:
+                if s[3] is not None and s[3] != last:
+                    self.targets.append((li, s[3]))
+                    last = s[3]
+        if anchor:
+            self.restore_anchor(anchor)
+        self.top = max(0, min(self.top, self.max_top()))
+        if self.query:
+            self.search(self.query, quiet=True)
+
+    def top_anchor(self):
+        ls, i = self.lines, self.top
+        while i < len(ls) and ls[i].blank:
+            i += 1
+        if i >= len(ls):
+            return None
+        t = ls[i].text
+        return (i - self.top, t, sum(1 for l in ls[:i] if l.text == t))
+
+    def restore_anchor(self, a):
+        off, t, nth = a
+        c = 0
+        for i, l in enumerate(self.lines):
+            if l.text == t:
+                if c == nth:
+                    self.top = max(0, i - off)
+                    return
+                c += 1
+
+    def invalidate(self):
+        self.prev_frame = None
+        self.prev_places = None
+
+    # -- drawing -------------------------------------------------------------
+
+    def render_line(self, ln, li):
+        hl = self.matches.get(li)
+        fr, hv = self.focus, self.hover
+        parts, pos = [], 0
+        for t, s in ln.spans:
+            ref = s[3]
+            if ref is not None and (ref == fr or ref == hv):
+                s = (s[0] | R, s[1], s[2], ref)
+            if hl:
+                segs, cur = [], 0
+                for a, b in hl:
+                    a -= pos
+                    b -= pos
+                    if b <= 0 or a >= len(t):
+                        continue
+                    a, b = max(a, 0), min(b, len(t))
+                    if a > cur:
+                        segs.append((t[cur:a], s))
+                    segs.append((t[a:b], sty(s, 0, fg="30", bg="43")))
+                    cur = b
+                if cur < len(t):
+                    segs.append((t[cur:], s))
+                for tt, ss in segs:
+                    parts.append(sgr(ss) + tt)
+            else:
+                parts.append(sgr(s) + t)
+            pos += len(t)
+        return "".join(parts) + "\x1b[0m"
+
+    def bar(self, text, fg, bg):
+        text = clip(text, self.cols)
+        return sgr((0, fg, bg, None)) + text + " " * (self.cols - sw(text)) + "\x1b[0m"
+
+    def toolbar(self):
+        def seg(t, fg):
+            return sgr((0, fg, BAR_BG, None)) + t
+        canb, canf = self.hpos > 0, self.hpos < len(self.hist) - 1
+        s = (seg(" ← ", "38;5;255" if canb else "38;5;240") +
+             seg(" → ", "38;5;255" if canf else "38;5;240") +
+             seg(" ✕ " if self.pending else " ⟳ ", "38;5;255") +
+             seg(" ⌂ ", "38;5;255") + seg("│ ", "38;5;244"))
+        url = self.pending["url"] if self.pending else (self.page.url if self.page else "")
+        url = clip(url, max(self.cols - 14, 1))
+        return s + seg(url + " " * max(0, self.cols - 14 - sw(url)), "38;5;117") + "\x1b[0m"
+
+    def statusbar(self):
+        vh = self.rows - 2
+        if not self.lines or len(self.lines) <= vh:
+            pos = "All"
+        elif self.top == 0:
+            pos = "Top"
+        elif self.top >= self.max_top():
+            pos = "Bot"
+        else:
+            pos = "%d%%" % (100 * self.top // self.max_top())
+        right = " %s%s " % (pos, " img" if self.images_on else "")
+        left = self.msg
+        if not left:
+            ref = self.hover or self.focus
+            if ref and ref[0] == "l":
+                left = self.links.get(ref, "")
+            elif ref:
+                f = self.page.fields.get(ref[1]) if self.page else None
+                left = ("%s field %s" % (f.typ, f.name or "")) if f else ""
+        if not left and self.pending:
+            left = "Loading %s ..." % self.pending["url"]
+        if not left and self.page:
+            left = self.page.title or ""
+        left = clip(" " + left, max(self.cols - sw(right), 1))
+        text = left + " " * max(0, self.cols - sw(left) - sw(right)) + right
+        return sgr((0, "38;5;252", STATUS_BG, None)) + text + "\x1b[0m"
+
+    def draw(self):
+        rows, cols = self.rows, self.cols
+        vh = rows - 2
+        frame = [self.toolbar()]
+        places = {}
+        pad = " " * self.xoff
+        for i in range(vh):
+            li = self.top + i
+            if li < len(self.lines):
+                ln = self.lines[li]
+                frame.append(pad + self.render_line(ln, li))
+                for im, k, tot, nc, col in ln.places:
+                    key = (id(im), col, i - k)
+                    e = places.get(key)
+                    if e:
+                        e[3] = k
+                    else:
+                        places[key] = [im, i, k, k, tot, nc, col]
+            else:
+                frame.append("")
+        frame.append(self.statusbar())
+        if self.panel:
+            base, plines = self.panel
+            for i, s in enumerate(plines):
+                frame[base + i] = s
+            places = {}
+        cursor = None
+        if self.overlay:
+            row, label, text, curcol = self.overlay
+            frame[row] = self.bar(label + text, "38;5;255", "48;5;24")
+            cursor = (row + 1, curcol + 1)
+        plist = sorted((id(e[0]), e[1], e[2], e[3], e[6], e[5], e[4]) for e in places.values())
+        by_id = {id(e[0]): e[0] for e in places.values()}
+        newp = tuple(plist)
+        out = []
+        force = self.prev_frame is None or len(self.prev_frame) != len(frame)
+        if newp != self.prev_places:
+            if self.gfx == "kitty":
+                out.append(KITTY_DELETE)
+            elif self.gfx == "iterm":
+                force = True
+        for i, s in enumerate(frame):
+            if force or self.prev_frame[i] != s:
+                out.append("\x1b[%d;1H%s\x1b[0m\x1b[K" % (i + 1, s))
+        if newp != self.prev_places or force:
+            for iid, row, k0, k1, col, nc, tot in plist:
+                im = by_id[iid]
+                srow, scol = row + 2, col + self.xoff + 1
+                if self.gfx == "kitty":
+                    if not im.sent:
+                        out.append(self.kitty_send(im))
+                        im.sent = True
+                    y0 = round(k0 * im.h / tot)
+                    y1 = round((k1 + 1) * im.h / tot)
+                    out.append("\x1b[%d;%dH\x1b_Ga=p,i=%d,x=0,y=%d,w=%d,h=%d,c=%d,r=%d,C=1,q=2\x1b\\" % (
+                        srow, scol, im.id, y0, im.w, max(1, y1 - y0), nc, k1 - k0 + 1))
+                elif self.gfx == "iterm" and k0 == 0 and k1 == tot - 1:
+                    out.append("\x1b[%d;%dH%s" % (srow, scol, self.iterm_seq(im, nc, tot)))
+        changed = bool(out)
+        if cursor:
+            out.append("\x1b[%d;%dH\x1b[?25h" % cursor)
+        else:
+            out.append("\x1b[?25l")
+        self.prev_frame, self.prev_places = frame, newp
+        if changed or cursor or self.cursor_shown:
+            self.out("\x1b[?2026h" + "".join(out) + "\x1b[?2026l")
+        self.cursor_shown = bool(cursor)
+
+    def kitty_send(self, im):
+        b = base64.b64encode(im.data).decode("ascii")
+        chunks = [b[i:i + 4096] for i in range(0, len(b), 4096)] or [""]
+        out = []
+        for i, c in enumerate(chunks):
+            m = 1 if i < len(chunks) - 1 else 0
+            if i == 0:
+                out.append("\x1b_Ga=t,f=100,i=%d,q=2,m=%d;%s\x1b\\" % (im.id, m, c))
+            else:
+                out.append("\x1b_Gm=%d,q=2;%s\x1b\\" % (m, c))
+        return "".join(out)
+
+    def iterm_seq(self, im, cols, rows):
+        key = (cols, rows)
+        s = im.cache.get(key)
+        if s is None:
+            s = "\x1b]1337;File=inline=1;size=%d;width=%d;height=%d;preserveAspectRatio=1:%s\x07" % (
+                len(im.data), cols, rows, base64.b64encode(im.data).decode("ascii"))
+            im.cache = {key: s}
+        return s
+
+    # -- input handling ------------------------------------------------------
+
+    def scroll(self, n):
+        self.top = max(0, min(self.top + n, self.max_top()))
+
+    def ref_at(self, x, y):
+        li = self.top + y - 1
+        if not 1 <= y <= self.rows - 2 or li >= len(self.lines):
+            return None
+        col, c = x - self.xoff, 0
+        for t, s in self.lines[li].spans:
+            wd = sw(t)
+            if c <= col < c + wd:
+                return s[3]
+            c += wd
+        return None
+
+    def handle_mouse(self, b, x, y, kind):
+        x -= 1
+        y -= 1
+        if b & 64:
+            self.scroll(-3 if (b & 3) == 0 else 3 if (b & 3) == 1 else 0)
+        elif b & 32:
+            if (b & 3) == 3:
+                self.hover = self.ref_at(x, y)
+        elif kind == "M" and (b & 3) == 0:
+            if y == 0:
+                if x < 3:
+                    self.go(-1)
+                elif x < 6:
+                    self.go(1)
+                elif x < 9:
+                    if self.pending:
+                        self.pending, self.gen = None, self.gen + 1
+                        self.msg = "Cancelled"
+                    else:
+                        self.reload()
+                elif x < 12:
+                    self.navigate("about:home")
+                else:
+                    self.goto_prompt()
+            else:
+                ref = self.ref_at(x, y)
+                if ref:
+                    self.focus = ref
+                    self.activate(ref)
+
+    def goto_prompt(self):
+        cur = self.page.url if self.page and not self.page.url.startswith("about:") else ""
+        s = self.prompt(" Go: ", cur, row=0)
+        if s:
+            url = normalize_url(s)
+            if url:
+                self.navigate(url, referer=None)
+
+    def handle_key(self, k):
+        self.msg = ""
+        if isinstance(k, tuple):
+            if k[0] == "mouse":
+                self.handle_mouse(*k[1:])
+            return
+        vh = self.rows - 2
+        if k in ("q", "ctrl-q"):
+            self.quit = True
+        elif k == "ctrl-c":
+            if self.pending:
+                self.pending, self.gen = None, self.gen + 1
+                self.msg = "Cancelled"
+            else:
+                self.quit = True
+        elif k in ("j", "down", "ctrl-n"):
+            self.scroll(1)
+        elif k in ("k", "up", "ctrl-p"):
+            self.scroll(-1)
+        elif k in (" ", "pgdn", "ctrl-f", "ctrl-d"):
+            self.scroll(vh - 1 if k != "ctrl-d" else vh // 2)
+        elif k in ("pgup", "ctrl-b", "ctrl-u"):
+            self.scroll(-(vh - 1) if k != "ctrl-u" else -(vh // 2))
+        elif k in ("home",):
+            self.top = 0
+        elif k in ("end", "G"):
+            self.top = self.max_top()
+        elif k == "enter":
+            if self.focus:
+                self.activate(self.focus)
+            else:
+                self.scroll(1)
+        elif k in ("b", "left", "bs", "alt-left"):
+            self.go(-1)
+        elif k in ("f", "right", "alt-right"):
+            self.go(1)
+        elif k in ("r", "f5", "ctrl-r"):
+            self.reload()
+        elif k == "h":
+            self.navigate("about:home")
+        elif k in ("g", "o", "ctrl-l"):
+            self.goto_prompt()
+        elif k in ("tab", "btab"):
+            self.tab(1 if k == "tab" else -1)
+        elif k == "/":
+            s = self.prompt("/", self.query)
+            if s:
+                self.search(s)
+        elif k in ("n", "N"):
+            self.next_match(1 if k == "n" else -1)
+        elif k == "i":
+            if self.gfx in ("kitty", "iterm"):
+                self.images_on = not self.images_on
+                self.invalidate()
+                if self.gfx == "kitty":
+                    self.out(KITTY_DELETE)
+                self.layout()
+                self.msg = "Images %s" % ("on" if self.images_on else "off")
+            else:
+                self.msg = "This terminal can't show images (try --images=kitty|iterm)"
+        elif k == "d":
+            self.save_page()
+        elif k in ("?", "f1"):
+            self.navigate("about:help")
+        elif k == "esc":
+            if self.pending:
+                self.pending, self.gen = None, self.gen + 1
+                self.msg = "Cancelled"
+            self.focus = self.hover = None
+            self.query, self.matches, self.match_list = "", {}, []
+
+    def tab(self, d):
+        if not self.targets:
+            return
+        refs = [r for _, r in self.targets]
+        vh = self.rows - 2
+        if self.focus in refs:
+            i = (refs.index(self.focus) + d) % len(refs)
+        elif d > 0:
+            i = next((j for j, (li, _) in enumerate(self.targets) if li >= self.top), 0)
+        else:
+            i = next((j for j in range(len(refs) - 1, -1, -1) if self.targets[j][0] < self.top + vh),
+                     len(refs) - 1)
+        self.focus = refs[i]
+        li = self.targets[i][0]
+        if li < self.top or li >= self.top + vh:
+            self.top = max(0, min(li - vh // 3, self.max_top()))
+
+    # -- search ---------------------------------------------------------------
+
+    def search(self, q, quiet=False):
+        self.query = q
+        ql = q.lower()
+        self.matches, self.match_list = {}, []
+        for li, l in enumerate(self.lines):
+            t = l.text.lower()
+            start = 0
+            while True:
+                j = t.find(ql, start)
+                if j < 0:
+                    break
+                self.matches.setdefault(li, []).append((j, j + len(ql)))
+                self.match_list.append(li)
+                start = j + max(len(ql), 1)
+        if quiet:
+            return
+        if not self.match_list:
+            self.msg = "Not found: " + q
+            return
+        self.mi = next((i for i, li in enumerate(self.match_list) if li >= self.top), 0)
+        self.show_match()
+
+    def next_match(self, d):
+        if not self.match_list:
+            self.msg = "No search - press / first"
+            return
+        self.mi = (self.mi + d) % len(self.match_list)
+        self.show_match()
+
+    def show_match(self):
+        li = self.match_list[self.mi]
+        vh = self.rows - 2
+        if not self.top <= li < self.top + vh:
+            self.top = max(0, min(li - vh // 3, self.max_top()))
+        self.msg = "Match %d of %d" % (self.mi + 1, len(self.match_list))
+
+    # -- activating things -----------------------------------------------------
+
+    def activate(self, ref):
+        if ref[0] == "l":
+            url = self.links.get(ref)
+            if url:
+                if url.startswith("mailto:"):
+                    self.msg = url
+                else:
+                    self.navigate(url, referer=self.page.url if self.page else None)
+            return
+        f = self.page.fields.get(ref[1]) if self.page else None
+        if not f or f.disabled:
+            return
+        typ = f.typ
+        if typ in TEXT_TYPES or typ == "textarea":
+            v = self.prompt("%s: " % (f.name or typ), f.value, secret=typ == "password")
+            if v is not None:
+                f.value = v
+                self.layout()
+                if typ != "textarea" and f.form:
+                    self.submit(f.form)
+        elif typ == "checkbox":
+            f.checked = not f.checked
+            self.layout()
+        elif typ == "radio":
+            for g in self.page.fields.values():
+                if g.typ == "radio" and g.name == f.name and g.form is f.form:
+                    g.checked = False
+            f.checked = True
+            self.layout()
+        elif typ == "select":
+            if f.options:
+                i = self.choose([o[1] or "(blank)" for o in f.options], f.sel, f.name or "select")
+                if i is not None:
+                    f.sel = i
+                    self.layout()
+        elif typ in ("submit", "image"):
+            if f.form:
+                self.submit(f.form, f)
+            else:
+                self.msg = "Button is not part of a form"
+        elif typ == "file":
+            self.msg = "File upload is not supported"
+
+    def submit(self, form, button=None):
+        pairs = []
+        for f in form.fields:
+            if not f.name or f.disabled:
+                continue
+            if f.typ in ("submit", "image", "button", "reset"):
+                if f is button:
+                    pairs.append((f.name, f.value))
+            elif f.typ in ("checkbox", "radio"):
+                if f.checked:
+                    pairs.append((f.name, f.value))
+            elif f.typ == "select":
+                if f.options:
+                    pairs.append((f.name, f.options[f.sel][0]))
+            else:
+                pairs.append((f.name, f.value))
+        action = urllib.parse.urljoin(self.page.base, form.action) if form.action else self.page.url
+        action = urllib.parse.urldefrag(action)[0]
+        data = urllib.parse.urlencode(pairs)
+        ref = self.page.url
+        if form.method == "post":
+            self.navigate(action, post=data.encode(), referer=ref)
+        else:
+            self.navigate(action.split("?")[0] + "?" + data, referer=ref)
+
+    def save_page(self):
+        p = self.page
+        if not p or not p.raw:
+            self.msg = "Nothing to save"
+            return
+        name = p.download or os.path.basename(urllib.parse.unquote(urllib.parse.urlsplit(p.url).path)) or "page.html"
+        if "." not in name and p.ctype == "text/html":
+            name += ".html"
+        name = re.sub(r"[^\w.\- ]", "_", name) or "download"
+        d = os.path.expanduser("~/Downloads")
+        if not os.path.isdir(d):
+            d = os.getcwd()
+        path, n = os.path.join(d, name), 1
+        while os.path.exists(path):
+            stem, ext = os.path.splitext(name)
+            path = os.path.join(d, "%s-%d%s" % (stem, n, ext))
+            n += 1
+        try:
+            with open(path, "wb") as f:
+                f.write(p.raw)
+            self.msg = "Saved " + path
+        except OSError as e:
+            self.msg = "Save failed: %s" % e
+
+    # -- prompts and menus -------------------------------------------------------
+
+    def prompt(self, label, text="", row=None, secret=False):
+        row = self.rows - 1 if row is None else row
+        buf, pos = list(text), len(text)
+        try:
+            while True:
+                s = "".join(buf)
+                shown = "•" * len(s) if secret else s
+                avail = max(self.cols - sw(label) - 1, 1)
+                start = max(0, pos - avail + 1)
+                self.overlay = (row, label, shown[start:start + avail], sw(label) + sw(shown[start:pos]))
+                self.draw()
+                k = self.next_key()
+                if k is None:
+                    if self.quit:
+                        return None
+                    continue
+                if isinstance(k, tuple):
+                    if k[0] == "paste":
+                        ins = list(k[1].replace("\n", " ").replace("\r", ""))
+                        buf[pos:pos] = ins
+                        pos += len(ins)
+                    continue
+                if k == "enter":
+                    return s
+                if k in ("esc", "ctrl-c", "ctrl-g"):
+                    return None
+                if k == "bs":
+                    if pos:
+                        del buf[pos - 1]
+                        pos -= 1
+                elif k in ("del", "ctrl-d"):
+                    if pos < len(buf):
+                        del buf[pos]
+                elif k in ("left", "ctrl-b"):
+                    pos = max(0, pos - 1)
+                elif k in ("right", "ctrl-f"):
+                    pos = min(len(buf), pos + 1)
+                elif k in ("home", "ctrl-a"):
+                    pos = 0
+                elif k in ("end", "ctrl-e"):
+                    pos = len(buf)
+                elif k == "ctrl-u":
+                    del buf[:pos]
+                    pos = 0
+                elif k == "ctrl-k":
+                    del buf[pos:]
+                elif k == "ctrl-w":
+                    j = pos
+                    while j and buf[j - 1] == " ":
+                        j -= 1
+                    while j and buf[j - 1] != " ":
+                        j -= 1
+                    del buf[j:pos]
+                    pos = j
+                elif len(k) == 1 and k >= " ":
+                    buf.insert(pos, k)
+                    pos += 1
+        finally:
+            self.overlay = None
+            self.invalidate()
+
+    def choose(self, items, cur=0, title=""):
+        sel = cur
+        try:
+            while True:
+                n = min(len(items), max(self.rows - 5, 1))
+                start = max(0, min(sel - n // 2, len(items) - n))
+                lines = [self.bar(" " + title + "  (Enter selects, Esc cancels)", "38;5;255", "48;5;24")]
+                for i in range(start, start + n):
+                    mark = "▶ " if i == sel else "  "
+                    fg, bg = ("30", "47") if i == sel else ("38;5;252", "48;5;237")
+                    lines.append(self.bar(" " + mark + items[i], fg, bg))
+                base = self.rows - 1 - len(lines)
+                self.panel = (base, lines)
+                self.draw()
+                k = self.next_key()
+                if k is None:
+                    if self.quit:
+                        return None
+                    continue
+                if isinstance(k, tuple):
+                    if k[0] == "mouse" and k[4] == "M" and (k[1] & 3) == 0 and not k[1] & 96:
+                        i = k[3] - 1 - (base + 1)
+                        if 0 <= i < n:
+                            return start + i
+                    continue
+                if k in ("esc", "q", "ctrl-c"):
+                    return None
+                if k == "enter":
+                    return sel
+                if k in ("down", "j", "tab"):
+                    sel = min(sel + 1, len(items) - 1)
+                elif k in ("up", "k", "btab"):
+                    sel = max(sel - 1, 0)
+                elif k == "pgdn":
+                    sel = min(sel + n, len(items) - 1)
+                elif k == "pgup":
+                    sel = max(sel - n, 0)
+                elif k == "home":
+                    sel = 0
+                elif k == "end":
+                    sel = len(items) - 1
+        finally:
+            self.panel = None
+            self.invalidate()
+
+    # -- main loop ---------------------------------------------------------------
+
+    def run(self, start):
+        self.setup()
+        try:
+            self.navigate(start)
+            while not self.quit:
+                self.draw()
+                k = self.next_key()
+                if k is not None:
+                    self.handle_key(k)
+        finally:
+            self.teardown()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def dump(url, width, images=False):
+    page = load_page(url)
+    r = Renderer(page, width, (8, 16), False, None, set(), 24)
+    for l in r.render():
+        print(l.text.rstrip())
+
+
+def main():
+    global OPENER
+    ap = argparse.ArgumentParser(prog="webby", description="A dependency-free terminal web browser.")
+    ap.add_argument("url", nargs="*", help="URL, file path, or search words (default: about:home)")
+    ap.add_argument("--images", choices=["auto", "kitty", "iterm", "none"],
+                    default=os.environ.get("WEBBY_IMAGES", "auto"),
+                    help="image protocol (default: auto-detect)")
+    ap.add_argument("--no-images", action="store_true", help="same as --images=none")
+    ap.add_argument("-w", "--width", type=int, default=110,
+                    help="maximum text width, 0 for full width (default 110)")
+    ap.add_argument("--insecure", action="store_true", help="don't verify TLS certificates")
+    ap.add_argument("--dump", action="store_true", help="print the rendered page as text and exit")
+    ap.add_argument("--version", action="version", version="webby " + VERSION)
+    args = ap.parse_args()
+    OPENER = make_opener(args.insecure)
+    target = " ".join(args.url).strip()
+    url = normalize_url(target) if target else "about:home"
+    if args.dump or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        width = args.width if args.width > 0 else shutil.get_terminal_size().columns
+        try:
+            dump(url, width if args.width else 80)
+        except Exception as e:
+            sys.exit("webby: %s" % e)
+        return
+    gfx = "none" if args.no_images else args.images
+    Browser(gfx, args.width, args.insecure).run(url)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
