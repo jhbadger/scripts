@@ -1,0 +1,663 @@
+#!/usr/bin/env python3
+"""tkjigsaw - mouse-driven jigsaw puzzle with knob-and-slot pieces.
+
+Python + Tk port of the Oberon/Raylib jigsaw; standard library only.
+
+Usage: tkjigsaw <image.png|image.gif|image.ppm|image.jpg|image.pdf> [approx-pieces]
+       tkjigsaw <savefile.sav>
+
+Drag pieces into the outlined grid; release near the correct slot to snap it.
+  R  reshuffle all pieces
+  H  toggle the faint hint image
+  S  save progress (to <image>.sav)
+  Q / Escape  quit
+
+Tk reads PNG, GIF and PPM itself.  Other formats (JPEG, PDF, ...) are converted
+to PNG with whatever system tool is available: sips (macOS), pdftoppm,
+magick/convert (ImageMagick).
+"""
+
+import base64
+import json
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import tkinter as tk
+import zlib
+
+MAXPIECES = 400
+WIN_W, WIN_H = 1100, 750
+BORDER = 60
+SAVE_MAGIC = 20260704
+
+BG = "#828282"         # Raylib GRAY
+GRID = "#9b9b9b"       # LIGHTGRAY at 35% over GRAY
+FRAME = "#c8c8c8"      # LIGHTGRAY
+GREEN = "#00e430"
+YELLOW = "#fdf900"
+BG_RGB = (130, 130, 130)
+GHOST_ALPHA = 0.18
+SHADOW_ALPHA = 80
+
+
+# ── Image loading ────────────────────────────────────────────────────────────
+
+def pdf_page_count(path):
+    if shutil.which("pdfinfo"):
+        try:
+            out = subprocess.run(["pdfinfo", path], capture_output=True,
+                                 text=True, errors="replace").stdout
+            m = re.search(r"^Pages:\s+(\d+)", out, re.M)
+            if m:
+                return int(m.group(1))
+        except OSError:
+            pass
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return 0
+    return len(re.findall(rb"/Type\s*/Page(?![s\w])", data))
+
+
+def convert_to_png(path, tmpdir, pdf_page):
+    """Convert an image Tk cannot read into a PNG; return its path or None."""
+    out = os.path.join(tmpdir, "converted.png")
+    cmds = []
+    if pdf_page >= 0:
+        if shutil.which("pdftoppm"):
+            base = os.path.join(tmpdir, "page")
+            cmds.append((["pdftoppm", "-png", "-r", "150", "-singlefile",
+                          "-f", str(pdf_page + 1), "-l", str(pdf_page + 1),
+                          path, base], base + ".png"))
+        for im in ("magick", "convert"):
+            if shutil.which(im):
+                cmds.append(([im, "-density", "150", f"{path}[{pdf_page}]",
+                              out], out))
+        if shutil.which("sips"):   # first page only
+            cmds.append((["sips", "-s", "format", "png", path, "--out", out],
+                         out))
+    else:
+        if shutil.which("sips"):
+            cmds.append((["sips", "-s", "format", "png", path, "--out", out],
+                         out))
+        for im in ("magick", "convert"):
+            if shutil.which(im):
+                cmds.append(([im, path + "[0]", out], out))
+    for cmd, result in cmds:
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        if os.path.exists(result):
+            return result
+    return None
+
+
+def load_image(root, path, pdf_page):
+    """Return (width, height, rgb_bytes) for the image at path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        photo = None
+        if pdf_page < 0:
+            try:
+                photo = tk.PhotoImage(master=root, file=path)
+            except tk.TclError:
+                photo = None
+        if photo is None:
+            conv = convert_to_png(path, tmpdir, pdf_page)
+            if conv is None:
+                return None
+            try:
+                photo = tk.PhotoImage(master=root, file=conv)
+            except tk.TclError:
+                return None
+        ppm = os.path.join(tmpdir, "src.ppm")
+        photo.write(ppm, format="ppm")
+        w, h = photo.width(), photo.height()
+        with open(ppm, "rb") as f:
+            data = f.read()
+    # Parse binary PPM (P6) header: magic, width, height, maxval
+    m = re.match(rb"P6\s+(?:#[^\n]*\s+)*(\d+)\s+(\d+)\s+(\d+)\s", data)
+    if not m:
+        return None
+    w, h = int(m.group(1)), int(m.group(2))
+    return w, h, data[m.end():m.end() + w * h * 3]
+
+
+def png_bytes(w, h, rows):
+    """Encode RGBA rows (each a bytes-like of w*4) as a PNG."""
+    def chunk(tag, body):
+        c = zlib.crc32(tag + body) & 0xFFFFFFFF
+        return len(body).to_bytes(4, "big") + tag + body + c.to_bytes(4, "big")
+    raw = b"".join(b"\x00" + bytes(r) for r in rows)
+    ihdr = (w.to_bytes(4, "big") + h.to_bytes(4, "big")
+            + bytes([8, 6, 0, 0, 0]))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw, 1)) + chunk(b"IEND", b""))
+
+
+def photo_from_rgba(root, w, h, rows):
+    return tk.PhotoImage(master=root, format="png",
+                         data=base64.b64encode(png_bytes(w, h, rows)))
+
+
+# ── Puzzle ───────────────────────────────────────────────────────────────────
+
+class Jigsaw:
+    def __init__(self, root, filename, save_name, n_target, pdf_page, state):
+        self.root = root
+        self.filename = filename
+        self.save_name = save_name
+        self.n_target = n_target
+        self.pdf_page = pdf_page
+
+        img = load_image(root, filename, pdf_page)
+        if img is None:
+            sys.exit(f"Error: could not load image: {filename}")
+        self.img_w, self.img_h, self.src = img
+
+        self.canvas = tk.Canvas(root, width=WIN_W, height=WIN_H, bg=BG,
+                                highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.scr_w, self.scr_h = WIN_W, WIN_H
+
+        self.photos = {}      # piece -> (piece PhotoImage, shadow PhotoImage)
+        self.ghost_photo = None
+        self.dragging = None  # piece index being dragged
+        self.drag_off = (0.0, 0.0)
+        self.save_msg_job = None
+        self.resize_job = None
+
+        if state:
+            self.restore(state)
+        else:
+            self.show_ghost = False
+            self.compute_grid(n_target)
+            self.piece_w = self.img_w // self.n_cols
+            self.piece_h = self.img_h // self.n_rows
+            self.init_layout()
+            self.gen_edges()
+            self.scatter(redraw=False)
+
+        self.gen_piece_images()
+        self.redraw()
+
+        c = self.canvas
+        c.bind("<ButtonPress-1>", self.on_press)
+        c.bind("<B1-Motion>", self.on_motion)
+        c.bind("<ButtonRelease-1>", self.on_release)
+        c.bind("<Configure>", self.on_configure)
+        for key, fn in (("r", self.reshuffle), ("h", self.toggle_ghost),
+                        ("s", self.save_game), ("q", self.quit)):
+            root.bind(f"<KeyPress-{key}>", fn)
+            root.bind(f"<KeyPress-{key.upper()}>", fn)
+        root.bind("<Escape>", self.quit)
+
+    # ── Helpers ──
+
+    def piece_col(self, p):
+        return p % self.n_cols
+
+    def piece_row(self, p):
+        return p // self.n_cols
+
+    def target(self, p):
+        return (float(self.disp_x + self.piece_col(p) * self.dpw),
+                float(self.disp_y + self.piece_row(p) * self.dph))
+
+    # ── Grid setup ──
+
+    def compute_grid(self, n):
+        aspect = self.img_w / self.img_h
+        best = None
+        self.n_cols = self.n_rows = 1
+        for c in range(1, 31):
+            r = max(1, int(c / aspect + 0.5))
+            diff = abs(c * r - n)
+            if best is None or diff < best:
+                best, self.n_cols, self.n_rows = diff, c, r
+        while self.n_cols * self.n_rows > MAXPIECES:
+            if self.n_cols >= self.n_rows:
+                self.n_cols -= 1
+            else:
+                self.n_rows -= 1
+        self.n_pieces = self.n_cols * self.n_rows
+
+    def init_layout(self):
+        max_w = max(self.scr_w - 2 * BORDER, self.n_cols * 8)
+        max_h = max(self.scr_h - 2 * BORDER, self.n_rows * 8)
+        ratio = self.img_w / self.img_h
+        if max_w / max_h > ratio:
+            self.disp_h = max_h
+            self.disp_w = int(max_h * ratio)
+        else:
+            self.disp_w = max_w
+            self.disp_h = int(max_w / ratio)
+        self.disp_x = (self.scr_w - self.disp_w) // 2
+        self.disp_y = (self.scr_h - self.disp_h) // 2
+        self.dpw = max(1, self.disp_w // self.n_cols)
+        self.dph = max(1, self.disp_h // self.n_rows)
+        self.knob_r = min(self.dpw, self.dph) * 0.18
+        self.knob_pad = int(min(self.dpw, self.dph) * 0.306) + 2
+
+    def gen_edges(self):
+        n = self.n_pieces
+        self.edge_top, self.edge_right = [0] * n, [0] * n
+        self.edge_bot, self.edge_left = [0] * n, [0] * n
+        for p in range(n):
+            col, row = self.piece_col(p), self.piece_row(p)
+            # Left/top edges mirror the neighbour's right/bottom edge
+            self.edge_left[p] = 0 if col == 0 else -self.edge_right[p - 1]
+            self.edge_top[p] = 0 if row == 0 else -self.edge_bot[p - self.n_cols]
+            # Right/bottom edges: flat on the border, random knob/slot inside
+            self.edge_right[p] = (0 if col == self.n_cols - 1
+                                  else random.choice((1, -1)))
+            self.edge_bot[p] = (0 if row == self.n_rows - 1
+                                else random.choice((1, -1)))
+
+    # ── Piece shape and image generation ──
+
+    def knob_centres(self):
+        R, w, h = self.knob_r, float(self.dpw), float(self.dph)
+        return ((w * 0.5, -R * 0.5), (w + R * 0.5, h * 0.5),
+                (w * 0.5, h + R * 0.5), (-R * 0.5, h * 0.5))
+
+    def is_inside(self, p, px, py):
+        """True if piece-local point (px, py) lies inside piece p's shape:
+        the core rectangle plus knob circles, minus slot circles."""
+        R2 = self.knob_r * self.knob_r
+        edges = (self.edge_top[p], self.edge_right[p],
+                 self.edge_bot[p], self.edge_left[p])
+        in_core = 0 <= px < self.dpw and 0 <= py < self.dph
+        for e, (cx, cy) in zip(edges, self.knob_centres()):
+            if e and (px - cx) ** 2 + (py - cy) ** 2 < R2:
+                if in_core and e < 0:
+                    return False
+                if not in_core and e > 0:
+                    return True
+        return in_core
+
+    def piece_mask(self, p):
+        """Bytearray mask (1 = inside) over the padded piece bitmap."""
+        pad, dpw, dph = self.knob_pad, self.dpw, self.dph
+        tw, th = dpw + 2 * pad, dph + 2 * pad
+        R2 = self.knob_r * self.knob_r
+        edges = (self.edge_top[p], self.edge_right[p],
+                 self.edge_bot[p], self.edge_left[p])
+        circles = [(e, cx, cy) for e, (cx, cy)
+                   in zip(edges, self.knob_centres()) if e]
+        mask = bytearray(tw * th)
+        # Core rectangle
+        for oy in range(pad, pad + dph):
+            mask[oy * tw + pad:oy * tw + pad + dpw] = b"\x01" * dpw
+        # Knobs add, slots subtract: work out each circle's span per row
+        for e, cx, cy in circles:
+            val = 1 if e > 0 else 0
+            for oy in range(th):
+                dy = oy - pad - cy
+                rem = R2 - dy * dy
+                if rem <= 0:
+                    continue
+                half = rem ** 0.5
+                x0 = max(0, int(cx - half + pad) - 1)
+                x1 = min(tw, int(cx + half + pad) + 2)
+                py = oy - pad
+                core_row = 0 <= py < dph
+                base = oy * tw
+                for ox in range(x0, x1):
+                    px = ox - pad
+                    if (px - cx) ** 2 + dy * dy < R2:
+                        in_core = core_row and 0 <= px < dpw
+                        if val and not in_core:
+                            mask[base + ox] = 1
+                        elif not val and in_core:
+                            mask[base + ox] = 0
+        return mask, tw, th
+
+    def gen_one_piece(self, p):
+        mask, tw, th = self.piece_mask(p)
+        pad = self.knob_pad
+        col, row = self.piece_col(p), self.piece_row(p)
+        pw, ph, dpw, dph = self.piece_w, self.piece_h, self.dpw, self.dph
+        iw, ih, src = self.img_w, self.img_h, self.src
+        # Nearest-neighbour map from piece pixels to source pixels
+        sxs = [min(max(col * pw + ((ox - pad) * pw) // dpw, 0), iw - 1) * 3
+               for ox in range(tw)]
+        sys_ = [min(max(row * ph + ((oy - pad) * ph) // dph, 0), ih - 1)
+                for oy in range(th)]
+        rows, shadow_rows = [], []
+        for oy in range(th):
+            out = bytearray(tw * 4)
+            sh = bytearray(tw * 4)
+            base = oy * tw
+            srow = sys_[oy] * iw * 3
+            for ox in range(tw):
+                i = base + ox
+                if not mask[i]:
+                    continue
+                s = srow + sxs[ox]
+                r, g, b = src[s], src[s + 1], src[s + 2]
+                # 1-pixel dark outline where a 4-neighbour is outside
+                if (ox == 0 or ox == tw - 1 or oy == 0 or oy == th - 1
+                        or not (mask[i - 1] and mask[i + 1]
+                                and mask[i - tw] and mask[i + tw])):
+                    r, g, b = r * 55 // 100, g * 55 // 100, b * 55 // 100
+                o = ox * 4
+                out[o:o + 4] = bytes((r, g, b, 255))
+                sh[o + 3] = SHADOW_ALPHA
+            rows.append(out)
+            shadow_rows.append(sh)
+        return (photo_from_rgba(self.root, tw, th, rows),
+                photo_from_rgba(self.root, tw, th, shadow_rows))
+
+    def gen_piece_images(self):
+        self.canvas.delete("all")
+        self.canvas.create_text(self.scr_w // 2, self.scr_h // 2,
+                                text="Cutting pieces…", fill="white",
+                                font=("Helvetica", 24))
+        self.canvas.update_idletasks()
+        self.photos = {p: self.gen_one_piece(p) for p in range(self.n_pieces)}
+        self.ghost_photo = None
+
+    def gen_ghost(self):
+        """Faint full image scaled to the solved area, pre-blended on BG."""
+        a = GHOST_ALPHA
+        blend = [[int(BG_RGB[k] * (1 - a) + v * a) for v in range(256)]
+                 for k in range(3)]
+        iw, ih, src = self.img_w, self.img_h, self.src
+        w, h = self.disp_w, self.disp_h
+        xs = [min(x * iw // w, iw - 1) * 3 for x in range(w)]
+        rows = []
+        for y in range(h):
+            srow = min(y * ih // h, ih - 1) * iw * 3
+            out = bytearray(w * 4)
+            for x in range(w):
+                s = srow + xs[x]
+                o = x * 4
+                out[o] = blend[0][src[s]]
+                out[o + 1] = blend[1][src[s + 1]]
+                out[o + 2] = blend[2][src[s + 2]]
+                out[o + 3] = 255
+            rows.append(out)
+        self.ghost_photo = photo_from_rgba(self.root, w, h, rows)
+
+    # ── Piece state ──
+
+    def scatter(self, redraw=True):
+        n = self.n_pieces
+        self.draw_ord = list(range(n))
+        random.shuffle(self.draw_ord)
+        self.placed = [False] * n
+        self.piece_x = [float(random.randrange(max(1, self.scr_w - self.dpw)))
+                        for _ in range(n)]
+        self.piece_y = [float(random.randrange(max(1, self.scr_h - self.dph)))
+                        for _ in range(n)]
+        self.dragging = None
+        self.solved_count = 0
+        self.won = False
+        if redraw:
+            self.redraw()
+
+    def rescale_pieces(self, old_w, old_h):
+        for i in range(self.n_pieces):
+            if self.placed[i]:
+                self.piece_x[i], self.piece_y[i] = self.target(i)
+            else:
+                self.piece_x[i] *= self.scr_w / old_w
+                self.piece_y[i] *= self.scr_h / old_h
+
+    # ── Drawing ──
+
+    def piece_tag(self, p):
+        return f"p{p}"
+
+    def place_items(self, p, lifted=False):
+        c, pad = self.canvas, self.knob_pad
+        x, y = int(self.piece_x[p]) - pad, int(self.piece_y[p]) - pad
+        off = 5 if lifted else 2
+        c.coords(f"s{p}", x + off, y + off)
+        c.coords(f"i{p}", x, y)
+
+    def restack(self):
+        """Bottom to top: ghost, grid, placed pieces (natural order so knobs
+        overlap correctly), then free pieces back to front."""
+        c = self.canvas
+        for p in range(self.n_pieces):
+            if self.placed[p]:
+                c.tag_raise(self.piece_tag(p))
+        for p in self.draw_ord:
+            if not self.placed[p]:
+                c.tag_raise(self.piece_tag(p))
+        c.tag_raise("hud")
+
+    def redraw(self):
+        c = self.canvas
+        c.delete("all")
+        dx, dy, dw, dh = self.disp_x, self.disp_y, self.disp_w, self.disp_h
+        if self.show_ghost:
+            if self.ghost_photo is None:
+                self.gen_ghost()
+            c.create_image(dx, dy, image=self.ghost_photo, anchor="nw",
+                           tags="ghost")
+        for i in range(self.n_cols + 1):
+            x = dx + i * self.dpw
+            c.create_line(x, dy, x, dy + dh, fill=GRID, tags="grid")
+        for i in range(self.n_rows + 1):
+            y = dy + i * self.dph
+            c.create_line(dx, y, dx + dw, y, fill=GRID, tags="grid")
+        c.create_rectangle(dx - 2, dy - 2, dx + dw + 2, dy + dh + 2,
+                           outline=FRAME, tags="grid")
+        for p in range(self.n_pieces):
+            img, shadow = self.photos[p]
+            tag = self.piece_tag(p)
+            if not self.placed[p]:
+                c.create_image(0, 0, image=shadow, anchor="nw",
+                               tags=(tag, f"s{p}"))
+            c.create_image(0, 0, image=img, anchor="nw", tags=(tag, f"i{p}"))
+            self.place_items(p)
+        self.draw_hud()
+        self.restack()
+
+    def draw_hud(self):
+        c = self.canvas
+        c.delete("hud")
+        c.create_text(10, 10, anchor="nw", fill="white",
+                      font=("Helvetica", 18, "bold"), tags=("hud", "count"),
+                      text=f"Pieces: {self.solved_count} / {self.n_pieces}")
+        c.create_text(self.scr_w - 10, 10, anchor="ne", fill="#e6e6e6",
+                      font=("Helvetica", 14), tags="hud",
+                      text="R = reshuffle   H = hint   S = save")
+        if self.save_msg_job:
+            c.create_text(self.scr_w // 2, self.scr_h - 26, fill=GREEN,
+                          font=("Helvetica", 18, "bold"),
+                          tags=("hud", "savemsg"), text="Saved!")
+        if self.won:
+            cx, cy = self.scr_w // 2, self.scr_h // 2
+            c.create_rectangle(cx - 250, cy - 60, cx + 250, cy + 50,
+                               fill="black", stipple="gray75", outline="",
+                               tags="hud")
+            c.create_text(cx, cy - 20, fill=YELLOW,
+                          font=("Helvetica", 44, "bold"), tags="hud",
+                          text="Puzzle Complete!")
+            c.create_text(cx, cy + 28, fill="white", font=("Helvetica", 20),
+                          tags="hud", text="Press R to reshuffle")
+
+    # ── Events ──
+
+    def on_press(self, ev):
+        if self.won or self.dragging is not None:
+            return
+        for k in range(self.n_pieces - 1, -1, -1):
+            p = self.draw_ord[k]
+            if self.placed[p]:
+                continue
+            px, py = self.piece_x[p], self.piece_y[p]
+            if self.is_inside(p, ev.x - px, ev.y - py):
+                self.draw_ord.append(self.draw_ord.pop(k))
+                self.dragging = p
+                self.drag_off = (ev.x - px, ev.y - py)
+                self.canvas.tag_raise(self.piece_tag(p))
+                self.canvas.tag_raise("hud")
+                self.place_items(p, lifted=True)
+                return
+
+    def on_motion(self, ev):
+        p = self.dragging
+        if p is None:
+            return
+        self.piece_x[p] = ev.x - self.drag_off[0]
+        self.piece_y[p] = ev.y - self.drag_off[1]
+        self.place_items(p, lifted=True)
+
+    def on_release(self, ev):
+        p = self.dragging
+        if p is None:
+            return
+        self.dragging = None
+        tx, ty = self.target(p)
+        if (abs(self.piece_x[p] - tx) < self.dpw // 3
+                and abs(self.piece_y[p] - ty) < self.dph // 3):
+            self.piece_x[p], self.piece_y[p] = tx, ty
+            self.placed[p] = True
+            self.solved_count += 1
+            self.won = self.solved_count == self.n_pieces
+            self.canvas.delete(f"s{p}")   # settled pieces have no shadow
+            self.place_items(p)
+            self.draw_hud()
+            self.restack()
+        else:
+            self.place_items(p)
+
+    def on_configure(self, ev):
+        if (ev.width, ev.height) == (self.scr_w, self.scr_h):
+            return
+        if self.resize_job:
+            self.root.after_cancel(self.resize_job)
+        self.resize_job = self.root.after(
+            250, lambda: self.do_resize(ev.width, ev.height))
+
+    def do_resize(self, w, h):
+        self.resize_job = None
+        old_w, old_h = self.scr_w, self.scr_h
+        self.scr_w, self.scr_h = max(w, 200), max(h, 200)
+        self.dragging = None
+        self.init_layout()
+        self.rescale_pieces(old_w, old_h)
+        self.gen_piece_images()
+        self.redraw()
+
+    def reshuffle(self, _ev=None):
+        if self.dragging is None:
+            self.scatter()
+
+    def toggle_ghost(self, _ev=None):
+        if self.dragging is None:
+            self.show_ghost = not self.show_ghost
+            self.redraw()
+
+    def quit(self, _ev=None):
+        self.root.destroy()
+
+    # ── Save / load ──
+
+    def save_game(self, _ev=None):
+        if self.dragging is not None:
+            return
+        state = {
+            "magic": SAVE_MAGIC, "filename": os.path.abspath(self.filename),
+            "pdf_page": self.pdf_page, "n_target": self.n_target,
+            "n_cols": self.n_cols, "n_rows": self.n_rows,
+            "piece_w": self.piece_w, "piece_h": self.piece_h,
+            "scr_w": self.scr_w, "scr_h": self.scr_h,
+            "piece_x": [int(v) for v in self.piece_x],
+            "piece_y": [int(v) for v in self.piece_y],
+            "placed": self.placed, "draw_ord": self.draw_ord,
+            "edge_top": self.edge_top, "edge_right": self.edge_right,
+            "edge_bot": self.edge_bot, "edge_left": self.edge_left,
+            "show_ghost": self.show_ghost,
+        }
+        try:
+            with open(self.save_name, "w") as f:
+                json.dump(state, f)
+        except OSError as e:
+            print(f"Error: could not save {self.save_name}: {e}",
+                  file=sys.stderr)
+            return
+        if self.save_msg_job:
+            self.root.after_cancel(self.save_msg_job)
+        self.save_msg_job = self.root.after(2000, self.clear_save_msg)
+        self.draw_hud()
+
+    def clear_save_msg(self):
+        self.save_msg_job = None
+        self.canvas.delete("savemsg")
+
+    def restore(self, s):
+        self.n_cols, self.n_rows = s["n_cols"], s["n_rows"]
+        self.n_pieces = self.n_cols * self.n_rows
+        self.piece_w, self.piece_h = s["piece_w"], s["piece_h"]
+        self.edge_top, self.edge_right = s["edge_top"], s["edge_right"]
+        self.edge_bot, self.edge_left = s["edge_bot"], s["edge_left"]
+        self.placed = s["placed"]
+        self.draw_ord = s["draw_ord"]
+        self.piece_x = [float(v) for v in s["piece_x"]]
+        self.piece_y = [float(v) for v in s["piece_y"]]
+        self.show_ghost = s["show_ghost"]
+        self.solved_count = sum(self.placed)
+        self.won = self.solved_count == self.n_pieces
+        self.init_layout()
+        # Positions were saved at the old window size
+        self.rescale_pieces(s.get("scr_w", WIN_W), s.get("scr_h", WIN_H))
+
+
+def main(argv):
+    if len(argv) < 2:
+        print("Usage: tkjigsaw <image.png|image.jpg|image.pdf|...> "
+              "[approx-pieces]\n       tkjigsaw <savefile.sav>")
+        return 1
+    arg = argv[1]
+    state = None
+    if arg.lower().endswith(".sav"):
+        try:
+            with open(arg) as f:
+                state = json.load(f)
+            if state.get("magic") != SAVE_MAGIC:
+                raise ValueError("bad magic")
+        except (OSError, ValueError) as e:
+            print(f"Error: could not load save file: {arg} ({e})")
+            return 1
+        filename, save_name = state["filename"], arg
+        n_target, pdf_page = state["n_target"], state["pdf_page"]
+    else:
+        filename = arg
+        save_name = os.path.splitext(arg)[0] + ".sav"
+        n_target = 20
+        if len(argv) >= 3:
+            try:
+                n_target = int(argv[2])
+            except ValueError:
+                pass
+        n_target = min(max(n_target, 1), MAXPIECES)
+        pdf_page = -1
+        if arg.lower().endswith(".pdf"):
+            pages = pdf_page_count(arg)
+            if pages < 1:
+                print(f"Error: could not count PDF pages: {arg}")
+                return 1
+            pdf_page = random.randrange(pages)
+
+    root = tk.Tk()
+    root.title("Jigsaw Puzzle")
+    root.configure(bg=BG)
+    Jigsaw(root, filename, save_name, n_target, pdf_page, state)
+    root.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
