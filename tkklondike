@@ -1,0 +1,1157 @@
+#!/usr/bin/env python3
+"""tkklondike - Klondike solitaire in Python + Tk, standard library only.
+
+Port of the Klondike PWA.  Every deal is checked by a solver before you get it,
+so the game you are given has a winning line.
+
+Click or drag a card to move it.  Click a card, then a pile, to move it there;
+double-click a card to send it to its foundation.  Click the stock to draw.
+
+Keys:  U / Ctrl-Z  undo        N  new game       D  toggle draw 1 / draw 3
+       A           auto-finish M  mute sounds    Q  quit
+
+The game in progress is saved to ~/.tkklondike.json when you quit and resumed
+next time.  Sound effects are synthesized at startup and played with afplay
+(macOS), paplay or aplay if one is available; otherwise the game is silent.
+"""
+
+import array
+import atexit
+import json
+import math
+import os
+import random
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import tkinter as tk
+import wave
+
+SAVE_FILE = os.path.expanduser("~/.tkklondike.json")
+
+# ── Game logic ───────────────────────────────────────────────────────────────
+#
+# A card is a tuple (suit, rank, face_up); suit indexes SUITS.  A game is a dict
+# {tableau: 7 lists, foundations: 4 lists, stock, waste, draw}.  Move functions
+# never mutate their input: they return a new game, or None if the move is
+# illegal, so Undo is just a stack of earlier games.  Cards are immutable, so a
+# copy only has to copy the lists.
+
+SUITS = ("spades", "hearts", "diamonds", "clubs")
+SUIT_SYMBOLS = ("♠", "♥", "♦", "♣")
+RANK_NAMES = ("", "A", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+              "J", "Q", "K")
+
+
+def is_red(suit):
+    return suit == 1 or suit == 2
+
+
+def new_deck():
+    return [(s, r, False) for s in range(4) for r in range(1, 14)]
+
+
+def create_game(draw=1, rng=random):
+    deck = new_deck()
+    rng.shuffle(deck)
+    tableau = [[] for _ in range(7)]
+    i = 0
+    for col in range(7):
+        for row in range(col + 1):
+            s, r, _ = deck[i]
+            tableau[col].append((s, r, row == col))
+            i += 1
+    return {"tableau": tableau, "foundations": [[], [], [], []],
+            "stock": deck[i:], "waste": [], "draw": draw}
+
+
+def clone(g):
+    return {"tableau": [p[:] for p in g["tableau"]],
+            "foundations": [p[:] for p in g["foundations"]],
+            "stock": g["stock"][:], "waste": g["waste"][:], "draw": g["draw"]}
+
+
+def top_of(pile):
+    return pile[-1] if pile else None
+
+
+def can_add_to_foundation(card, pile):
+    if pile:
+        top = pile[-1]
+        return card[0] == top[0] and card[1] == top[1] + 1
+    return card[1] == 1
+
+
+def can_add_to_tableau(card, pile):
+    if pile:
+        top = pile[-1]
+        return is_red(card[0]) != is_red(top[0]) and card[1] == top[1] - 1
+    return card[1] == 13
+
+
+def face_up_run_start(pile):
+    """Index of the first card of the face-up run at the end of pile.  The run
+    is always internally valid, so moving it only needs the base card to fit."""
+    i = len(pile) - 1
+    while i > 0 and pile[i - 1][2]:
+        i -= 1
+    return i if pile and pile[i][2] else len(pile)
+
+
+def is_won(g):
+    return all(len(f) == 13 for f in g["foundations"])
+
+
+def can_auto_complete(g):
+    """Safe to auto-finish once nothing is face down or left in stock/waste."""
+    if g["stock"] or g["waste"]:
+        return False
+    return all(c[2] for pile in g["tableau"] for c in pile)
+
+
+def draw_from_stock(g):
+    nxt = clone(g)
+    if not nxt["stock"]:
+        if not nxt["waste"]:
+            return None
+        nxt["stock"] = [(s, r, False) for s, r, _ in reversed(nxt["waste"])]
+        nxt["waste"] = []
+        return nxt
+    for _ in range(min(nxt["draw"], len(nxt["stock"]))):
+        s, r, _ = nxt["stock"].pop()
+        nxt["waste"].append((s, r, True))
+    return nxt
+
+
+def flip_new_top(pile):
+    if pile and not pile[-1][2]:
+        s, r, _ = pile[-1]
+        pile[-1] = (s, r, True)
+
+
+def move_waste_to_foundation(g):
+    card = top_of(g["waste"])
+    if not card or not can_add_to_foundation(card, g["foundations"][card[0]]):
+        return None
+    nxt = clone(g)
+    nxt["foundations"][card[0]].append(nxt["waste"].pop())
+    return nxt
+
+
+def move_waste_to_tableau(g, to):
+    card = top_of(g["waste"])
+    if not card or not can_add_to_tableau(card, g["tableau"][to]):
+        return None
+    nxt = clone(g)
+    nxt["tableau"][to].append(nxt["waste"].pop())
+    return nxt
+
+
+def move_tableau_to_foundation(g, frm):
+    card = top_of(g["tableau"][frm])
+    if (not card or not card[2]
+            or not can_add_to_foundation(card, g["foundations"][card[0]])):
+        return None
+    nxt = clone(g)
+    nxt["foundations"][card[0]].append(nxt["tableau"][frm].pop())
+    flip_new_top(nxt["tableau"][frm])
+    return nxt
+
+
+def move_tableau_to_tableau(g, frm, idx, to):
+    if frm == to:
+        return None
+    pile = g["tableau"][frm]
+    if idx >= len(pile) or not pile[idx][2] or idx < face_up_run_start(pile):
+        return None
+    if not can_add_to_tableau(pile[idx], g["tableau"][to]):
+        return None
+    nxt = clone(g)
+    run = nxt["tableau"][frm][idx:]
+    del nxt["tableau"][frm][idx:]
+    nxt["tableau"][to].extend(run)
+    flip_new_top(nxt["tableau"][frm])
+    return nxt
+
+
+def move_foundation_to_tableau(g, suit, to):
+    card = top_of(g["foundations"][suit])
+    if not card or not can_add_to_tableau(card, g["tableau"][to]):
+        return None
+    nxt = clone(g)
+    nxt["tableau"][to].append(nxt["foundations"][suit].pop())
+    return nxt
+
+
+def find_auto_move(g):
+    """One legal card to send home: waste first, then columns left to right."""
+    card = top_of(g["waste"])
+    if card and can_add_to_foundation(card, g["foundations"][card[0]]):
+        return ("waste", None)
+    for col, pile in enumerate(g["tableau"]):
+        card = top_of(pile)
+        if card and card[2] and can_add_to_foundation(
+                card, g["foundations"][card[0]]):
+            return ("tableau", col)
+    return None
+
+
+def apply_auto_move(g, move):
+    if move[0] == "waste":
+        return move_waste_to_foundation(g)
+    return move_tableau_to_foundation(g, move[1])
+
+
+# ── Solver ───────────────────────────────────────────────────────────────────
+#
+# Full-information ("thoughtful") solver used to verify a deal has a winning
+# line before it is handed out.  Search is budgeted; running out of budget
+# counts as "not verified", never as a false positive.
+
+def is_safe_autoplay(card, foundations):
+    """A card can go home immediately once no opposite-colour foundation
+    could still need it as a base."""
+    if card[1] <= 2:
+        return True
+    opp = (0, 3) if is_red(card[0]) else (1, 2)
+    return all(len(foundations[s]) >= card[1] - 1 for s in opp)
+
+
+def apply_safe_cascade(g):
+    cur = g
+    while True:
+        wc = top_of(cur["waste"])
+        if (wc and can_add_to_foundation(wc, cur["foundations"][wc[0]])
+                and is_safe_autoplay(wc, cur["foundations"])):
+            cur = move_waste_to_foundation(cur)
+            continue
+        for col in range(7):
+            tc = top_of(cur["tableau"][col])
+            if (tc and tc[2]
+                    and can_add_to_foundation(tc, cur["foundations"][tc[0]])
+                    and is_safe_autoplay(tc, cur["foundations"])):
+                cur = move_tableau_to_foundation(cur, col)
+                break
+        else:
+            return cur
+
+
+def hash_state(g):
+    return (tuple(tuple(p) for p in g["tableau"]),
+            tuple(len(f) for f in g["foundations"]),
+            tuple(g["stock"]), tuple(g["waste"]))
+
+
+def generate_moves(g):
+    """Every legal next state, lowest priority first (the DFS pops the last).
+    All empty columns are interchangeable, and moving a whole column to an
+    empty one is pure relabelling, so those duplicates are dropped."""
+    moves = []
+    tab, fnd = g["tableau"], g["foundations"]
+
+    for col in range(7):
+        card = top_of(tab[col])
+        if card and card[2] and can_add_to_foundation(card, fnd[card[0]]):
+            moves.append((5, apply_safe_cascade(
+                move_tableau_to_foundation(g, col))))
+    card = top_of(g["waste"])
+    if card and can_add_to_foundation(card, fnd[card[0]]):
+        moves.append((5, apply_safe_cascade(move_waste_to_foundation(g))))
+
+    for frm in range(7):
+        pile = tab[frm]
+        if not pile:
+            continue
+        run_start = face_up_run_start(pile)
+        first_empty = next((i for i, p in enumerate(tab)
+                            if i != frm and not p), -1)
+        for idx in range(run_start, len(pile)):
+            card = pile[idx]
+            for to in range(7):
+                if to == frm:
+                    continue
+                dest = tab[to]
+                if not dest and (idx == 0 or to != first_empty):
+                    continue
+                if not can_add_to_tableau(card, dest):
+                    continue
+                moved = move_tableau_to_tableau(g, frm, idx, to)
+                if moved:
+                    moves.append((3 if idx == run_start else 2,
+                                  apply_safe_cascade(moved)))
+
+    first_empty = next((i for i, p in enumerate(tab) if not p), -1)
+    card = top_of(g["waste"])
+    if card:
+        for to in range(7):
+            dest = tab[to]
+            if not dest and to != first_empty:
+                continue
+            if can_add_to_tableau(card, dest):
+                moves.append((3, apply_safe_cascade(
+                    move_waste_to_tableau(g, to))))
+
+    for suit in range(4):
+        card = top_of(fnd[suit])
+        if not card:
+            continue
+        for to in range(7):
+            dest = tab[to]
+            if not dest and to != first_empty:
+                continue
+            if can_add_to_tableau(card, dest):
+                moves.append((1, apply_safe_cascade(
+                    move_foundation_to_tableau(g, suit, to))))
+
+    if g["stock"] or g["waste"]:
+        moved = draw_from_stock(g)
+        if moved:
+            moves.append((0, apply_safe_cascade(moved)))
+
+    moves.sort(key=lambda m: m[0])
+    return [m[1] for m in moves]
+
+
+def is_solvable(game, node_budget=20000, time_budget=1.5):
+    start = time.monotonic()
+    seed = apply_safe_cascade(game)
+    if is_won(seed):
+        return True
+    visited = {hash_state(seed)}
+    stack = [seed]
+    nodes = 0
+    while stack:
+        nodes += 1
+        if nodes > node_budget:
+            return False
+        if nodes % 200 == 0 and time.monotonic() - start > time_budget:
+            return False
+        for nxt in generate_moves(stack.pop()):
+            if is_won(nxt):
+                return True
+            h = hash_state(nxt)
+            if h not in visited:
+                visited.add(h)
+                stack.append(nxt)
+    return False
+
+
+def deal_solvable_game(draw, max_attempts=15, overall_budget=10.0):
+    """Shuffle until a deal verifies as solvable, on a bounded budget; if the
+    budget runs out, hand back the last (unverified) deal."""
+    deadline = time.monotonic() + overall_budget
+    game = None
+    for attempt in range(1, max_attempts + 1):
+        game = create_game(draw)
+        if is_solvable(game):
+            return game, True, attempt
+        if time.monotonic() > deadline:
+            break
+    return game, False, attempt
+
+
+# ── Sound ────────────────────────────────────────────────────────────────────
+#
+# Effects are synthesized into small WAV files once at startup (the same tones
+# and filtered-noise ticks as the PWA's Web Audio code) and played with
+# whatever command-line player the system has.
+
+RATE = 22050
+
+
+class Sound:
+    def __init__(self):
+        self.muted = False
+        self.player = None
+        for cmd in (["afplay"], ["paplay"], ["aplay", "-q"]):
+            if shutil.which(cmd[0]):
+                self.player = cmd
+                break
+        self.files = {}
+        if self.player:
+            self.dir = tempfile.mkdtemp(prefix="tkklondike-")
+            atexit.register(shutil.rmtree, self.dir, True)
+            threading.Thread(target=self.synthesize, daemon=True).start()
+
+    @staticmethod
+    def tone(buf, t0, freq, dur, wave_type="sine", gain=0.25, attack=0.005):
+        start = int(t0 * RATE)
+        n = int(dur * RATE)
+        need = start + n
+        if len(buf) < need:
+            buf.extend([0.0] * (need - len(buf)))
+        for k in range(n):
+            t = k / RATE
+            if t < attack:
+                env = 0.0001 * (gain / 0.0001) ** (t / attack)
+            else:
+                env = gain * (0.0001 / gain) ** ((t - attack) / (dur - attack))
+            ph = (freq * t) % 1.0
+            if wave_type == "sine":
+                v = math.sin(2 * math.pi * ph)
+            elif wave_type == "square":
+                v = 1.0 if ph < 0.5 else -1.0
+            else:  # triangle
+                v = 4 * ph - 1 if ph < 0.5 else 3 - 4 * ph
+            buf[start + k] += v * env
+
+    @staticmethod
+    def noise(buf, t0, dur, freq=800, gain=0.3):
+        """High-passed white-noise burst with an exponential decay."""
+        start = int(t0 * RATE)
+        n = int(dur * RATE)
+        need = start + n
+        if len(buf) < need:
+            buf.extend([0.0] * (need - len(buf)))
+        rc = 1 / (2 * math.pi * freq)
+        a = rc / (rc + 1 / RATE)
+        y = x_prev = 0.0
+        for k in range(n):
+            x = random.uniform(-1, 1)
+            y = a * (y + x - x_prev)
+            x_prev = x
+            env = gain * (0.0001 / gain) ** (k / n)
+            buf[start + k] += y * env
+
+    def write(self, name, buf):
+        path = os.path.join(self.dir, name + ".wav")
+        pcm = array.array("h", (int(max(-1.0, min(1.0, v)) * 32000)
+                                for v in buf + [0.0] * 200))
+        if sys.byteorder == "big":
+            pcm.byteswap()
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(RATE)
+            w.writeframes(pcm.tobytes())
+        self.files[name] = path
+
+    def synthesize(self):
+        tone, noise = self.tone, self.noise
+        b = []
+        noise(b, 0, 0.045, 2200, 0.16)
+        self.write("flip", b)
+        b = []
+        noise(b, 0, 0.04, 1800, 0.14)
+        self.write("deal", b)
+        b = []
+        noise(b, 0, 0.05, 1200, 0.16)
+        tone(b, 0, 180, 0.05, "sine", 0.06)
+        self.write("place", b)
+        b = []
+        tone(b, 0, 880, 0.1, "triangle", 0.18)
+        tone(b, 0.05, 1318.5, 0.14, "triangle", 0.16)
+        self.write("foundation", b)
+        b = []
+        tone(b, 0, 180, 0.12, "square", 0.08)
+        self.write("invalid", b)
+        b = []
+        for i in range(4):
+            noise(b, i * 0.045, 0.04, 1600 - i * 150, 0.12)
+        self.write("recycle", b)
+        b = []
+        tone(b, 0, 500, 0.08, "square", 0.14)
+        tone(b, 0.06, 380, 0.08, "square", 0.12)
+        self.write("undo", b)
+        for i, f in enumerate((523.25, 659.25, 783.99, 1046.5, 1318.5)):
+            b = []
+            tone(b, 0, f, 0.12, "triangle", 0.16)
+            self.write(f"auto{i}", b)
+        b = []
+        run = (523.25, 659.25, 783.99, 1046.5, 1318.5, 1568.0, 2093.0)
+        for i, f in enumerate(run):
+            tone(b, i * 0.08, f, 0.5, "triangle", 0.3)
+        for i in range(10):
+            t = 0.56 + i * 0.06 + random.random() * 0.03
+            tone(b, t, 1500 + random.random() * 1200, 0.18, "sine", 0.14)
+        self.write("win", b)
+
+    def play(self, name):
+        path = self.files.get(name)
+        if self.muted or not path:
+            return
+        try:
+            subprocess.Popen(self.player + [path], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+
+
+# ── Persistence ──────────────────────────────────────────────────────────────
+
+def game_to_json(g):
+    return {"tableau": g["tableau"], "foundations": g["foundations"],
+            "stock": g["stock"], "waste": g["waste"], "draw": g["draw"]}
+
+
+def game_from_json(d):
+    cards = lambda pile: [tuple(c) for c in pile]
+    g = {"tableau": [cards(p) for p in d["tableau"]],
+         "foundations": [cards(p) for p in d["foundations"]],
+         "stock": cards(d["stock"]), "waste": cards(d["waste"]),
+         "draw": 3 if d.get("draw") == 3 else 1}
+    if len(g["tableau"]) != 7 or len(g["foundations"]) != 4:
+        raise ValueError("bad game")
+    return g
+
+
+def load_saved():
+    try:
+        with open(SAVE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+# ── UI ───────────────────────────────────────────────────────────────────────
+
+FELT = "#0f4d2e"
+PANEL = "#0e2b1c"
+INK = "#f1ece0"
+INK_DIM = "#a9c2b2"
+ACCENT = "#d7a24a"
+RED = "#c0392b"
+BLACK = "#1c1c1c"
+CARD_FACE = "#f7f3e8"
+CARD_EDGE = "#8a8578"
+BACK_A = "#1b4d8f"
+BACK_B = "#2a62a8"
+SLOT = "#5f8f75"
+SEL = "#ffd76a"
+WIN = "#7ec46c"
+
+DOUBLE_CLICK_S = 0.35
+DRAG_THRESHOLD = 7
+MIN_DOWN_STEP = 9
+MIN_UP_STEP = 17
+
+
+class Klondike:
+    def __init__(self, root):
+        self.root = root
+        self.sound = Sound()
+        saved = load_saved()
+        self.sound.muted = bool(saved.get("muted"))
+        self.pref_draw = 3 if saved.get("draw") == 3 else 1
+
+        root.title("Klondike Solitaire")
+        root.configure(bg=PANEL)
+        root.minsize(420, 400)
+        root.geometry("900x720")
+
+        top = tk.Frame(root, bg=PANEL)
+        top.pack(fill="x")
+        tk.Label(top, text="Klondike Solitaire", bg=PANEL, fg=ACCENT,
+                 font=("Helvetica", 16, "bold")).pack(side="left", padx=10,
+                                                       pady=6)
+        self.status = tk.Label(top, bg=PANEL, fg=INK_DIM,
+                               font=("Helvetica", 12))
+        self.status.pack(side="left", padx=10)
+        self.stats = tk.Label(top, bg=PANEL, fg=INK_DIM,
+                              font=("Helvetica", 12))
+        self.stats.pack(side="right", padx=10)
+
+        bar = tk.Frame(root, bg=PANEL)
+        bar.pack(side="bottom", fill="x")
+        self.btn = {}
+        for key, label, cmd in (("undo", "Undo", self.undo),
+                                ("draw", "Draw 1", self.toggle_draw_mode),
+                                ("auto", "Auto", self.auto_complete),
+                                ("mute", "Sound: on", self.toggle_mute),
+                                ("new", "New Game", self.new_game)):
+            b = tk.Button(bar, text=label, command=cmd, width=9,
+                          highlightbackground=PANEL)
+            b.pack(side="left", expand=True, pady=6)
+            self.btn[key] = b
+
+        self.canvas = tk.Canvas(root, bg=FELT, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+
+        self.game = None
+        self.history = []          # list of (game, moves) for Undo
+        self.moves = 0
+        self.selected = None       # {"type", "col", "idx", "suit"}
+        self.selected_at = 0.0
+        self.auto_running = False
+        self.dealing = False
+        self.press = None          # pending click/drag: {x, y, candidate}
+        self.drag = None           # active drag: {candidate, x, y}
+        self.won_shown = False
+        self.geom = None
+
+        c = self.canvas
+        c.bind("<ButtonPress-1>", self.on_press)
+        c.bind("<B1-Motion>", self.on_motion)
+        c.bind("<ButtonRelease-1>", self.on_release)
+        c.bind("<Configure>", lambda e: self.render())
+        for keys, fn in ((("u", "U", "Control-z", "Command-z"), self.undo),
+                         (("n", "N"), self.new_game),
+                         (("d", "D"), self.toggle_draw_mode),
+                         (("a", "A"), self.auto_complete),
+                         (("m", "M"), self.toggle_mute),
+                         (("q", "Q"), self.quit)):
+            for k in keys:
+                root.bind(f"<{k}>", lambda e, fn=fn: fn())
+        root.protocol("WM_DELETE_WINDOW", self.quit)
+
+        try:
+            g = game_from_json(saved["game"])
+            if is_won(g):
+                raise ValueError("finished")
+            self.game = g
+            self.history = [(game_from_json(h), m)
+                            for h, m in saved.get("history", [])]
+            self.moves = saved.get("moves", 0)
+            self.render()
+        except (KeyError, TypeError, ValueError, IndexError):
+            self.game = create_game(self.pref_draw)   # placeholder while dealing
+            self.start_deal(self.pref_draw)
+
+    # ── Dealing ──
+
+    def start_deal(self, draw):
+        self.dealing = True
+        self.selected = None
+        self.won_shown = False
+        result = {}
+
+        def work():
+            result["deal"] = deal_solvable_game(draw)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.render()
+        self.poll_deal(result)
+
+    def poll_deal(self, result):
+        if "deal" not in result:
+            self.root.after(50, self.poll_deal, result)
+            return
+        self.game, _verified, _attempts = result["deal"]
+        self.dealing = False
+        self.history = []
+        self.moves = 0
+        self.render()
+        self.sound.play("deal")
+
+    # ── Layout ──
+
+    def compute_layout(self):
+        c = self.canvas
+        W, H = max(c.winfo_width(), 100), max(c.winfo_height(), 100)
+        pitch = W / 7
+        gap = max(5.0, min(22.0, pitch * 0.38))
+        cw = pitch - gap
+        # Keep room for the top row plus a reasonably deep tableau
+        cw = min(cw, (H - 3 * gap) / 3.4 / 1.4)
+        ch = cw * 1.4
+        x0 = (W - 7 * cw - 6 * gap) / 2
+        colx = [x0 + i * (cw + gap) for i in range(7)]
+        top_y = gap * 0.8
+        tab_y = top_y + ch + gap
+        avail = max(ch, H - tab_y - 8)
+
+        pref_down = max(ch * 0.16, MIN_DOWN_STEP)
+        pref_up = max(ch * 0.34, MIN_UP_STEP)
+
+        def steps(pile, down, up):
+            tops = [0.0]
+            for i in range(1, len(pile)):
+                tops.append(tops[-1] + (up if pile[i][2] else down))
+            return tops
+
+        tab = self.game["tableau"]
+        needed = max([ch] + [ch + steps(p, pref_down, pref_up)[-1]
+                             for p in tab if p])
+        scale = 1.0
+        if needed > avail and needed > ch:
+            scale = max(0.15, (avail - ch) / (needed - ch))
+        down = max(pref_down * scale, MIN_DOWN_STEP)
+        up = max(pref_up * scale, MIN_UP_STEP)
+        tops = [steps(p, down, up) if p else [] for p in tab]
+        self.geom = {"W": W, "H": H, "cw": cw, "ch": ch, "gap": gap,
+                     "colx": colx, "top_y": top_y, "tab_y": tab_y,
+                     "tops": tops}
+        return self.geom
+
+    def waste_positions(self):
+        g = self.geom
+        w = self.game["waste"]
+        fan = min(len(w), 3 if self.game["draw"] == 3 else 1)
+        start = len(w) - fan
+        return [(i, g["colx"][1] + g["cw"] * 0.18 * (i - start))
+                for i in range(start, len(w))]
+
+    def foundation_x(self, suit):
+        return self.geom["colx"][3 + suit]
+
+    # ── Drawing ──
+
+    def round_rect(self, x, y, w, h, r, **kw):
+        pts = (x + r, y, x + w - r, y, x + w, y, x + w, y + r,
+               x + w, y + h - r, x + w, y + h, x + w - r, y + h,
+               x + r, y + h, x, y + h, x, y + h - r, x, y + r, x, y)
+        return self.canvas.create_polygon(pts, smooth=True, **kw)
+
+    def draw_slot(self, x, y, glyph="", tags=()):
+        g = self.geom
+        self.round_rect(x, y, g["cw"], g["ch"], g["cw"] * 0.08, fill="",
+                        outline=SLOT, width=2, tags=tags)
+        if glyph:
+            self.canvas.create_text(x + g["cw"] / 2, y + g["ch"] / 2,
+                                    text=glyph, fill=SLOT, tags=tags,
+                                    font=("Helvetica",
+                                          -int(g["cw"] * 0.42)))
+
+    def draw_card(self, card, x, y, selected=False, tags=()):
+        c, g = self.canvas, self.geom
+        cw, ch = g["cw"], g["ch"]
+        r = cw * 0.08
+        outline = SEL if selected else CARD_EDGE
+        width = 3 if selected else 1
+        if not card[2]:
+            self.round_rect(x, y, cw, ch, r, fill=BACK_A, outline=outline,
+                            width=width, tags=tags)
+            m = cw * 0.1
+            self.round_rect(x + m, y + m, cw - 2 * m, ch - 2 * m, r * 0.6,
+                            fill="", outline=BACK_B, width=2, tags=tags)
+            cx, cy, d = x + cw / 2, y + ch / 2, cw * 0.18
+            c.create_polygon(cx, cy - d * 1.4, cx + d, cy, cx, cy + d * 1.4,
+                             cx - d, cy, fill=BACK_B, outline="", tags=tags)
+            return
+        self.round_rect(x, y, cw, ch, r, fill=CARD_FACE, outline=outline,
+                        width=width, tags=tags)
+        suit, rank, _ = card
+        color = RED if is_red(suit) else BLACK
+        sym, name = SUIT_SYMBOLS[suit], RANK_NAMES[rank]
+        rank_font = ("Helvetica", -max(8, int(cw * 0.30)), "bold")
+        suit_font = ("Helvetica", -max(8, int(cw * 0.26)))
+        pad = cw * 0.07
+        c.create_text(x + pad, y + pad * 0.6, text=name, anchor="nw",
+                      fill=color, font=rank_font, tags=tags)
+        c.create_text(x + cw - pad, y + pad * 0.6, text=sym, anchor="ne",
+                      fill=color, font=suit_font, tags=tags)
+        c.create_text(x + cw / 2, y + ch * 0.6, text=sym, fill=color,
+                      font=("Helvetica", -max(10, int(cw * 0.5))), tags=tags)
+        c.create_text(x + cw - pad, y + ch - pad * 0.6, text=name,
+                      anchor="se", fill=color, font=rank_font, tags=tags)
+
+    def is_selected(self, typ, col=None, idx=None, suit=None):
+        s = self.selected
+        if not s or s["type"] != typ:
+            return False
+        if typ == "tableau":
+            return s["col"] == col and idx >= s["idx"]
+        if typ == "foundation":
+            return s["suit"] == suit
+        return True
+
+    def render(self):
+        if self.game is None:
+            return
+        self.drag = None
+        c = self.canvas
+        c.delete("all")
+        g = self.compute_layout()
+        game = self.game
+        cw, ch, top_y = g["cw"], g["ch"], g["top_y"]
+
+        # Stock
+        x = g["colx"][0]
+        if game["stock"]:
+            self.draw_card(game["stock"][-1], x, top_y)
+        else:
+            self.draw_slot(x, top_y, "↺" if game["waste"] else "")
+
+        # Waste (top three fanned in draw-3 mode)
+        if not game["waste"]:
+            self.draw_slot(g["colx"][1], top_y)
+        last = len(game["waste"]) - 1
+        for i, x in self.waste_positions():
+            sel = i == last and self.is_selected("waste")
+            self.draw_card(game["waste"][i], x, top_y, sel,
+                           tags=("waste",) if i == last else ())
+
+        # Foundations
+        for suit in range(4):
+            x = self.foundation_x(suit)
+            pile = game["foundations"][suit]
+            if pile:
+                self.draw_card(pile[-1], x, top_y,
+                               self.is_selected("foundation", suit=suit),
+                               tags=(f"f{suit}",))
+            else:
+                self.draw_slot(x, top_y, SUIT_SYMBOLS[suit])
+
+        # Tableau
+        for col, pile in enumerate(game["tableau"]):
+            x = g["colx"][col]
+            if not pile:
+                self.draw_slot(x, g["tab_y"])
+            for i, card in enumerate(pile):
+                self.draw_card(card, x, g["tab_y"] + g["tops"][col][i],
+                               self.is_selected("tableau", col, i),
+                               tags=(f"t{col}", f"t{col}_{i}"))
+
+        self.render_chrome()
+        if is_won(game) and not self.auto_running:
+            self.draw_win_overlay()
+
+    def render_chrome(self):
+        game = self.game
+        if self.dealing:
+            text, color = "Shuffling a solvable deal…", INK_DIM
+        elif is_won(game):
+            text, color = "You win!", WIN
+        elif self.selected:
+            text, color = "Click a pile to move the selected card", INK_DIM
+        else:
+            text, color = "Click or drag a card to move it", INK_DIM
+        self.status.config(text=text, fg=color)
+        self.stats.config(text=f"Moves: {self.moves}")
+        busy = self.dealing or self.auto_running
+
+        def able(key, ok):
+            self.btn[key].config(state="normal" if ok else "disabled")
+
+        able("undo", not busy and bool(self.history))
+        able("draw", not busy)
+        able("auto", not busy and can_auto_complete(game)
+             and not is_won(game))
+        able("new", not self.dealing)
+        self.btn["draw"].config(text=f"Draw {game['draw']}")
+        self.btn["mute"].config(
+            text="Sound: off" if self.sound.muted else "Sound: on")
+        if self.dealing:
+            g = self.geom
+            self.canvas.create_rectangle(0, 0, g["W"], g["H"], fill=FELT,
+                                         outline="")
+            self.canvas.create_text(g["W"] / 2, g["H"] / 2, fill=INK,
+                                    text="Shuffling a solvable deal…",
+                                    font=("Helvetica", 20))
+
+    def draw_win_overlay(self):
+        c, g = self.canvas, self.geom
+        cx, cy = g["W"] / 2, g["H"] / 2
+        self.round_rect(cx - 160, cy - 80, 320, 160, 16, fill=PANEL,
+                        outline=ACCENT, width=2, tags="win")
+        c.create_text(cx, cy - 40, text="You win!", fill=WIN,
+                      font=("Helvetica", 28, "bold"), tags="win")
+        c.create_text(cx, cy, text=f"Solved in {self.moves} moves.",
+                      fill=INK_DIM, font=("Helvetica", 14), tags="win")
+        self.round_rect(cx - 70, cy + 25, 140, 36, 10, fill=ACCENT,
+                        outline="", tags=("win", "winbtn"))
+        c.create_text(cx, cy + 43, text="New Game", fill="#1c1410",
+                      font=("Helvetica", 14, "bold"), tags=("win", "winbtn"))
+
+    # ── Hit testing ──
+
+    def hit(self, x, y):
+        """What pile (and card) is under (x, y), or None."""
+        g = self.geom
+        if g is None:
+            return None
+        cw, ch, gap = g["cw"], g["ch"], g["gap"]
+        half = gap / 2
+        if g["top_y"] - half <= y <= g["top_y"] + ch + half:
+            for col, kind in ((0, "stock"), (1, "waste")):
+                x0 = g["colx"][col]
+                x1 = x0 + cw
+                if kind == "waste":
+                    pos = self.waste_positions()
+                    if pos:
+                        x1 = pos[-1][1] + cw
+                if x0 - half <= x <= x1 + half:
+                    return {"type": kind}
+            for suit in range(4):
+                x0 = self.foundation_x(suit)
+                if x0 - half <= x <= x0 + cw + half:
+                    return {"type": "foundation", "suit": suit}
+            return None
+        if y < g["tab_y"] - half:
+            return None
+        for col in range(7):
+            x0 = g["colx"][col]
+            if x0 - half <= x <= x0 + cw + half:
+                idx = None
+                tops = g["tops"][col]
+                dy = y - g["tab_y"]
+                for i in range(len(tops) - 1, -1, -1):
+                    if tops[i] <= dy < tops[i] + ch:
+                        idx = i
+                        break
+                return {"type": "tableau", "col": col, "idx": idx}
+        return None
+
+    def selectable(self, info):
+        game = self.game
+        if not info:
+            return None
+        if info["type"] == "waste":
+            return {"type": "waste"} if game["waste"] else None
+        if info["type"] == "foundation":
+            if not game["foundations"][info["suit"]]:
+                return None
+            return {"type": "foundation", "suit": info["suit"]}
+        if info["type"] == "tableau":
+            idx = info["idx"]
+            if idx is None:
+                return None
+            pile = game["tableau"][info["col"]]
+            if not pile[idx][2] or idx < face_up_run_start(pile):
+                return None
+            return {"type": "tableau", "col": info["col"], "idx": idx}
+        return None
+
+    def candidate_tag(self, cand):
+        if cand["type"] == "waste":
+            return ["waste"]
+        if cand["type"] == "foundation":
+            return [f"f{cand['suit']}"]
+        n = len(self.game["tableau"][cand["col"]])
+        return [f"t{cand['col']}_{i}" for i in range(cand["idx"], n)]
+
+    # ── Moves ──
+
+    def will_flip(self, sel):
+        if sel["type"] != "tableau" or sel["idx"] == 0:
+            return False
+        return not self.game["tableau"][sel["col"]][sel["idx"] - 1][2]
+
+    def attempt_move(self, sel, info):
+        """Returns (new game or None, went_to_foundation, flipped)."""
+        game, flipped = self.game, self.will_flip(sel)
+        if info["type"] == "foundation":
+            if sel["type"] == "waste":
+                return move_waste_to_foundation(game), True, False
+            if sel["type"] == "tableau":
+                return move_tableau_to_foundation(game, sel["col"]), True, \
+                    flipped
+        elif info["type"] == "tableau":
+            to = info["col"]
+            if sel["type"] == "waste":
+                return move_waste_to_tableau(game, to), False, False
+            if sel["type"] == "tableau":
+                return move_tableau_to_tableau(game, sel["col"], sel["idx"],
+                                               to), False, flipped
+            if sel["type"] == "foundation":
+                return move_foundation_to_tableau(game, sel["suit"], to), \
+                    False, False
+        return None, False, False
+
+    def commit(self, nxt, sound=None, flipped=False):
+        self.history.append((self.game, self.moves))
+        self.game = nxt
+        self.moves += 1
+        self.selected = None
+        self.render()
+        if sound:
+            self.sound.play(sound)
+        if flipped:
+            self.root.after(90, self.sound.play, "flip")
+        self.check_win()
+
+    def check_win(self):
+        if is_won(self.game) and not self.won_shown:
+            self.won_shown = True
+            self.root.after(200, self.sound.play, "win")
+
+    def stock_click(self):
+        game = self.game
+        recycle = not game["stock"] and bool(game["waste"])
+        nxt = draw_from_stock(game)
+        if not nxt:
+            return
+        self.selected = None
+        self.history.append((game, self.moves))
+        self.game = nxt
+        self.render()
+        self.sound.play("recycle" if recycle else "deal")
+
+    def pile_click(self, info):
+        if self.dealing or self.auto_running or is_won(self.game) or not info:
+            return
+        if info["type"] == "stock":
+            self.stock_click()
+            return
+        sel = self.selected
+        if sel:
+            same = (
+                (sel["type"] == "waste" and info["type"] == "waste")
+                or (sel["type"] == "foundation" and info["type"] == "foundation"
+                    and sel["suit"] == info["suit"])
+                or (sel["type"] == "tableau" and info["type"] == "tableau"
+                    and sel["col"] == info["col"]
+                    and sel["idx"] == info["idx"]))
+            if same:
+                if time.monotonic() - self.selected_at < DOUBLE_CLICK_S:
+                    nxt = None
+                    if sel["type"] == "waste":
+                        nxt = move_waste_to_foundation(self.game)
+                    elif sel["type"] == "tableau":
+                        nxt = move_tableau_to_foundation(self.game,
+                                                         sel["col"])
+                    if nxt:
+                        self.commit(nxt, "foundation", self.will_flip(sel))
+                        return
+                self.selected = None
+                self.render()
+                return
+            # Another card in the same column: reselect a different run
+            if (sel["type"] == "tableau" and info["type"] == "tableau"
+                    and sel["col"] == info["col"]):
+                self.select(info)
+                self.render()
+                return
+            nxt, to_fnd, flipped = self.attempt_move(sel, info)
+            if nxt:
+                self.commit(nxt, "foundation" if to_fnd else "place", flipped)
+                return
+            self.sound.play("invalid")
+            if not self.select(info):
+                self.selected = None
+            self.render()
+            return
+        self.select(info)
+        self.render()
+
+    def select(self, info):
+        cand = self.selectable(info)
+        if not cand:
+            return False
+        self.selected = cand
+        self.selected_at = time.monotonic()
+        return True
+
+    # ── Mouse ──
+
+    def on_press(self, ev):
+        if self.dealing or self.auto_running:
+            self.press = None
+            return
+        if is_won(self.game):
+            hits = self.canvas.find_overlapping(ev.x, ev.y, ev.x, ev.y)
+            if any("winbtn" in self.canvas.gettags(i) for i in hits):
+                self.new_game()
+            self.press = None
+            return
+        cand = self.selectable(self.hit(ev.x, ev.y))
+        self.press = {"x": ev.x, "y": ev.y, "cand": cand}
+
+    def on_motion(self, ev):
+        p = self.press
+        if not p:
+            return
+        if not self.drag:
+            if (not p["cand"] or math.hypot(ev.x - p["x"], ev.y - p["y"])
+                    < DRAG_THRESHOLD):
+                return
+            for tag in self.candidate_tag(p["cand"]):
+                self.canvas.addtag_withtag("drag", tag)
+            self.canvas.tag_raise("drag")
+            self.drag = {"cand": p["cand"], "x": p["x"], "y": p["y"]}
+        d = self.drag
+        self.canvas.move("drag", ev.x - d["x"], ev.y - d["y"])
+        d["x"], d["y"] = ev.x, ev.y
+
+    def on_release(self, ev):
+        p, self.press = self.press, None
+        if self.drag:
+            cand = self.drag["cand"]
+            self.drag = None
+            target = self.hit(ev.x, ev.y)
+            nxt, to_fnd, flipped = (self.attempt_move(cand, target)
+                                    if target else (None, False, False))
+            if nxt:
+                self.commit(nxt, "foundation" if to_fnd else "place", flipped)
+            else:
+                self.sound.play("invalid")
+                self.render()
+            return
+        if p and math.hypot(ev.x - p["x"], ev.y - p["y"]) <= DRAG_THRESHOLD:
+            self.pile_click(self.hit(ev.x, ev.y))
+
+    # ── Commands ──
+
+    def undo(self):
+        if self.dealing or self.auto_running or not self.history:
+            return
+        self.game, self.moves = self.history.pop()
+        self.selected = None
+        self.won_shown = False
+        self.render()
+        self.sound.play("undo")
+
+    def new_game(self):
+        if self.dealing:
+            return
+        self.auto_running = False
+        self.start_deal(self.game["draw"])
+
+    def toggle_draw_mode(self):
+        if self.dealing or self.auto_running:
+            return
+        self.game = dict(self.game, draw=3 if self.game["draw"] == 1 else 1)
+        self.pref_draw = self.game["draw"]
+        self.render()
+
+    def toggle_mute(self):
+        self.sound.muted = not self.sound.muted
+        self.render_chrome()
+
+    def auto_complete(self):
+        if (self.dealing or self.auto_running or is_won(self.game)
+                or not can_auto_complete(self.game)):
+            return
+        self.auto_running = True
+        self.history.append((self.game, self.moves))
+        self.selected = None
+        self.render()
+        self.auto_step(0)
+
+    def auto_step(self, i):
+        if not self.auto_running:
+            return
+        move = find_auto_move(self.game)
+        if not move:
+            self.auto_running = False
+            self.moves += 1
+            self.render()
+            self.check_win()
+            return
+        self.game = apply_auto_move(self.game, move)
+        self.sound.play(f"auto{min(i, 4)}")
+        self.render()
+        self.root.after(110, self.auto_step, i + 1)
+
+    def save(self):
+        data = {"draw": self.pref_draw, "muted": self.sound.muted}
+        if self.game and not self.dealing and not is_won(self.game):
+            data["game"] = game_to_json(self.game)
+            data["history"] = [(game_to_json(h), m) for h, m in self.history]
+            data["moves"] = self.moves
+        try:
+            with open(SAVE_FILE, "w") as f:
+                json.dump(data, f)
+        except OSError:
+            pass
+
+    def quit(self):
+        if self.auto_running:
+            # Finish the auto-complete instantly so the save is consistent
+            while (move := find_auto_move(self.game)):
+                self.game = apply_auto_move(self.game, move)
+        self.save()
+        self.root.destroy()
+
+
+def main():
+    root = tk.Tk()
+    Klondike(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
