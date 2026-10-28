@@ -22,14 +22,16 @@ Keys (press ? in the browser for the full list)
   i           toggle images             d          save page   q  quit
   t x [ ] 1-9 new / close / switch tabs (middle-click a link: background tab)
   B M H       bookmark page / bookmarks / history      l  list links
-  R           reader mode (just the article)
+  R           reader mode (just the article)       C  toggle CSS
 """
 
 import argparse
 import atexit
 import base64
 import codecs
+import colorsys
 import collections
+import concurrent.futures
 import fcntl
 import html
 import html.parser
@@ -403,6 +405,7 @@ class Builder(html.parser.HTMLParser):
         self.title = ""
         self.base = None
         self.refresh = None
+        self.css_items = []         # ["style", text, media] / ["link", href, media]
 
     def close_p(self):
         st = self.stack
@@ -449,6 +452,11 @@ class Builder(html.parser.HTMLParser):
                          a.get("content", ""), re.I)
             if m and m.group(2):
                 self.refresh = (float(m.group(1)), m.group(2))
+        if tag == "link" and a.get("href") and "stylesheet" in a.get("rel", "").lower().split() \
+                and "alternate" not in a.get("rel", "").lower().split():
+            self.css_items.append(["link", a["href"], a.get("media", "")])
+        elif tag == "style":
+            self.css_items.append(["style", "", a.get("media", "")])
         n = Node(tag, a)
         self.stack[-1].add(n)
         if tag not in VOID:
@@ -476,7 +484,12 @@ class Builder(html.parser.HTMLParser):
         top = self.stack[-1]
         if top.tag == "title":
             self.title += data
-        elif top.tag in ("script", "style"):
+        elif top.tag == "style":
+            for it in reversed(self.css_items):
+                if it[0] == "style":
+                    it[1] += data
+                    break
+        elif top.tag == "script":
             return
         elif data:
             top.add(Node(None, text=data))
@@ -792,6 +805,9 @@ class Page:
         self.anchors = {}
         self.download = None
         self.error = False
+        self.css = None             # Stylesheet (None: no CSS)
+        self.css_slots = []         # parsed rule lists, document order (None = still loading)
+        self.css_links = []         # [(slot, url)] external sheets to fetch
         self.reader_of = None       # set on a reader-mode clone: the original page
         self.reader = None          # cached reader-mode clone
         self._id = 0
@@ -1021,6 +1037,7 @@ multi-line editor: Ctrl-S saves, Esc cancels.</p>
 <pre>
 /  n  N             search the page, next / previous match
 i                   toggle inline images
+C                   toggle CSS styling (hidden elements, colours, bold, nav bars)
 d                   save the current page / download to ~/Downloads
 ?                   this help
 </pre>
@@ -1047,7 +1064,9 @@ def make_page(resp, url=None):
         return p
     if ctype in ("text/html", "application/xhtml+xml"):
         b = parse_html(decode_body(body, resp.headers))
-        return Page(url, b.root, b.title, body, ctype, b.base, b.refresh)
+        page = Page(url, b.root, b.title, body, ctype, b.base, b.refresh)
+        init_css(page, b.css_items)
+        return page
     if ctype.startswith("text/") or ctype in (
             "application/json", "application/xml", "application/javascript", "image/svg+xml",
             "application/rss+xml", "application/atom+xml", "application/x-sh"):
@@ -1098,6 +1117,544 @@ def load_page(url, post=None, referer=None):
 def fetch_image(url, referer):
     data = fetch(url, referer=referer, limit=MAX_IMG, timeout=25, accept="image/*,*/*;q=0.5").body
     return data
+
+
+# ---------------------------------------------------------------------------
+# CSS (a useful subset: selectors, cascade, text styling, display, visibility)
+# ---------------------------------------------------------------------------
+
+THEME_DARK = True           # assume a dark terminal unless told otherwise
+CSS_VW = 1280               # viewport width (px) used to evaluate @media queries
+KEEP_PROPS = frozenset(
+    "display visibility opacity color font-weight font-style text-decoration text-decoration-line "
+    "text-align text-transform white-space list-style-type position left top text-indent width "
+    "height overflow clip clip-path flex-direction".split())
+PSEUDO_OK = frozenset(["first-child", "last-child", "only-child", "root", "link", "any-link", "empty"])
+RE_IDENT = re.compile(r"(?:[\w-]|\\.|[^\x00-\x7f])+")
+RE_ATTR = re.compile(r"""^\s*([\w:-]+)\s*(?:([~|^$*]?=)\s*("[^"]*"|'[^']*'|[^\s\]]+)\s*([iIsS])?)?\s*$""")
+RE_VAR = re.compile(r"var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)")
+RE_IMPORTANT = re.compile(r"\s*!\s*important\s*$", re.I)
+RE_BRACE = re.compile(r"[{}]")
+RE_NESTED = re.compile(r"[^;{}]*\{[^{}]*\}")
+RE_MEDIA_BAD = re.compile(r"print|speech|prefers-|hover\s*:\s*none|pointer\s*:\s*coarse|orientation|"
+                          r"forced-colors|device-pixel-ratio|resolution|dpi|\bnot\b", re.I)
+RE_MEDIA_W = re.compile(r"\(\s*(min|max)-width\s*:\s*([\d.]+)\s*(px|em|rem)\s*\)", re.I)
+NAMED_COLORS = {
+    "black": (0, 0, 0), "white": (255, 255, 255), "red": (255, 0, 0), "green": (0, 128, 0),
+    "blue": (0, 0, 255), "yellow": (255, 255, 0), "orange": (255, 165, 0), "purple": (128, 0, 128),
+    "gray": (128, 128, 128), "grey": (128, 128, 128), "silver": (192, 192, 192),
+    "maroon": (128, 0, 0), "navy": (0, 0, 128), "teal": (0, 128, 128), "olive": (128, 128, 0),
+    "lime": (0, 255, 0), "aqua": (0, 255, 255), "cyan": (0, 255, 255), "fuchsia": (255, 0, 255),
+    "magenta": (255, 0, 255), "pink": (255, 192, 203), "brown": (165, 42, 42), "gold": (255, 215, 0),
+    "crimson": (220, 20, 60), "coral": (255, 127, 80), "tomato": (255, 99, 71),
+    "salmon": (250, 128, 114), "indigo": (75, 0, 130), "violet": (238, 130, 238),
+    "darkgray": (169, 169, 169), "darkgrey": (169, 169, 169), "lightgray": (211, 211, 211),
+    "lightgrey": (211, 211, 211), "darkblue": (0, 0, 139), "darkgreen": (0, 100, 0),
+    "darkred": (139, 0, 0), "steelblue": (70, 130, 180), "royalblue": (65, 105, 225),
+    "dodgerblue": (30, 144, 255), "skyblue": (135, 206, 235), "slategray": (112, 128, 144),
+    "slategrey": (112, 128, 144), "whitesmoke": (245, 245, 245), "lightblue": (173, 216, 230),
+    "lightgreen": (144, 238, 144), "orangered": (255, 69, 0), "firebrick": (178, 34, 34),
+    "hotpink": (255, 105, 180), "dimgray": (105, 105, 105), "dimgrey": (105, 105, 105),
+    "darkorange": (255, 140, 0), "forestgreen": (34, 139, 34), "seagreen": (46, 139, 87),
+    "midnightblue": (25, 25, 112), "darkslategray": (47, 79, 79), "goldenrod": (218, 165, 32),
+}
+
+
+def parse_color(v):
+    v = v.strip().lower()
+    if v in NAMED_COLORS:
+        return NAMED_COLORS[v]
+    if v.startswith("#"):
+        h = v[1:]
+        try:
+            if len(h) in (3, 4):
+                return tuple(int(c * 2, 16) for c in h[:3])
+            if len(h) in (6, 8):
+                return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return None
+        return None
+    m = re.match(r"(rgba?|hsla?)\(\s*([^)]*)\)", v)
+    if not m:
+        return None
+    nums = re.findall(r"-?[\d.]+%?", m.group(2))
+    if len(nums) < 3:
+        return None
+    if len(nums) >= 4 and re.search(r"(^|[\s,/])0(\.0+)?%?\s*$", m.group(2)):
+        return None                                 # fully transparent
+    try:
+        if m.group(1).startswith("rgb"):
+            return tuple(max(0, min(255, round(float(x[:-1]) * 2.55 if x.endswith("%") else float(x))))
+                         for x in nums[:3])
+        h = float(nums[0]) / 360.0
+        sat = float(nums[1].rstrip("%")) / 100
+        lig = float(nums[2].rstrip("%")) / 100
+        return tuple(round(c * 255) for c in colorsys.hls_to_rgb(h % 1.0, lig, sat))
+    except ValueError:
+        return None
+
+
+def term_color(rgb):
+    """Foreground SGR for an (r, g, b) colour, nudged to stay readable on the terminal theme."""
+    r, g, b = rgb
+    luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+    if THEME_DARK and luma < 0.45:
+        t = (0.5 - luma) / (1 - luma)
+        r, g, b = (round(c + (255 - c) * t) for c in (r, g, b))
+    elif not THEME_DARK and luma > 0.6:
+        k = 0.5 / luma
+        r, g, b = (round(c * k) for c in (r, g, b))
+    if max(r, g, b) - min(r, g, b) < 16:
+        gray = (r + g + b) / 3
+        idx = 16 if gray < 8 else 231 if gray > 248 else 232 + round((gray - 8) / 247 * 23)
+    else:
+        idx = 16 + 36 * round(r / 255 * 5) + 6 * round(g / 255 * 5) + round(b / 255 * 5)
+    return "38;5;%d" % idx
+
+
+def split_top(s, sep):
+    """Split on sep, ignoring separators inside parentheses or quotes."""
+    out, depth, quote, start = [], 0, "", 0
+    for i, ch in enumerate(s):
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == sep and not depth:
+            out.append(s[start:i])
+            start = i + 1
+    out.append(s[start:])
+    return out
+
+
+def parse_decls(text):
+    out = []
+    for d in split_top(text, ";"):
+        p, _, v = d.partition(":")
+        p, v = p.strip().lower(), v.strip()
+        if not p or not v:
+            continue
+        imp = bool(RE_IMPORTANT.search(v))
+        if imp:
+            v = RE_IMPORTANT.sub("", v)
+        if p.startswith("--") or p in KEEP_PROPS:
+            out.append((p, v, imp))
+        elif p == "font":
+            toks = v.lower().split()
+            if "italic" in toks or "oblique" in toks:
+                out.append(("font-style", "italic", imp))
+            for tk in toks:
+                if tk in ("bold", "bolder") or (tk.isdigit() and len(tk) == 3):
+                    out.append(("font-weight", tk, imp))
+        elif p == "list-style" and "none" in v.lower().split():
+            out.append(("list-style-type", "none", imp))
+    return out
+
+
+class Compound:
+    __slots__ = ("tag", "id", "classes", "attrs", "pseudos", "nots")
+
+    def __init__(self):
+        self.tag = self.id = None
+        self.classes, self.attrs, self.pseudos, self.nots = [], [], [], []
+
+
+def unesc(name):
+    return re.sub(r"\\(.)", r"\1", name)
+
+
+def parse_compound(s, i):
+    c, sp, n, start = Compound(), [0, 0, 0], len(s), i
+    while i < n and s[i] not in " \t\n>+~,)":
+        ch = s[i]
+        if ch == "*":
+            i += 1
+        elif ch in ".#":
+            m = RE_IDENT.match(s, i + 1)
+            if not m:
+                return None
+            name, i = unesc(m.group()), m.end()
+            if ch == ".":
+                c.classes.append(name)
+                sp[1] += 1
+            else:
+                c.id = name
+                sp[0] += 1
+        elif ch == "[":
+            j = s.find("]", i)
+            m = RE_ATTR.match(s[i + 1:j]) if j > 0 else None
+            if not m:
+                return None
+            c.attrs.append((m.group(1).lower(), m.group(2) or "", (m.group(3) or "").strip("\"'"),
+                            (m.group(4) or "").lower() == "i"))
+            sp[1] += 1
+            i = j + 1
+        elif ch == ":":
+            if s.startswith("::", i):
+                return None
+            m = RE_IDENT.match(s, i + 1)
+            if not m:
+                return None
+            name, i = m.group().lower(), m.end()
+            if name == "not" and s[i:i + 1] == "(":
+                depth, j = 0, i
+                while j < n:
+                    depth += (s[j] == "(") - (s[j] == ")")
+                    if depth == 0:
+                        break
+                    j += 1
+                for part in split_top(s[i + 1:j], ","):
+                    part = part.strip()
+                    r = parse_compound(part, 0)
+                    if not r or r[1] != len(part):
+                        return None
+                    c.nots.append(r[0])
+                    sp = [a + b for a, b in zip(sp, r[2])]
+                i = j + 1
+            elif name in PSEUDO_OK:
+                c.pseudos.append(name)
+                sp[1] += 1
+            else:
+                return None
+        else:
+            m = RE_IDENT.match(s, i)
+            if not m:
+                return None
+            c.tag = m.group().lower()
+            sp[2] += 1
+            i = m.end()
+    if i == start:
+        return None
+    return c, i, sp
+
+
+def parse_selector(sel):
+    s, i, n = sel.strip(), 0, len(sel.strip())
+    parts, comb, spec = [], " ", [0, 0, 0]
+    while i < n:
+        r = parse_compound(s, i)
+        if not r:
+            return None
+        c, i, sp = r
+        parts.append((comb, c))
+        spec = [a + b for a, b in zip(spec, sp)]
+        j = i
+        while j < n and s[j] in " \t\n":
+            j += 1
+        if j >= n:
+            break
+        if s[j] in ">+~":
+            comb = s[j]
+            j += 1
+            while j < n and s[j] in " \t\n":
+                j += 1
+        elif j > i:
+            comb = " "
+        else:
+            return None
+        i = j
+    return (parts, tuple(spec)) if parts else None
+
+
+def media_ok(prelude):
+    q = prelude.lower()
+    for alt in q.split(","):
+        if RE_MEDIA_BAD.search(alt):
+            continue
+        ok = True
+        for kind, val, unit in RE_MEDIA_W.findall(alt):
+            px = float(val) * (16 if unit != "px" else 1)
+            if (kind == "min" and px > CSS_VW) or (kind == "max" and px < CSS_VW):
+                ok = False
+        if ok:
+            return True
+    return False
+
+
+class Rule:
+    __slots__ = ("parts", "spec", "decls", "order")
+
+
+def parse_css(text):
+    """Parse a stylesheet into a list of Rule objects (unsupported selectors are dropped)."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    rules = []
+
+    def block(s):
+        i, n = 0, len(s)
+        while i < n:
+            ib, isc = s.find("{", i), s.find(";", i)
+            if ib < 0 and isc < 0:
+                break
+            if isc >= 0 and (ib < 0 or isc < ib):          # e.g. @import ...;
+                i = isc + 1
+                continue
+            depth, j = 1, ib + 1
+            for m in RE_BRACE.finditer(s, ib + 1):
+                depth += 1 if m.group() == "{" else -1
+                if depth == 0:
+                    j = m.end()
+                    break
+            else:
+                j = n
+            prelude, body = s[i:ib].strip(), s[ib + 1:max(ib + 1, j - 1)]
+            i = j
+            if prelude.startswith("@"):
+                name = prelude[1:].split(None, 1)[0].lower() if len(prelude) > 1 else ""
+                if (name == "media" and media_ok(prelude[6:])) or name in ("supports", "layer"):
+                    block(body)
+                continue
+            if "{" in body:
+                body = RE_NESTED.sub("", body)
+            decls = parse_decls(body)
+            if not decls:
+                continue
+            for sel in split_top(prelude, ","):
+                ps = parse_selector(sel)
+                if ps:
+                    r = Rule()
+                    r.parts, r.spec, r.decls, r.order = ps[0], ps[1], decls, 0
+                    rules.append(r)
+
+    block(text)
+    return rules
+
+
+class Stylesheet:
+    def __init__(self, slots):
+        self.idx = collections.defaultdict(list)
+        self.vars = {}
+        self.memo = {}
+        self.sib = {}
+        order = 0
+        for rules in slots:
+            for r in rules or ():
+                r.order = order
+                order += 1
+                c = r.parts[-1][1]
+                if c.id:
+                    key = ("#", c.id)
+                elif c.classes:
+                    key = (".", c.classes[0])
+                elif c.tag:
+                    key = ("t", c.tag)
+                else:
+                    key = "*"
+                self.idx[key].append(r)
+                if len(r.parts) == 1 and (("root" in c.pseudos) or c.tag in ("html", "body")
+                                          or (key == "*" and not c.attrs)):
+                    for p, v, _ in r.decls:
+                        if p.startswith("--"):
+                            self.vars[p] = v
+
+    def subst(self, val):
+        for _ in range(4):
+            new = RE_VAR.sub(lambda m: self.vars.get(m.group(1), (m.group(2) or "").strip()), val)
+            if new == val:
+                break
+            val = new
+        return val
+
+    def siblings(self, node):
+        p = node.parent
+        if p is None:
+            return [node], {id(node): 0}
+        e = self.sib.get(id(p))
+        if e is None:
+            lst = [c for c in p.children if c.tag is not None]
+            e = self.sib[id(p)] = (lst, {id(c): i for i, c in enumerate(lst)})
+        return e
+
+    def cmatch(self, c, node):
+        a = node.attrs
+        if c.tag and c.tag != node.tag:
+            return False
+        if c.id and a.get("id") != c.id:
+            return False
+        if c.classes:
+            have = (a.get("class") or "").split()
+            if any(k not in have for k in c.classes):
+                return False
+        for name, op, val, ci in c.attrs:
+            if name not in a:
+                return False
+            if not op:
+                continue
+            have = a[name]
+            if ci:
+                have, val = have.lower(), val.lower()
+            if op == "=" and have != val:
+                return False
+            if op == "~=" and val not in have.split():
+                return False
+            if op == "|=" and not (have == val or have.startswith(val + "-")):
+                return False
+            if op == "^=" and not (val and have.startswith(val)):
+                return False
+            if op == "$=" and not (val and have.endswith(val)):
+                return False
+            if op == "*=" and not (val and val in have):
+                return False
+        for ps in c.pseudos:
+            if ps in ("first-child", "last-child", "only-child"):
+                lst, pos = self.siblings(node)
+                i = pos.get(id(node), 0)
+                if ps == "first-child" and i != 0:
+                    return False
+                if ps == "last-child" and i != len(lst) - 1:
+                    return False
+                if ps == "only-child" and len(lst) != 1:
+                    return False
+            elif ps == "root":
+                if node.tag != "html":
+                    return False
+            elif ps in ("link", "any-link"):
+                if node.tag not in ("a", "area") or "href" not in a:
+                    return False
+            elif ps == "empty":
+                if node.children:
+                    return False
+        for nc in c.nots:
+            if self.cmatch(nc, node):
+                return False
+        return True
+
+    def chain(self, parts, i, node):
+        comb, c = parts[i]
+        if not self.cmatch(c, node):
+            return False
+        if i == 0:
+            return True
+        if comb == ">":
+            p = node.parent
+            return p is not None and p.tag != "#root" and self.chain(parts, i - 1, p)
+        if comb == " ":
+            p = node.parent
+            while p is not None and p.tag != "#root":
+                if self.chain(parts, i - 1, p):
+                    return True
+                p = p.parent
+            return False
+        lst, pos = self.siblings(node)
+        k = pos.get(id(node), 0)
+        if comb == "+":
+            return k > 0 and self.chain(parts, i - 1, lst[k - 1])
+        return any(self.chain(parts, i - 1, lst[j]) for j in range(k))      # "~"
+
+    def compute(self, node):
+        """Cascaded declarations that apply to node: {property: value}."""
+        k = id(node)
+        out = self.memo.get(k)
+        if out is not None:
+            return out
+        a = node.attrs
+        cands = []
+        if a.get("id"):
+            cands += self.idx.get(("#", a["id"]), ())
+        for cls in (a.get("class") or "").split():
+            cands += self.idx.get((".", cls), ())
+        cands += self.idx.get(("t", node.tag), ())
+        cands += self.idx.get("*", ())
+        matched = [r for r in cands if self.chain(r.parts, len(r.parts) - 1, node)]
+        matched.sort(key=lambda r: (r.spec, r.order))
+        out, imp = {}, {}
+        for r in matched:
+            for p, v, im in r.decls:
+                if not p.startswith("--"):
+                    (imp if im else out)[p] = v
+        if a.get("style"):
+            for p, v, im in parse_decls(a["style"]):
+                if not p.startswith("--"):
+                    (imp if im else out)[p] = v
+        out.update(imp)
+        for p, v in out.items():
+            if "var(" in v:
+                out[p] = self.subst(v)
+        self.memo[k] = out
+        return out
+
+
+def css_px(v):
+    m = re.match(r"\s*(-?[\d.]+)\s*(px|em|rem|%)?", v or "")
+    if not m:
+        return None
+    try:
+        x = float(m.group(1))
+    except ValueError:
+        return None
+    return x * 16 if m.group(2) in ("em", "rem") else x
+
+
+def css_hidden(cs):
+    """True when the declarations make an element invisible (display:none, off-screen, ...)."""
+    if cs.get("display", "").lower() == "none":
+        return True
+    if cs.get("visibility", "").lower() in ("hidden", "collapse"):
+        return True
+    op = cs.get("opacity")
+    if op:
+        try:
+            if float(op) <= 0:
+                return True
+        except ValueError:
+            pass
+    if cs.get("position", "").lower() in ("absolute", "fixed"):
+        for p in ("left", "top"):
+            px = css_px(cs.get(p))
+            if px is not None and px <= -500:
+                return True
+    ti = css_px(cs.get("text-indent"))
+    if ti is not None and ti <= -900:
+        return True
+    clip_ = cs.get("clip", "").replace(" ", "").lower()
+    if clip_ in ("rect(0,0,0,0)", "rect(0px,0px,0px,0px)", "rect(1px,1px,1px,1px)"):
+        return True
+    if "inset(50%)" in cs.get("clip-path", "").replace(" ", ""):
+        return True
+    w, h = css_px(cs.get("width")), css_px(cs.get("height"))
+    if (w is not None and h is not None and w <= 1 and h <= 1
+            and cs.get("overflow", "").lower() == "hidden"):
+        return True
+    return False
+
+
+def init_css(page, items):
+    """Parse inline <style> blocks now; remember external sheets to fetch later."""
+    slots, links = [], []
+    for kind, val, media in items:
+        if media and re.search(r"print|speech", media, re.I):
+            continue
+        if kind == "style":
+            slots.append(parse_css(val))
+        else:
+            slots.append(None)
+            links.append((len(slots) - 1, urllib.parse.urljoin(page.base, val.strip())))
+    page.css_slots, page.css_links = slots, links[:12]
+    page.css = Stylesheet(slots) if any(slots) else None
+
+
+def fetch_stylesheets(page):
+    """Download page.css_links (in parallel) and rebuild page.css. Safe to call from a thread."""
+    def get(item):
+        idx, url = item
+        try:
+            r = fetch(url, referer=page.url, limit=600000, timeout=10, accept="text/css,*/*;q=0.1")
+            if r.status and r.status < 400:
+                return idx, decode_body(r.body, r.headers)
+        except Exception:
+            pass
+        return idx, None
+    with concurrent.futures.ThreadPoolExecutor(4) as ex:
+        for idx, text in ex.map(get, page.css_links):
+            if text:
+                page.css_slots[idx] = parse_css(text)
+    page.css_links = []
+    page.css = Stylesheet(page.css_slots) if any(page.css_slots) else None
 
 
 # ---------------------------------------------------------------------------
@@ -1166,6 +1723,7 @@ def make_reader(page):
     clone = Page(page.url, root, page.title, page.raw, page.ctype)
     clone.base = page.base
     clone.imgs, clone.fields, clone.links = page.imgs, page.fields, page.links
+    clone.css, clone.css_slots = page.css, page.css_slots
     clone._id = page._id + 100000
     clone.reader_of = page
     return clone
@@ -1187,6 +1745,13 @@ HEADINGS = {"h1": "38;5;214", "h2": "38;5;114", "h3": "38;5;81", "h4": None, "h5
 BLOCK = frozenset("address article aside body caption dd details dir div fieldset figcaption "
                   "figure footer header hgroup html legend main nav section summary tbody thead "
                   "tfoot tr td th".split())
+INLINEISH = frozenset(["inline", "inline-block", "inline-flex", "inline-grid", "contents"])
+BLOCKISH = frozenset(["block", "list-item", "flex", "grid", "flow-root"])
+HEAVY = frozenset("p ul ol table h1 h2 h3 h4 h5 h6 blockquote pre form img dl".split())
+BLOCKY = frozenset("address article aside blockquote body center dd details dir div dl dt fieldset "
+                   "figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup li main menu nav ol p "
+                   "pre section summary ul".split())
+INLINEY = INLINE | frozenset(["a"])
 RE_HIDDEN = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
 RE_TA = re.compile(r"text-align\s*:\s*(\w+)", re.I)
 TEXT_TYPES = frozenset(["text", "search", "email", "url", "tel", "password", "number", "date",
@@ -1233,7 +1798,7 @@ def alloc(cmin, cmax, avail):
 
 
 class Renderer:
-    def __init__(self, page, width, cell, images, request, visited, term_rows):
+    def __init__(self, page, width, cell, images, request, visited, term_rows, css=None):
         self.page = page
         self.width = width
         self.cell = cell
@@ -1247,6 +1812,9 @@ class Renderer:
         self.list_depth = 0
         self.form = None
         self.reader = page.reader_of is not None
+        self.css = css
+        self.tt = None              # active text-transform
+        self.inline_mode = 0        # >0 while laying out an inline flex row
 
     # -- driver ------------------------------------------------------------
 
@@ -1265,14 +1833,19 @@ class Renderer:
     def hidden(self, a):
         return "hidden" in a or (a.get("style") and RE_HIDDEN.search(a["style"]))
 
+    def cs(self, n):
+        return self.css.compute(n) if self.css else None
+
     def align(self, n, fl):
-        al = n.attrs.get("align")
+        cs = self.cs(n)
+        al = cs.get("text-align") if cs else None
+        al = al or n.attrs.get("align")
         if not al and n.attrs.get("style"):
             m = RE_TA.search(n.attrs["style"])
             al = m.group(1) if m else None
         if al:
             al = al.lower()
-            if al in ("center", "middle", "-webkit-center"):
+            if al in ("center", "middle", "-webkit-center", "-moz-center"):
                 return "center"
             if al == "right":
                 return "right"
@@ -1295,30 +1868,150 @@ class Renderer:
     def walk(self, node, st, fl):
         for ch in node.children:
             if ch.tag is None:
-                fl.text(ch.text, st)
+                fl.text(self.tt_apply(ch.text) if self.tt else ch.text, st)
             else:
                 self.element(ch, st, fl)
 
+    def tt_apply(self, s):
+        if self.tt == "uppercase":
+            return s.upper()
+        if self.tt == "lowercase":
+            return s.lower()
+        return re.sub(r"(^|\s)(\S)", lambda m: m.group(1) + m.group(2).upper(), s)
+
     # -- elements ----------------------------------------------------------
+
+    def apply_style(self, st, cs, t):
+        """Apply inherited-style CSS properties (weight, slant, decoration, colour) to st."""
+        f, fg = st[0], st[1]
+        inlink = st[3] is not None
+        v = cs.get("font-weight", "").lower()
+        if v:
+            if v in ("bold", "bolder") or (v.isdigit() and int(v) >= 600):
+                f |= B
+            elif v in ("normal", "lighter") or v.isdigit():
+                f &= ~B
+        v = cs.get("font-style", "").lower()
+        if v in ("italic", "oblique"):
+            f |= I
+        elif v == "normal":
+            f &= ~I
+        td = (cs.get("text-decoration-line") or cs.get("text-decoration") or "").lower()
+        if td:
+            if "line-through" in td:
+                f |= S
+            if "underline" in td:
+                f |= U
+            elif "none" in td and not inlink and t != "a":
+                f &= ~(U | S)
+        v = cs.get("color")
+        if v and not inlink:
+            rgb = parse_color(v)
+            if rgb:
+                fg = term_color(rgb)
+        return (f, fg, st[2], st[3])
 
     def element(self, n, st, fl):
         t = n.tag
         a = n.attrs
         if t in SKIP or self.hidden(a):
             return
+        cs = self.cs(n)
+        if cs:
+            if css_hidden(cs):
+                return
+            st = self.apply_style(st, cs, t)
         if self.reader and (t in READER_SKIP or RE_JUNK.search(
                 (a.get("class") or "") + " " + (a.get("id") or ""))) and n not in self.page.dom.children:
             return
         nm = a.get("id") or (a.get("name") if t == "a" else None)
         if nm:
             fl.pending.append(nm)
+        old = self.tt
+        if cs and "text-transform" in cs:
+            v = cs["text-transform"].lower()
+            self.tt = v if v in ("uppercase", "lowercase", "capitalize") else None
+        try:
+            self.element2(n, st, fl, cs)
+        finally:
+            self.tt = old
+
+    def skipped(self, n):
+        if n.tag in SKIP or self.hidden(n.attrs):
+            return True
+        cs = self.cs(n)
+        return bool(cs and css_hidden(cs))
+
+    def flex_inline(self, n, cs):
+        """Can this flex row be shown as one line of short items (e.g. a nav bar)?"""
+        if cs.get("flex-direction", "row").lower().startswith("column"):
+            return False
+        kids = [c for c in n.children if c.tag is not None and not self.skipped(c)]
+        if not 1 <= len(kids) <= 30:
+            return False
+        for c in kids:
+            if len(c.text_content().strip()) > 80:
+                return False
+            stack = list(c.children)
+            while stack:
+                x = stack.pop()
+                if x.tag in HEAVY:
+                    return False
+                stack.extend(x.children)
+        return True
+
+    def flex_row(self, n, st, fl):
+        self.inline_mode += 1
+        first = True
+        try:
+            for ch in n.children:
+                if ch.tag is None:
+                    if ch.text.strip():
+                        fl.text(ch.text, st)
+                    continue
+                if self.skipped(ch):
+                    continue
+                if not first:
+                    fl.atoms.extend([("s", " ", st), ("w", "·", DIM_ST), ("s", " ", st)])
+                first = False
+                self.element(ch, st, fl)
+        finally:
+            self.inline_mode -= 1
+
+    def element2(self, n, st, fl, cs):
+        t = n.tag
+        disp = cs.get("display", "").lower() if cs else ""
+        if disp:
+            if disp in ("flex", "inline-flex") and self.flex_inline(n, cs):
+                return self.flex_row(n, st, fl)
+            if disp in INLINEISH and t in BLOCKY:
+                return self.walk(n, st, fl)
+            if disp in BLOCKISH and t in INLINEY:
+                f = Flow(fl.w, fl.align)
+                self.dispatch(n, st, f, cs)
+                f.flush()
+                return fl.add(f.lines)
+        if cs and t in BLOCKY and t != "pre" and cs.get("white-space", "").lower() in (
+                "pre", "pre-wrap", "break-spaces"):
+            return self.t_pre(n, st, fl)
+        if self.inline_mode and t in BLOCKY:
+            return self.walk(n, st, fl)
+        self.dispatch(n, st, fl, cs)
+
+    def dispatch(self, n, st, fl, cs):
+        t = n.tag
+        css_color = bool(cs and "color" in cs)
         if t in STYLE_TAGS:
             add, fg = STYLE_TAGS[t]
-            st = sty(st, add, fg=fg) if (fg and st[3] is None) else sty(st, add)
+            st = sty(st, add, fg=fg) if (fg and st[3] is None and not css_color) else sty(st, add)
+            if cs:
+                st = self.apply_style(st, cs, t)
             return self.walk(n, st, fl)
         if t in HEADINGS:
             fg = HEADINGS[t]
-            st2 = sty(st, B, fg=fg) if (fg and st[3] is None) else sty(st, B)
+            st2 = sty(st, B, fg=fg) if (fg and st[3] is None and not css_color) else sty(st, B)
+            if cs:
+                st2 = self.apply_style(st2, cs, t)
             return fl.add(self.sub_block(n, st2, fl.w, self.align(n, fl)), margin=True)
         h = getattr(self, "t_" + t, None)
         if h:
@@ -1441,6 +2134,8 @@ class Renderer:
             nums.append(k)
             k += 1
         mw = max([len(str(x)) for x in nums] + [1]) + 2 if ordered else 2
+        cs_ul = self.cs(n)
+        plain = bool(cs_ul and cs_ul.get("list-style-type", "").lower() == "none")
         out = Flow(fl.w, fl.align)
         i = 0
         for ch in n.children:
@@ -1450,7 +2145,16 @@ class Renderer:
                 i += 1
                 if ch.attrs.get("id"):
                     out.pending.append(ch.attrs["id"])
-                out.add(self.item(ch, st, fl.w, marker, mw))
+                cs_li = self.cs(ch)
+                if cs_li and css_hidden(cs_li):
+                    continue
+                if cs_li and cs_li.get("display", "").lower() in INLINEISH:
+                    out.text(" ", st)
+                    self.walk(ch, self.styled(ch, st, cs_li), out)
+                elif plain or (cs_li and cs_li.get("list-style-type", "").lower() == "none"):
+                    out.add(self.item(ch, self.styled(ch, st, cs_li), fl.w, "", 0))
+                else:
+                    out.add(self.item(ch, self.styled(ch, st, cs_li), fl.w, marker, mw))
             elif ch.tag is None:
                 out.text(ch.text, st)
             else:
@@ -1459,6 +2163,9 @@ class Renderer:
         fl.add(out.lines, margin=self.list_depth == 0)
 
     t_ol = t_menu = t_dir = t_ul
+
+    def styled(self, n, st, cs):
+        return self.apply_style(st, cs, n.tag) if cs else st
 
     def t_li(self, n, st, fl):
         fl.add(self.item(n, st, fl.w, "• ", 2))
@@ -1803,7 +2510,7 @@ class Tab:
 
 
 class Browser:
-    def __init__(self, gfx="auto", maxwidth=110, insecure=False):
+    def __init__(self, gfx="auto", maxwidth=110, insecure=False, css=True):
         self.gfx = gfx                  # auto | probe | kitty | iterm | none
         self.maxwidth = maxwidth
         self.insecure = insecure
@@ -1840,6 +2547,7 @@ class Browser:
         self.tabs = [Tab()]
         self.cur = 0
         self.bg = False                 # True while updating a background tab
+        self.css_on = css
         self.panel_cursor = None
         self.tab_ranges = []
         self.wake_r, self.wake_w = os.pipe()
@@ -2161,6 +2869,9 @@ class Browser:
             elif ev[0] == "img":
                 if self.page is not None and ev[1].page is self.page.root:
                     self.layout_due = self.layout_due or time.time() + 0.25
+            elif ev[0] == "css":
+                if self.page is not None and ev[1] is self.page.root:
+                    self.layout_due = self.layout_due or time.time() + 0.05
         if self.resized:
             self.resized = False
             self.update_size()
@@ -2247,11 +2958,20 @@ class Browser:
         if not page.error and not page.url.startswith("about:"):
             STORE.visit(page.url, page.title)
         self.show(page, entry["top"], frag)
+        if page.css_links and self.css_on:
+            threading.Thread(target=self.css_thread, args=(page,), daemon=True).start()
         if page.refresh and page.refresh[0] <= 5 and self.refreshes < 5:
             self.refreshes += 1
             self.navigate(urllib.parse.urljoin(page.url, page.refresh[1]), mode="replace")
         else:
             self.refreshes = 0
+
+    def css_thread(self, page):
+        try:
+            fetch_stylesheets(page)
+        except Exception:
+            page.css_links = []
+        self.post(("css", page))
 
     def show(self, page, top=0, frag=None):
         self.clear_gfx()
@@ -2354,7 +3074,8 @@ class Browser:
         anchor = self.top_anchor() if keep else None
         try:
             r = Renderer(p, self.width, (self.cellw, self.cellh), self.images_on,
-                         self.queue_image, self.visited, self.rows)
+                         self.queue_image, self.visited, self.rows,
+                         p.root.css if self.css_on else None)
             self.lines = r.render()
         except Exception as e:
             self.lines = [Line([("Rendering failed: %s: %s" % (e.__class__.__name__, e), PLAIN)])]
@@ -2688,6 +3409,13 @@ class Browser:
             self.link_list()
         elif k == "R":
             self.reader_mode()
+        elif k == "C":
+            self.css_on = not self.css_on
+            self.layout()
+            self.msg = "CSS %s" % ("on" if self.css_on else "off")
+            p = self.page.root if self.page else None
+            if self.css_on and p and p.css_links:
+                threading.Thread(target=self.css_thread, args=(p,), daemon=True).start()
         elif k == "ctrl-c":
             if self.pending:
                 self.pending, self.gen = None, self.gen + 1
@@ -3223,9 +3951,11 @@ class Browser:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def dump(url, width, images=False):
+def dump(url, width, css=True):
     page = load_page(url)
-    r = Renderer(page, width, (8, 16), False, None, set(), 24)
+    if css and page.css_links:
+        fetch_stylesheets(page)
+    r = Renderer(page, width, (8, 16), False, None, set(), 24, page.css if css else None)
     for l in r.render():
         print(l.text.rstrip())
 
@@ -3240,6 +3970,9 @@ def main():
     ap.add_argument("--no-images", action="store_true", help="same as --images=none")
     ap.add_argument("-w", "--width", type=int, default=110,
                     help="maximum text width, 0 for full width (default 110)")
+    ap.add_argument("--no-css", action="store_true", help="ignore stylesheets")
+    ap.add_argument("--theme", choices=["auto", "dark", "light"], default="auto",
+                    help="terminal background, used to keep CSS colours readable (default: auto)")
     ap.add_argument("--private", action="store_true", help="don't record browsing history")
     ap.add_argument("--insecure", action="store_true", help="don't verify TLS certificates")
     ap.add_argument("--dump", action="store_true", help="print the rendered page as text and exit")
@@ -3247,17 +3980,23 @@ def main():
     args = ap.parse_args()
     OPENER = make_opener(args.insecure)
     STORE.private = args.private
+    global THEME_DARK
+    theme = args.theme
+    if theme == "auto":
+        bgc = os.environ.get("COLORFGBG", "").split(";")[-1]
+        theme = "light" if bgc in ("7", "15") else "dark"
+    THEME_DARK = theme == "dark"
     target = " ".join(args.url).strip()
     url = normalize_url(target) if target else "about:home"
     if args.dump or not (sys.stdin.isatty() and sys.stdout.isatty()):
         width = args.width if args.width > 0 else shutil.get_terminal_size().columns
         try:
-            dump(url, width if args.width else 80)
+            dump(url, width if args.width else 80, not args.no_css)
         except Exception as e:
             sys.exit("webby: %s" % e)
         return
     gfx = "none" if args.no_images else args.images
-    Browser(gfx, args.width, args.insecure).run(url)
+    Browser(gfx, args.width, args.insecure, not args.no_css).run(url)
 
 
 if __name__ == "__main__":
