@@ -1,0 +1,1407 @@
+#!/usr/bin/env python3
+"""
+txtedit - A zero-dependency, nano-style terminal plain-text editor.
+Works out-of-the-box on macOS (Darwin), Ubuntu, RedHat/RHEL, and other UNIX systems.
+
+- Opens any plain-text file (.txt, .md, .log, ...) and creates it if missing.
+- Imports Word (.docx) and OpenDocument (.odt) files as raw text: all formatting,
+  images and styles are dropped so you can concentrate on the words. The result
+  is saved next to the original as <name>.txt; the original is never modified.
+- Soft word-wrap (toggle with ^L), search (^W) and search-and-replace (^R) with
+  case-sensitivity and regular-expression toggles, undo/redo, line cut/paste,
+  go-to-line and a word count.
+- Ten colour themes (cycle with ^T), remembered in ~/.config/txtedit/theme or
+  forced with the TXTEDIT_THEME environment variable (0-9).
+"""
+
+import curses
+import locale
+import os
+import re
+import sys
+import termios
+import unicodedata
+import zipfile
+import xml.etree.ElementTree as ET
+from functools import lru_cache
+
+
+TAB_WIDTH = 4                      # display width of a tab character
+TEXT_EXPORT_EXTS = ('.docx', '.docm', '.dotx', '.dotm', '.odt', '.ott', '.doc')
+
+
+# --------------------------------------------------------------------------- #
+#  Word (.docx) import                                                         #
+# --------------------------------------------------------------------------- #
+
+def _local(tag):
+    """Strip the XML namespace from a tag: '{uri}body' -> 'body'."""
+    return tag.rsplit('}', 1)[-1]
+
+
+# Sub-elements of a paragraph that must not contribute text
+_DOCX_SKIP = {
+    'pPr', 'rPr', 'tabs',                 # properties (contain <w:tab/> tab stops!)
+    'del', 'delText', 'moveFrom',         # tracked deletions
+    'instrText', 'fldChar', 'fldSimple',  # field codes (the result text is kept)
+    'footnoteReference', 'endnoteReference',
+    'commentReference', 'commentRangeStart', 'commentRangeEnd',
+    'bookmarkStart', 'bookmarkEnd', 'proofErr', 'lastRenderedPageBreak',
+}
+
+
+def _docx_para_text(p):
+    """Flatten one <w:p> paragraph into a string (may contain '\\n' for <w:br/>)."""
+    parts = []
+
+    def rec(e):
+        for child in e:
+            tag = _local(child.tag)
+            if tag in _DOCX_SKIP:
+                continue
+            if tag == 't':
+                parts.append(child.text or '')
+            elif tag == 'tab':
+                parts.append('\t')
+            elif tag in ('br', 'cr'):
+                parts.append('\n')
+            elif tag == 'noBreakHyphen':
+                parts.append('-')
+            elif tag == 'softHyphen':
+                continue
+            elif tag == 'AlternateContent':
+                # Text boxes appear twice (Choice + Fallback); keep one copy only.
+                choice = next((c for c in child if _local(c.tag) == 'Choice'), None)
+                if choice is not None:
+                    rec(choice)
+            elif tag == 'txbxContent':
+                sub = []
+                _docx_blocks(child, sub)
+                parts.append('\n'.join(sub))
+            else:
+                rec(child)
+
+    rec(p)
+    return ''.join(parts)
+
+
+def _docx_blocks(elem, out):
+    """Walk block-level content (paragraphs, tables, content controls) in order."""
+    for child in elem:
+        tag = _local(child.tag)
+        if tag == 'p':
+            out.append(_docx_para_text(child))
+        elif tag == 'tbl':
+            for tr in child:
+                if _local(tr.tag) != 'tr':
+                    continue
+                cells = []
+                for tc in tr:
+                    if _local(tc.tag) != 'tc':
+                        continue
+                    sub = []
+                    _docx_blocks(tc, sub)
+                    cells.append(' '.join(s for s in sub if s))
+                out.append('\t'.join(cells))
+        elif tag in ('sectPr', 'tblPr', 'tblGrid', 'trPr', 'tcPr'):
+            continue
+        else:
+            _docx_blocks(child, out)
+
+
+def read_docx(filepath):
+    """Zero-dependency .docx reader: returns the document body as plain text."""
+    with zipfile.ZipFile(filepath, 'r') as z:
+        if 'word/document.xml' not in z.namelist():
+            raise ValueError("Not a Word document (word/document.xml missing).")
+        root = ET.fromstring(z.read('word/document.xml'))
+    body = next((e for e in root.iter() if _local(e.tag) == 'body'), None)
+    if body is None:
+        raise ValueError("Word document has no <w:body>.")
+    out = []
+    _docx_blocks(body, out)
+    return '\n'.join(out)
+
+
+# --------------------------------------------------------------------------- #
+#  OpenDocument (.odt) import                                                  #
+# --------------------------------------------------------------------------- #
+
+_ODT_SKIP = {'note', 'annotation', 'annotation-end', 'tracked-changes',
+             'bookmark', 'bookmark-start', 'bookmark-end', 'soft-page-break',
+             'sequence-decls', 'variable-decls', 'user-field-decls', 'forms'}
+
+
+def _odt_inline(e, parts):
+    for child in e:
+        tag = _local(child.tag)
+        if tag in _ODT_SKIP:
+            pass
+        elif tag == 's':
+            count = next((v for k, v in child.attrib.items() if _local(k) == 'c'), '1')
+            try:
+                parts.append(' ' * max(1, int(count)))
+            except ValueError:
+                parts.append(' ')
+        elif tag == 'tab':
+            parts.append('\t')
+        elif tag == 'line-break':
+            parts.append('\n')
+        else:
+            if child.text:
+                parts.append(child.text)
+            _odt_inline(child, parts)
+        if child.tail:
+            parts.append(child.tail)
+
+
+def _odt_para_text(p):
+    parts = [p.text or '']
+    _odt_inline(p, parts)
+    return ''.join(parts)
+
+
+def _odt_blocks(elem, out):
+    for child in elem:
+        tag = _local(child.tag)
+        if tag in ('p', 'h'):
+            out.append(_odt_para_text(child))
+        elif tag == 'table-row':
+            cells = []
+            for tc in child:
+                if _local(tc.tag) not in ('table-cell', 'covered-table-cell'):
+                    continue
+                sub = []
+                _odt_blocks(tc, sub)
+                cells.append(' '.join(s for s in sub if s))
+            out.append('\t'.join(cells))
+        elif tag in _ODT_SKIP:
+            continue
+        else:
+            _odt_blocks(child, out)
+
+
+def read_odt(filepath):
+    """Zero-dependency .odt reader: returns the document body as plain text."""
+    with zipfile.ZipFile(filepath, 'r') as z:
+        if 'content.xml' not in z.namelist():
+            raise ValueError("Not an OpenDocument file (content.xml missing).")
+        root = ET.fromstring(z.read('content.xml'))
+    body = next((e for e in root.iter()
+                 if _local(e.tag) == 'text' and 'office' in e.tag), None)
+    if body is None:
+        raise ValueError("OpenDocument file has no <office:text>.")
+    out = []
+    _odt_blocks(body, out)
+    return '\n'.join(out)
+
+
+# --------------------------------------------------------------------------- #
+#  Loading / saving                                                            #
+# --------------------------------------------------------------------------- #
+
+def _split_lines(text):
+    """Normalise line endings and split; returns (lines, eol, had_trailing_newline)."""
+    eol = '\r\n' if '\r\n' in text else '\n'
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    trailing = text.endswith('\n')
+    lines = text.split('\n')
+    if trailing:
+        lines.pop()
+    if not lines:
+        lines = ['']
+    return lines, eol, trailing
+
+
+def load_document(filepath):
+    """
+    Returns (lines, target_path, converted_from, eol, trailing_newline, note).
+    Word/ODT files are converted to text and re-targeted to <name>.txt.
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+    note = ""
+
+    if ext in ('.docx', '.docm', '.dotx', '.dotm', '.odt', '.ott'):
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"File not found: {filepath}")
+        text = read_odt(filepath) if ext in ('.odt', '.ott') else read_docx(filepath)
+        lines, _, _ = _split_lines(text)
+        target = os.path.splitext(filepath)[0] + '.txt'
+        note = (f"Imported {ext} as plain text ({len(lines)} paragraphs). "
+                f"Target: '{os.path.basename(target)}' (^S saves it; original untouched)")
+        return lines, target, ext, '\n', True, note
+
+    if ext == '.doc':
+        raise ValueError("Legacy binary .doc is not supported; save it as .docx first.")
+
+    if not os.path.exists(filepath):
+        return [''], filepath, None, '\n', True, f"New file: {os.path.basename(filepath)}"
+
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    if b'\x00' in data:
+        note = "Warning: file contains binary data (NUL bytes). "
+    text = data.decode('utf-8-sig', errors='replace')
+    lines, eol, trailing = _split_lines(text)
+    return lines, filepath, None, eol, trailing, note
+
+
+def save_document(filepath, lines, eol='\n', trailing=True):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in TEXT_EXPORT_EXTS:
+        filepath = os.path.splitext(filepath)[0] + '.txt'
+    text = eol.join(lines) + (eol if trailing else '')
+    with open(filepath, 'w', encoding='utf-8', newline='') as f:
+        f.write(text)
+    return filepath
+
+
+# --------------------------------------------------------------------------- #
+#  Display helpers                                                             #
+# --------------------------------------------------------------------------- #
+
+@lru_cache(maxsize=4096)
+def cell_width(ch):
+    """Number of terminal columns a single character occupies when displayed."""
+    if ch == '\t':
+        return TAB_WIDTH
+    o = ord(ch)
+    if o < 32 or o == 127:
+        return 2                       # shown as ^X
+    if unicodedata.combining(ch):
+        return 0
+    if unicodedata.east_asian_width(ch) in ('W', 'F'):
+        return 2
+    return 1
+
+
+def display_str(ch):
+    """What to draw for a single character."""
+    if ch == '\t':
+        return ' ' * TAB_WIDTH
+    o = ord(ch)
+    if o < 32:
+        return '^' + chr(o + 64)
+    if o == 127:
+        return '^?'
+    return ch
+
+
+def text_width(text):
+    return sum(cell_width(c) for c in text)
+
+
+@lru_cache(maxsize=8192)
+def wrap_line(text, width):
+    """
+    Soft word-wrap: return a tuple of (start, end) index pairs into `text`,
+    each spanning at most `width` display columns. Breaks after whitespace
+    when possible, otherwise mid-word.
+    """
+    n = len(text)
+    if n == 0:
+        return ((0, 0),)
+    width = max(1, width)
+    segs = []
+    start = 0
+    i = 0
+    w = 0
+    last_space = -1
+    while i < n:
+        cw = cell_width(text[i])
+        if w + cw > width and i > start:
+            break_at = last_space + 1 if last_space >= start else i
+            segs.append((start, break_at))
+            start = break_at
+            i = start
+            w = 0
+            last_space = -1
+            continue
+        if text[i] in ' \t':
+            last_space = i
+        w += cw
+        i += 1
+    segs.append((start, n))
+    return tuple(segs)
+
+
+# --------------------------------------------------------------------------- #
+#  The editor                                                                  #
+# --------------------------------------------------------------------------- #
+
+# --------------------------------------------------------------------------- #
+#  Colour themes (cycle with ^T)                                               #
+# --------------------------------------------------------------------------- #
+# Each theme: (name, description, text (fg, bg), bars (fg, bg), accent (fg, bg))
+# Colours are xterm-256 palette indices (-1 = terminal default). On terminals
+# with only 8/16 colours they are approximated by to_basic_color().
+
+THEMES = [
+    ("Terminal",  "your terminal's own colours",     (-1, -1),   (15, 4),    (0, 11)),
+    ("Ocean",     "light blue on navy",              (117, 17),  (17, 117),  (17, 215)),
+    ("Midnight",  "soft grey on near-black",         (250, 233), (233, 250), (233, 180)),
+    ("Slate",     "muted grey-blue on charcoal",     (146, 235), (235, 146), (235, 222)),
+    ("Forest",    "pale green on deep green",        (151, 22),  (22, 151),  (22, 222)),
+    ("Amber",     "amber on black, old CRT style",   (214, 232), (232, 214), (232, 227)),
+    ("Phosphor",  "green on black, old CRT style",   (84, 232),  (232, 84),  (232, 227)),
+    ("Nord",      "frosty white on blue-grey",       (189, 236), (236, 110), (236, 222)),
+    ("Gruvbox",   "warm cream on brown-black",       (223, 235), (235, 142), (235, 214)),
+    ("Paper",     "dark ink on cream, for daylight", (236, 230), (230, 94),  (236, 221)),
+]
+
+THEME_FILE = os.path.join(os.path.expanduser("~"), ".config", "txtedit", "theme")
+
+
+def to_basic_color(c):
+    """Approximate an xterm-256 colour index with one of the 8 basic colours."""
+    if c < 0:
+        return -1
+    if c < 16:
+        return c % 8
+    if c >= 232:                                   # greyscale ramp
+        return 0 if c < 244 else 7
+    c -= 16
+    r, g, b = c // 36, (c // 6) % 6, c % 6         # 6x6x6 colour cube, levels 0-5
+    bits = (1 if r >= 3 else 0) | (2 if g >= 3 else 0) | (4 if b >= 3 else 0)
+    if bits == 0 and max(r, g, b) > 0:             # dark shade: keep its dominant hue
+        top = max(r, g, b)
+        bits = (1 if r == top else 0) | (2 if g == top else 0) | (4 if b == top else 0)
+    return bits
+
+
+def load_theme_index():
+    env = os.environ.get("TXTEDIT_THEME")
+    for source in (env, None):
+        try:
+            raw = source if source is not None else open(THEME_FILE).read()
+            return int(raw.strip()) % len(THEMES)
+        except (OSError, ValueError, TypeError):
+            continue
+    return 0
+
+
+def save_theme_index(idx):
+    try:
+        os.makedirs(os.path.dirname(THEME_FILE), exist_ok=True)
+        with open(THEME_FILE, "w") as f:
+            f.write(f"{idx}\n")
+        return True
+    except OSError:
+        return False
+
+
+def show_cursor():
+    """Make the cursor visible; silently ignored on terminals that cannot."""
+    try:
+        curses.curs_set(1)
+    except curses.error:
+        pass
+
+
+ESC_SEQUENCES = {
+    '[A': curses.KEY_UP, '[B': curses.KEY_DOWN, '[C': curses.KEY_RIGHT, '[D': curses.KEY_LEFT,
+    'OA': curses.KEY_UP, 'OB': curses.KEY_DOWN, 'OC': curses.KEY_RIGHT, 'OD': curses.KEY_LEFT,
+    '[H': curses.KEY_HOME, '[F': curses.KEY_END, 'OH': curses.KEY_HOME, 'OF': curses.KEY_END,
+    '[1~': curses.KEY_HOME, '[4~': curses.KEY_END, '[7~': curses.KEY_HOME, '[8~': curses.KEY_END,
+    '[5~': curses.KEY_PPAGE, '[6~': curses.KEY_NPAGE, '[3~': curses.KEY_DC, '[2~': curses.KEY_IC,
+    'OP': curses.KEY_F1, '[11~': curses.KEY_F1,
+}
+
+HELP_LINES = [
+    "txtedit - keyboard reference",
+    "",
+    "  Arrows, PgUp/PgDn      Move (Up/Down follow wrapped rows)",
+    "  Home / End, ^A / ^E    Start / end of line",
+    "  ^G                     Go to line (also 'line:col')",
+    "  Enter / Tab            New line / insert a tab character",
+    "  Backspace / Delete     Delete left / right",
+    "",
+    "  ^W                     Find (search starts after the cursor)",
+    "  ^N / ^P                Find next / find previous",
+    "  ^R                     Search & replace (asks y/n/a/q per match)",
+    "     in the search box:  ^T toggles Case-sensitive, ^R toggles Regex",
+    "     regex replacements may use groups: \\1, \\g<name>",
+    "",
+    "  ^K / ^U                Cut line(s) / paste cut lines (repeat ^K to cut a block)",
+    "  ^Z / ^Y                Undo / redo",
+    "  ^L                     Toggle soft word-wrap",
+    "  ^T                     Cycle colour theme (10 schemes; remembered in ~/.config/txtedit/theme)",
+    "  ^D                     Word, character and line count",
+    "",
+    "  ^S                     Save          ^O   Save as",
+    "  ^X                     Exit (asks to save if modified)",
+    "",
+    "  .docx / .odt files are imported as plain text and saved as <name>.txt;",
+    "  the original document is never modified.",
+    "",
+    "Press any key to return.",
+]
+
+
+class TextEditor:
+    def __init__(self, stdscr, filepath):
+        self.stdscr = stdscr
+        (self.lines, self.filepath, self.converted_from,
+         self.eol, self.trailing_nl, note) = load_document(filepath)
+        self.dirty = bool(self.converted_from)
+
+        self.cur_line = 0
+        self.cur_col = 0
+        self.goal_x = None             # remembered x for vertical movement
+
+        self.top_line = 0
+        self.top_seg = 0
+        self.col_offset = 0            # horizontal scroll when wrap is off
+        self.wrap = True
+        self.width = 80
+        self.height = 24
+
+        self.search_query = ""
+        self.replace_text = ""
+        self.search_case = False
+        self.search_regex = False
+        self.match = None              # (line, start, end) of highlighted match
+
+        self.cut_buffer = []
+        self.last_action = None
+        self.last_edit_line = -1
+        self.undo_stack = []
+        self.redo_stack = []
+
+        self.default_status = "^S Save | ^W Find | ^R Replace | ^T Theme | ^L Wrap | ^G GoTo | F1 Help | ^X Exit"
+        self.status_msg = note or self.default_status
+
+        self.init_curses()
+
+    # ---- curses setup -------------------------------------------------------
+
+    def init_curses(self):
+        curses.raw()
+        show_cursor()
+        self.stdscr.keypad(True)
+        self.has_color = False
+        try:
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                self.has_color = True
+        except curses.error:
+            self.has_color = False
+
+        try:
+            fd = sys.stdin.fileno()
+            attrs = termios.tcgetattr(fd)
+            attrs[0] &= ~(termios.IXON | termios.IXOFF)      # free ^S / ^Q
+            if hasattr(termios, 'VDISCARD') and termios.VDISCARD < len(attrs[6]):
+                attrs[6][termios.VDISCARD] = 0               # free ^O
+            if hasattr(termios, 'VLNEXT') and termios.VLNEXT < len(attrs[6]):
+                attrs[6][termios.VLNEXT] = 0                 # free ^V
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        except Exception:
+            pass
+
+        self.theme_idx = load_theme_index()
+        self.apply_theme(self.theme_idx)
+
+    def apply_theme(self, idx):
+        """Install colour pairs for THEMES[idx] and paint the window background."""
+        self.theme_idx = idx % len(THEMES)
+        name, desc, text, bar, accent = THEMES[self.theme_idx]
+        if not self.has_color:
+            self.attr_text = curses.A_NORMAL
+            self.attr_bar = curses.A_REVERSE
+            self.attr_prompt = curses.A_REVERSE | curses.A_BOLD
+            self.attr_match = curses.A_REVERSE | curses.A_BOLD
+            self.attr_key = curses.A_REVERSE | curses.A_BOLD
+            return
+        ncolors = curses.COLORS
+        conv = (lambda c: c) if ncolors >= 256 else to_basic_color
+
+        def pair(n, fg, bg):
+            try:
+                curses.init_pair(n, conv(fg), conv(bg))
+            except curses.error:
+                curses.init_pair(n, -1, -1)
+            return curses.color_pair(n)
+
+        self.attr_text = pair(1, text[0], text[1])
+        self.attr_bar = pair(3, bar[0], bar[1])
+        accent_attr = pair(4, accent[0], accent[1]) | curses.A_BOLD
+        self.attr_prompt = accent_attr
+        self.attr_match = accent_attr
+        self.attr_key = pair(6, bar[1], bar[0]) | curses.A_BOLD
+        self.stdscr.bkgd(' ', self.attr_text)
+
+    def cycle_theme(self, step=1):
+        self.apply_theme(self.theme_idx + step)
+        name, desc = THEMES[self.theme_idx][0], THEMES[self.theme_idx][1]
+        saved = save_theme_index(self.theme_idx)
+        self.status_msg = f"Theme {self.theme_idx + 1}/{len(THEMES)}: {name} ({desc})"
+        if not self.has_color:
+            self.status_msg += " - this terminal has no colour support"
+        elif curses.COLORS < 256:
+            self.status_msg += " - approximated, terminal reports only 8/16 colours"
+        elif not saved:
+            self.status_msg += " - could not save preference"
+
+    def update_geometry(self):
+        max_y, max_x = self.stdscr.getmaxyx()
+        self.width = max(1, max_x - 1)
+        self.height = max(1, max_y - 3)
+
+    # ---- wrapping / coordinate helpers --------------------------------------
+
+    def segs(self, li):
+        text = self.lines[li]
+        if self.wrap:
+            return wrap_line(text, self.width)
+        return ((0, len(text)),)
+
+    def seg_of_col(self, li, col):
+        segs = self.segs(li)
+        for k, (s, e) in enumerate(segs):
+            if col < e:
+                return k
+        return len(segs) - 1
+
+    def x_of(self, li, start, col):
+        return text_width(self.lines[li][start:col])
+
+    def col_from_x(self, li, k, goal):
+        segs = self.segs(li)
+        s, e = segs[k]
+        last = e if k == len(segs) - 1 else max(s, e - 1)
+        text = self.lines[li]
+        col = s
+        x = 0
+        while col < last:
+            cw = cell_width(text[col])
+            if x + cw > goal:
+                break
+            x += cw
+            col += 1
+        return col
+
+    def next_visual(self, pos):
+        li, k = pos
+        if k + 1 < len(self.segs(li)):
+            return (li, k + 1)
+        if li + 1 < len(self.lines):
+            return (li + 1, 0)
+        return None
+
+    def prev_visual(self, pos):
+        li, k = pos
+        if k > 0:
+            return (li, k - 1)
+        if li > 0:
+            return (li - 1, len(self.segs(li - 1)) - 1)
+        return None
+
+    def clamp_cursor(self):
+        n = len(self.lines)
+        self.cur_line = max(0, min(self.cur_line, n - 1))
+        self.cur_col = max(0, min(self.cur_col, len(self.lines[self.cur_line])))
+
+    def ensure_visible(self):
+        n = len(self.lines)
+        self.top_line = max(0, min(self.top_line, n - 1))
+        self.top_seg = max(0, min(self.top_seg, len(self.segs(self.top_line)) - 1))
+
+        cur = (self.cur_line, self.seg_of_col(self.cur_line, self.cur_col))
+        top = (self.top_line, self.top_seg)
+        if cur < top:
+            top = cur
+        else:
+            pos = top
+            rows = 0
+            while pos != cur and rows < self.height and pos is not None:
+                pos = self.next_visual(pos)
+                rows += 1
+            if rows >= self.height or pos is None:
+                top = cur
+                for _ in range(self.height - 1):
+                    p = self.prev_visual(top)
+                    if p is None:
+                        break
+                    top = p
+        self.top_line, self.top_seg = top
+
+        if self.wrap:
+            self.col_offset = 0
+        else:
+            x = self.x_of(self.cur_line, 0, self.cur_col)
+            if x < self.col_offset:
+                self.col_offset = x
+            elif x >= self.col_offset + self.width:
+                self.col_offset = x - self.width + 1
+
+    # ---- drawing ------------------------------------------------------------
+
+    def render_row(self, y, li, k):
+        s, e = self.segs(li)[k]
+        text = self.lines[li]
+        hl = self.match if (self.match and self.match[0] == li) else None
+        x = 0 if self.wrap else -self.col_offset
+        W = self.width
+
+        runs = []                      # (display string, attr, display width)
+        buf = []
+        buf_w = 0
+        cur_attr = None
+        row_start_x = None
+        for idx in range(s, e):
+            ch = text[idx]
+            cw = cell_width(ch)
+            if x < 0 or x + cw > W:    # clipped (horizontal scroll / wide char at edge)
+                x += cw
+                continue
+            attr = self.attr_match if (hl and hl[1] <= idx < hl[2]) else curses.A_NORMAL
+            if attr != cur_attr:
+                if buf:
+                    runs.append(("".join(buf), cur_attr, buf_w))
+                    buf, buf_w = [], 0
+                cur_attr = attr
+            if row_start_x is None:
+                row_start_x = x
+            buf.append(display_str(ch))
+            buf_w += cw
+            x += cw
+        if buf:
+            runs.append(("".join(buf), cur_attr, buf_w))
+
+        draw_x = row_start_x or 0
+        for string, attr, w in runs:
+            try:
+                self.stdscr.addstr(y, draw_x, string, attr)
+            except curses.error:
+                pass
+            draw_x += w
+
+    def draw(self):
+        self.stdscr.erase()
+        max_y, max_x = self.stdscr.getmaxyx()
+        if max_y < 6 or max_x < 20:
+            try:
+                self.stdscr.addstr(0, 0, "Terminal too small!")
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            return
+        self.update_geometry()
+        self.clamp_cursor()
+        self.ensure_visible()
+
+        # 1. Title bar
+        mod_str = " [Modified]" if self.dirty else ""
+        src = f" (from {self.converted_from})" if self.converted_from else ""
+        eol = " | CRLF" if self.eol == '\r\n' else ""
+        title = (f" txtedit | {os.path.basename(self.filepath)}{src}{mod_str}"
+                 f" | Ln {self.cur_line + 1}/{len(self.lines)}, Col {self.cur_col + 1}"
+                 f" | Wrap {'on' if self.wrap else 'off'}{eol} ")
+        try:
+            self.stdscr.addstr(0, 0, title[:max_x - 1].ljust(max_x - 1), self.attr_bar | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        # 2. Text area
+        pos = (self.top_line, self.top_seg)
+        cur = (self.cur_line, self.seg_of_col(self.cur_line, self.cur_col))
+        cursor_y = None
+        for row in range(self.height):
+            if pos is None:
+                break
+            y = 1 + row
+            self.render_row(y, pos[0], pos[1])
+            if pos == cur:
+                cursor_y = y
+            pos = self.next_visual(pos)
+
+        # 3. Status line
+        try:
+            self.stdscr.addstr(max_y - 2, 0, f" {self.status_msg}"[:max_x - 1].ljust(max_x - 1), self.attr_bar)
+        except curses.error:
+            pass
+
+        # 4. Nano-style shortcut bar
+        shortcuts = [
+            ("^S", "Save"), ("^X", "Exit"), ("^W", "Find"), ("^R", "Replace"),
+            ("^T", "Theme"), ("^L", "Wrap"), ("^Z", "Undo"), ("^K", "Cut"),
+            ("^U", "Paste"), ("^G", "GoTo"), ("^O", "SaveAs"), ("F1", "Help"),
+        ]
+        x_pos = 0
+        for key_str, desc in shortcuts:
+            if x_pos + len(key_str) + len(desc) + 3 >= max_x:
+                break
+            try:
+                self.stdscr.addstr(max_y - 1, x_pos, key_str, self.attr_key)
+                x_pos += len(key_str)
+                self.stdscr.addstr(max_y - 1, x_pos, f" {desc}  ", curses.A_NORMAL)
+                x_pos += len(desc) + 3
+            except curses.error:
+                pass
+
+        # 5. Cursor
+        if cursor_y is not None:
+            seg_start = self.segs(self.cur_line)[cur[1]][0]
+            x = self.x_of(self.cur_line, seg_start, self.cur_col)
+            if not self.wrap:
+                x -= self.col_offset
+            try:
+                self.stdscr.move(cursor_y, max(0, min(x, max_x - 2)))
+            except curses.error:
+                pass
+        self.stdscr.refresh()
+
+    def show_help(self):
+        self.stdscr.erase()
+        max_y, max_x = self.stdscr.getmaxyx()
+        for i, line in enumerate(HELP_LINES[:max_y - 1]):
+            attr = curses.A_BOLD if i == 0 else curses.A_NORMAL
+            try:
+                self.stdscr.addstr(i, 1, line[:max_x - 2], attr)
+            except curses.error:
+                pass
+        self.stdscr.refresh()
+        self.read_key()
+
+    # ---- input --------------------------------------------------------------
+
+    def read_key(self):
+        """
+        Returns an int key code for special/control keys, a str for printable
+        text (Unicode-safe), ('ALT', key) for Escape-prefixed sequences, or
+        None on a read error.
+        """
+        try:
+            ch = self.stdscr.get_wch()
+        except curses.error:
+            return None
+        if isinstance(ch, str):
+            if len(ch) == 1:
+                o = ord(ch)
+                if o < 32 or o == 127:
+                    ch = o
+        if ch == 27:
+            # Collect an Escape-prefixed sequence (Alt+key, or a CSI/SS3 key
+            # sequence that curses did not translate, e.g. when a terminal
+            # ignores application-keypad mode).
+            seq = ""
+            self.stdscr.nodelay(True)
+            try:
+                while True:
+                    try:
+                        nxt = self.stdscr.get_wch()
+                    except curses.error:
+                        break
+                    if not isinstance(nxt, str):
+                        return nxt
+                    seq += nxt
+                    if seq[0] not in '[O':
+                        break                      # Alt+<char>
+                    if len(seq) >= 2 and 0x40 <= ord(nxt) <= 0x7E and nxt != '[':
+                        break                      # final byte of the sequence
+                    if len(seq) > 16:
+                        break
+            finally:
+                self.stdscr.nodelay(False)
+            if not seq:
+                return 27
+            return ESC_SEQUENCES.get(seq, ('ALT', seq))
+        return ch
+
+    def prompt_input(self, label, initial="", extra_keys=None):
+        """
+        Single-line prompt on the status row. `label` may be a callable so it
+        can reflect toggles handled through `extra_keys` {keycode: callback}.
+        Returns the string, or None if cancelled (Esc / ^C).
+        """
+        buf = list(initial)
+        cursor = len(buf)
+        show_cursor()
+        try:
+            while True:
+                max_y, max_x = self.stdscr.getmaxyx()
+                lab = label() if callable(label) else label
+                prefix = f" {lab}: "
+                avail = max(5, max_x - len(prefix) - 2)
+                start_idx = max(0, cursor - avail + 1)
+                visible_buf = "".join(buf[start_idx:start_idx + avail])
+                try:
+                    self.stdscr.addstr(max_y - 2, 0, (prefix + visible_buf)[:max_x - 1].ljust(max_x - 1), self.attr_prompt)
+                    self.stdscr.move(max_y - 2, min(max_x - 2, len(prefix) + (cursor - start_idx)))
+                except curses.error:
+                    pass
+                self.stdscr.refresh()
+
+                ch = self.read_key()
+                if ch is None or isinstance(ch, tuple):
+                    continue
+                if extra_keys and ch in extra_keys:
+                    extra_keys[ch]()
+                    continue
+                if ch in (10, 13, curses.KEY_ENTER):
+                    return "".join(buf)
+                elif ch in (27, 7, 3):
+                    return None
+                elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                    if cursor > 0:
+                        buf.pop(cursor - 1)
+                        cursor -= 1
+                elif ch == curses.KEY_DC:
+                    if cursor < len(buf):
+                        buf.pop(cursor)
+                elif ch == curses.KEY_LEFT:
+                    cursor = max(0, cursor - 1)
+                elif ch == curses.KEY_RIGHT:
+                    cursor = min(len(buf), cursor + 1)
+                elif ch in (curses.KEY_HOME, 1):
+                    cursor = 0
+                elif ch in (curses.KEY_END, 5):
+                    cursor = len(buf)
+                elif ch == 21:                       # ^U clears the line
+                    buf.clear()
+                    cursor = 0
+                elif ch == curses.KEY_RESIZE:
+                    self.draw()
+                elif isinstance(ch, str):
+                    for c in ch:
+                        buf.insert(cursor, c)
+                        cursor += 1
+        finally:
+            show_cursor()
+
+    def ask_key(self, message):
+        """Redraw the editor, show `message` on the status row, return one key."""
+        self.draw()
+        max_y, max_x = self.stdscr.getmaxyx()
+        try:
+            self.stdscr.addstr(max_y - 2, 0, f" {message}"[:max_x - 1].ljust(max_x - 1), self.attr_prompt)
+        except curses.error:
+            pass
+        self.stdscr.refresh()
+        while True:
+            ch = self.read_key()
+            if ch is None or ch == curses.KEY_RESIZE:
+                continue
+            if isinstance(ch, tuple):
+                return 27
+            return ch.lower() if isinstance(ch, str) else ch
+
+    # ---- undo / redo --------------------------------------------------------
+
+    def snapshot(self):
+        return (list(self.lines), self.cur_line, self.cur_col)
+
+    def push_undo(self, kind, coalesce=False):
+        if coalesce and kind == self.last_action and self.last_edit_line == self.cur_line:
+            return
+        self.undo_stack.append(self.snapshot())
+        limit = 200 if len(self.lines) < 20000 else 30
+        if len(self.undo_stack) > limit:
+            del self.undo_stack[0]
+        self.redo_stack.clear()
+        self.last_action = kind
+        self.last_edit_line = self.cur_line
+
+    def restore(self, snap):
+        self.lines, self.cur_line, self.cur_col = list(snap[0]), snap[1], snap[2]
+        self.clamp_cursor()
+        self.dirty = True
+        self.last_action = None
+
+    def undo(self):
+        if not self.undo_stack:
+            self.status_msg = "Nothing to undo."
+            return
+        self.redo_stack.append(self.snapshot())
+        self.restore(self.undo_stack.pop())
+        self.status_msg = f"Undo ({len(self.undo_stack)} left)."
+
+    def redo(self):
+        if not self.redo_stack:
+            self.status_msg = "Nothing to redo."
+            return
+        self.undo_stack.append(self.snapshot())
+        self.restore(self.redo_stack.pop())
+        self.status_msg = "Redo."
+
+    # ---- editing ------------------------------------------------------------
+
+    def insert_text(self, s):
+        self.push_undo('type', coalesce=True)
+        line = self.lines[self.cur_line]
+        self.lines[self.cur_line] = line[:self.cur_col] + s + line[self.cur_col:]
+        self.cur_col += len(s)
+        self.last_edit_line = self.cur_line
+        self.dirty = True
+        self.goal_x = None
+
+    def newline(self):
+        self.push_undo('newline')
+        line = self.lines[self.cur_line]
+        self.lines[self.cur_line] = line[:self.cur_col]
+        self.lines.insert(self.cur_line + 1, line[self.cur_col:])
+        self.cur_line += 1
+        self.cur_col = 0
+        self.dirty = True
+        self.goal_x = None
+
+    def backspace(self):
+        if self.cur_col > 0:
+            self.push_undo('backspace', coalesce=True)
+            line = self.lines[self.cur_line]
+            self.lines[self.cur_line] = line[:self.cur_col - 1] + line[self.cur_col:]
+            self.cur_col -= 1
+        elif self.cur_line > 0:
+            self.push_undo('join')
+            prev = self.lines[self.cur_line - 1]
+            self.cur_col = len(prev)
+            self.lines[self.cur_line - 1] = prev + self.lines.pop(self.cur_line)
+            self.cur_line -= 1
+        else:
+            return
+        self.last_edit_line = self.cur_line
+        self.dirty = True
+        self.goal_x = None
+
+    def delete_char(self):
+        line = self.lines[self.cur_line]
+        if self.cur_col < len(line):
+            self.push_undo('delete', coalesce=True)
+            self.lines[self.cur_line] = line[:self.cur_col] + line[self.cur_col + 1:]
+        elif self.cur_line + 1 < len(self.lines):
+            self.push_undo('join')
+            self.lines[self.cur_line] = line + self.lines.pop(self.cur_line + 1)
+        else:
+            return
+        self.dirty = True
+        self.goal_x = None
+
+    def cut_line(self):
+        if self.last_action != 'cut':
+            self.cut_buffer = []
+        self.push_undo('cut', coalesce=True)
+        self.cut_buffer.append(self.lines.pop(self.cur_line))
+        if not self.lines:
+            self.lines = ['']
+        self.cur_line = min(self.cur_line, len(self.lines) - 1)
+        self.cur_col = 0
+        self.last_edit_line = self.cur_line
+        self.dirty = True
+        self.goal_x = None
+        self.status_msg = f"Cut {len(self.cut_buffer)} line(s). ^U pastes them."
+
+    def paste_lines(self):
+        if not self.cut_buffer:
+            self.status_msg = "Cut buffer is empty (use ^K first)."
+            return
+        self.push_undo('paste')
+        self.lines[self.cur_line:self.cur_line] = list(self.cut_buffer)
+        self.cur_line += len(self.cut_buffer)
+        self.cur_col = 0
+        self.dirty = True
+        self.goal_x = None
+        self.status_msg = f"Pasted {len(self.cut_buffer)} line(s)."
+
+    # ---- movement -----------------------------------------------------------
+
+    def move_left(self):
+        if self.cur_col > 0:
+            self.cur_col -= 1
+        elif self.cur_line > 0:
+            self.cur_line -= 1
+            self.cur_col = len(self.lines[self.cur_line])
+        self.goal_x = None
+
+    def move_right(self):
+        if self.cur_col < len(self.lines[self.cur_line]):
+            self.cur_col += 1
+        elif self.cur_line + 1 < len(self.lines):
+            self.cur_line += 1
+            self.cur_col = 0
+        self.goal_x = None
+
+    def _vertical(self, direction):
+        k = self.seg_of_col(self.cur_line, self.cur_col)
+        if self.goal_x is None:
+            self.goal_x = self.x_of(self.cur_line, self.segs(self.cur_line)[k][0], self.cur_col)
+        pos = self.next_visual((self.cur_line, k)) if direction > 0 else self.prev_visual((self.cur_line, k))
+        if pos is None:
+            return False
+        self.cur_line, k = pos
+        self.cur_col = self.col_from_x(self.cur_line, k, self.goal_x)
+        return True
+
+    def move_up(self):
+        self._vertical(-1)
+
+    def move_down(self):
+        self._vertical(+1)
+
+    def page(self, direction):
+        step = max(1, self.height - 1)
+        for _ in range(step):
+            if not self._vertical(direction):
+                break
+            top = (self.top_line, self.top_seg)
+            nxt = self.next_visual(top) if direction > 0 else self.prev_visual(top)
+            if nxt is not None:
+                self.top_line, self.top_seg = nxt
+
+    def goto_line(self):
+        ans = self.prompt_input(f"Go to line (1-{len(self.lines)}, or line:col)", "")
+        if not ans:
+            self.status_msg = "Go to cancelled."
+            return
+        m = re.match(r'^\s*(\d+)\s*(?:[:,]\s*(\d+))?\s*$', ans)
+        if not m:
+            self.status_msg = "Enter a line number, e.g. 42 or 42:7."
+            return
+        self.cur_line = max(0, min(int(m.group(1)) - 1, len(self.lines) - 1))
+        col = int(m.group(2)) - 1 if m.group(2) else 0
+        self.cur_col = max(0, min(col, len(self.lines[self.cur_line])))
+        self.goal_x = None
+        self.status_msg = f"Line {self.cur_line + 1}."
+
+    # ---- search & replace ---------------------------------------------------
+
+    def _search_label(self, verb):
+        def label():
+            case = "Case" if self.search_case else "NoCase"
+            mode = "Regex" if self.search_regex else "Literal"
+            return f"{verb} [{case} | {mode}] (^T case, ^R regex, Esc cancel)"
+        return label
+
+    def _search_toggles(self):
+        def toggle_case():
+            self.search_case = not self.search_case
+
+        def toggle_regex():
+            self.search_regex = not self.search_regex
+        return {20: toggle_case, 18: toggle_regex}
+
+    def _compile_search(self):
+        if not self.search_query:
+            return None
+        flags = 0 if self.search_case else re.IGNORECASE
+        pattern = self.search_query if self.search_regex else re.escape(self.search_query)
+        try:
+            return re.compile(pattern, flags)
+        except re.error as e:
+            self.status_msg = f"Invalid regex: {e}"
+            return None
+
+    def _find_forward(self, pat, line, col):
+        n = len(self.lines)
+        if col <= len(self.lines[line]):
+            m = pat.search(self.lines[line], col)
+            if m:
+                return (line, m.start(), m.end(), False)
+        for k in range(1, n + 1):
+            i = (line + k) % n
+            m = pat.search(self.lines[i])
+            if m:
+                return (i, m.start(), m.end(), line + k >= n)
+        return None
+
+    def _find_backward(self, pat, line, col):
+        n = len(self.lines)
+
+        def last_before(text, limit):
+            found = None
+            for m in pat.finditer(text):
+                if m.start() < limit:
+                    found = m
+                else:
+                    break
+            return found
+
+        m = last_before(self.lines[line], col)
+        if m:
+            return (line, m.start(), m.end(), False)
+        for k in range(1, n + 1):
+            i = (line - k) % n
+            m = last_before(self.lines[i], len(self.lines[i]) + 1)
+            if m:
+                return (i, m.start(), m.end(), line - k < 0)
+        return None
+
+    def search(self, prompt_new=True, backward=False):
+        if prompt_new or not self.search_query:
+            q = self.prompt_input(self._search_label("Search"), self.search_query, self._search_toggles())
+            if not q:
+                self.status_msg = "Search cancelled."
+                return
+            self.search_query = q
+        pat = self._compile_search()
+        if pat is None:
+            return
+
+        if backward:
+            res = self._find_backward(pat, self.cur_line, self.cur_col)
+        else:
+            line, col = self.cur_line, self.cur_col + 1
+            pre_wrapped = False
+            if col > len(self.lines[line]):
+                line, col = line + 1, 0
+                if line >= len(self.lines):
+                    line, pre_wrapped = 0, True
+            res = self._find_forward(pat, line, col)
+            if res:
+                res = (res[0], res[1], res[2], res[3] or pre_wrapped)
+
+        if res:
+            li, s, e, wrapped = res
+            self.cur_line, self.cur_col = li, s
+            self.goal_x = None
+            self.match = (li, s, e)
+            shown = self.search_query if len(self.search_query) < 30 else self.search_query[:27] + "..."
+            self.status_msg = f"Found '{shown}' at line {li + 1}, col {s + 1}" + (" (wrapped around)" if wrapped else "")
+        else:
+            self.status_msg = f"'{self.search_query}' not found."
+
+    def replace(self):
+        q = self.prompt_input(self._search_label("Replace: search for"), self.search_query, self._search_toggles())
+        if not q:
+            self.status_msg = "Replace cancelled."
+            return
+        self.search_query = q
+        pat = self._compile_search()
+        if pat is None:
+            return
+        rep = self.prompt_input("Replace with (Enter accepts, Esc cancels)", self.replace_text)
+        if rep is None:
+            self.status_msg = "Replace cancelled."
+            return
+        self.replace_text = rep
+
+        n = len(self.lines)
+        start_line, start_col = self.cur_line, self.cur_col
+        # Visit: rest of the current line, every following line (wrapping
+        # around), and finally the untouched part of the current line before
+        # the cursor. Each entry is (line, start_pos, limit) with limit the
+        # exclusive upper bound for match starts (None = whole line).
+        order = [(start_line, start_col, None)]
+        order += [((start_line + k) % n, 0, None) for k in range(1, n)]
+        order.append((start_line, 0, start_col))
+
+        count = 0
+        replace_all = False
+        aborted = False
+        pushed = False
+        for li, pos, limit in order:
+            if aborted:
+                break
+            while True:
+                text = self.lines[li]
+                if pos > len(text):
+                    break
+                m = pat.search(text, pos)
+                if not m or (limit is not None and m.start() >= limit):
+                    break
+                try:
+                    new = m.expand(rep) if self.search_regex else rep
+                except (re.error, IndexError, KeyError) as e:
+                    self.status_msg = f"Bad replacement: {e}"
+                    self.match = None
+                    return
+                empty = (m.end() == m.start())
+                if not replace_all:
+                    self.cur_line, self.cur_col = li, m.start()
+                    self.match = (li, m.start(), m.end())
+                    ans = self.ask_key(f"Replace this match? [y]es [n]o [a]ll [q]uit   ({count} replaced so far)")
+                    if ans in ('q', 27, 3, 24):
+                        aborted = True
+                        break
+                    if ans == 'a':
+                        replace_all = True
+                    elif ans != 'y':
+                        pos = m.end() + (1 if empty else 0)
+                        continue
+                if not pushed:
+                    self.push_undo('replace')
+                    pushed = True
+                self.lines[li] = text[:m.start()] + new + text[m.end():]
+                self.dirty = True
+                count += 1
+                self.cur_line, self.cur_col = li, m.start() + len(new)
+                pos = m.start() + len(new) + (1 if empty else 0)
+                if limit is not None:
+                    limit += len(new) - (m.end() - m.start())
+
+        self.match = None
+        self.goal_x = None
+        self.status_msg = f"Replaced {count} occurrence(s)." + (" Stopped." if aborted else "")
+
+    # ---- misc commands ------------------------------------------------------
+
+    def word_count(self):
+        words = sum(len(l.split()) for l in self.lines)
+        chars = sum(len(l) for l in self.lines) + max(0, len(self.lines) - 1)
+        nonblank = sum(1 for l in self.lines if l.strip())
+        self.status_msg = (f"{words} words | {chars} characters | {len(self.lines)} lines "
+                           f"({nonblank} non-blank)")
+
+    def toggle_wrap(self):
+        self.wrap = not self.wrap
+        self.top_seg = 0
+        self.col_offset = 0
+        self.goal_x = None
+        self.status_msg = f"Word-wrap {'on' if self.wrap else 'off'}."
+
+    def save_prompt(self, quick=False):
+        if quick:
+            target = self.filepath
+        else:
+            target = self.prompt_input("Save file as (Enter to confirm, Esc to cancel)", self.filepath)
+            if not target:
+                self.status_msg = "Save cancelled."
+                return False
+        try:
+            saved = save_document(target, self.lines, self.eol, self.trailing_nl)
+            redirected = (saved != target)
+            self.filepath = saved
+            self.dirty = False
+            self.converted_from = None
+            self.status_msg = f"Saved {len(self.lines)} lines to '{self.filepath}'."
+            if redirected:
+                self.status_msg += " (plain text only: .docx/.odt names are saved as .txt)"
+            return True
+        except Exception as e:
+            self.status_msg = f"Error saving: {e}"
+            return False
+
+    # ---- main loop ----------------------------------------------------------
+
+    def run(self):
+        while True:
+            self.draw()
+            ch = self.read_key()
+            if ch is None or isinstance(ch, tuple) or ch == curses.KEY_RESIZE:
+                continue
+
+            keep_match = ch in (14, 16)
+            if not keep_match:
+                self.match = None
+
+            # Navigation
+            if ch == curses.KEY_UP:
+                self.move_up()
+                self.last_action = None
+            elif ch == curses.KEY_DOWN:
+                self.move_down()
+                self.last_action = None
+            elif ch == curses.KEY_LEFT:
+                self.move_left()
+                self.last_action = None
+            elif ch == curses.KEY_RIGHT:
+                self.move_right()
+                self.last_action = None
+            elif ch == curses.KEY_PPAGE:
+                self.page(-1)
+                self.last_action = None
+            elif ch == curses.KEY_NPAGE:
+                self.page(+1)
+                self.last_action = None
+            elif ch in (curses.KEY_HOME, 1):           # Home / ^A
+                self.cur_col = 0
+                self.goal_x = None
+                self.last_action = None
+            elif ch in (curses.KEY_END, 5):            # End / ^E
+                self.cur_col = len(self.lines[self.cur_line])
+                self.goal_x = None
+                self.last_action = None
+            elif ch == 7:                              # ^G
+                self.goto_line()
+                self.last_action = None
+
+            # Editing
+            elif ch in (10, 13, curses.KEY_ENTER):
+                self.newline()
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                self.backspace()
+            elif ch == curses.KEY_DC:
+                self.delete_char()
+            elif ch == 9:                              # Tab
+                self.insert_text('\t')
+            elif ch == 11:                             # ^K
+                self.cut_line()
+            elif ch == 21:                             # ^U
+                self.paste_lines()
+            elif ch == 26:                             # ^Z
+                self.undo()
+            elif ch == 25:                             # ^Y
+                self.redo()
+
+            # Search / replace
+            elif ch == 23:                             # ^W
+                self.search(prompt_new=True)
+                self.last_action = None
+            elif ch == 14:                             # ^N
+                self.search(prompt_new=False)
+                self.last_action = None
+            elif ch == 16:                             # ^P
+                self.search(prompt_new=False, backward=True)
+                self.last_action = None
+            elif ch == 18:                             # ^R
+                self.replace()
+                self.last_action = None
+
+            # File / view
+            elif ch == 19:                             # ^S
+                self.save_prompt(quick=True)
+            elif ch == 15:                             # ^O
+                self.save_prompt(quick=False)
+            elif ch == 12:                             # ^L
+                self.toggle_wrap()
+            elif ch == 20:                             # ^T
+                self.cycle_theme()
+            elif ch == 4:                              # ^D
+                self.word_count()
+            elif ch == curses.KEY_F1:
+                self.show_help()
+            elif ch in (24, 3):                        # ^X / ^C
+                if self.dirty:
+                    ans = self.prompt_input("Save modified text before exiting? (y/n/Esc)", "y")
+                    if ans is None:
+                        self.status_msg = "Exit cancelled."
+                        continue
+                    elif ans.lower().startswith('y'):
+                        if self.save_prompt(quick=False):
+                            break
+                    elif ans.lower().startswith('n'):
+                        break
+                else:
+                    break
+
+            # Plain text (including non-ASCII)
+            elif isinstance(ch, str):
+                self.insert_text(ch)
+
+
+def main():
+    if len(sys.argv) >= 2 and sys.argv[1] in ('-h', '--help'):
+        print("Usage: txtedit [file.txt|file.docx|file.odt]")
+        print("A lightweight, nano-style terminal text editor. Word/ODT files are")
+        print("imported as plain text (formatting dropped) and saved as <name>.txt.")
+        sys.exit(0)
+
+    filepath = sys.argv[1] if len(sys.argv) >= 2 else "untitled.txt"
+    os.environ.setdefault('ESCDELAY', '25')
+    try:
+        locale.setlocale(locale.LC_ALL, '')
+    except locale.Error:
+        pass
+
+    try:
+        curses.wrapper(lambda stdscr: TextEditor(stdscr, filepath).run())
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
