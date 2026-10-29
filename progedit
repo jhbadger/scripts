@@ -1,0 +1,3071 @@
+#!/usr/bin/env python3
+"""
+progedit - A zero-dependency, nano-style terminal editor for programmers.
+Forked from txtedit; works on macOS (Darwin), Ubuntu, RedHat/RHEL and other UNIX systems.
+
+- Syntax highlighting for Python, Ruby, C and C++ (multi-line strings, comments,
+  heredocs and preprocessor lines included), 10 colour themes (^T).
+- Automatic indentation: keeps the indent, adds a level after ':' / '{' / Ruby block
+  openers, re-aligns 'else' / 'end' / 'except' / '}', soft tabs, smart backspace.
+- Language Server Protocol client (talks to pylsp / pyright / clangd / ruby-lsp /
+  solargraph ... if installed): live diagnostics, completion, hover, go-to-definition.
+- ^B / F5 compiles (C, C++) and runs the file in the terminal (also Python, Ruby).
+- Soft word-wrap, search / replace (case + regex toggles), undo/redo, line cut/paste,
+  go-to-line, bracket matching, bracketed-paste support, live line/word/char count.
+"""
+
+import curses
+import json
+import locale
+import os
+import queue
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import termios
+import threading
+import time
+import unicodedata
+from functools import lru_cache
+from urllib.parse import quote, unquote, urlparse
+
+
+TAB_WIDTH = 4                      # display width of a tab character
+TICK_MS = 250                      # idle wake-up (LSP messages, status expiry)
+STATUS_TTL = 6.0                   # seconds a status message stays visible
+PASTE_START = 0x10001              # synthetic key code: bracketed paste began
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "progedit")
+
+
+# --------------------------------------------------------------------------- #
+#  Loading / saving                                                            #
+# --------------------------------------------------------------------------- #
+
+def _split_lines(text):
+    """Normalise line endings and split; returns (lines, eol, had_trailing_newline)."""
+    eol = '\r\n' if '\r\n' in text else '\n'
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    trailing = text.endswith('\n')
+    lines = text.split('\n')
+    if trailing:
+        lines.pop()
+    if not lines:
+        lines = ['']
+    return lines, eol, trailing
+
+
+def load_document(filepath):
+    """Returns (lines, eol, trailing_newline, note)."""
+    if os.path.isdir(filepath):
+        raise IsADirectoryError(f"{filepath} is a directory")
+    if not os.path.exists(filepath):
+        return [''], '\n', True, f"New file: {os.path.basename(filepath)}"
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    note = "Warning: file contains binary data (NUL bytes). " if b'\x00' in data else ""
+    text = data.decode('utf-8-sig', errors='replace')
+    lines, eol, trailing = _split_lines(text)
+    return lines, eol, trailing, note
+
+
+def save_document(filepath, lines, eol='\n', trailing=True):
+    text = eol.join(lines) + (eol if trailing else '')
+    with open(filepath, 'w', encoding='utf-8', newline='') as f:
+        f.write(text)
+    return filepath
+
+
+# --------------------------------------------------------------------------- #
+#  Display helpers                                                             #
+# --------------------------------------------------------------------------- #
+
+@lru_cache(maxsize=4096)
+def line_stats(line):
+    """Return (word_count, char_count) for a single line (cached)."""
+    return len(line.split()), len(line)
+
+
+def cell_width(ch):
+    """Number of terminal columns a single character occupies when displayed."""
+    if ch == '\t':
+        return TAB_WIDTH
+    o = ord(ch)
+    if o < 32 or o == 127:
+        return 2                       # shown as ^X
+    if unicodedata.combining(ch):
+        return 0
+    if unicodedata.east_asian_width(ch) in ('W', 'F'):
+        return 2
+    return 1
+
+
+def display_str(ch):
+    """What to draw for a single character."""
+    if ch == '\t':
+        return ' ' * TAB_WIDTH
+    o = ord(ch)
+    if o < 32:
+        return '^' + chr(o + 64)
+    if o == 127:
+        return '^?'
+    return ch
+
+
+def text_width(text):
+    return sum(cell_width(c) for c in text)
+
+
+@lru_cache(maxsize=8192)
+def wrap_line(text, width):
+    """
+    Soft word-wrap: return a tuple of (start, end) index pairs into `text`,
+    each spanning at most `width` display columns. Breaks after whitespace
+    when possible, otherwise mid-word.
+    """
+    n = len(text)
+    if n == 0:
+        return ((0, 0),)
+    width = max(1, width)
+    segs = []
+    start = 0
+    i = 0
+    w = 0
+    last_space = -1
+    while i < n:
+        cw = cell_width(text[i])
+        if w + cw > width and i > start:
+            break_at = last_space + 1 if last_space >= start else i
+            segs.append((start, break_at))
+            start = break_at
+            i = start
+            w = 0
+            last_space = -1
+            continue
+        if text[i] in ' \t':
+            last_space = i
+        w += cw
+        i += 1
+    segs.append((start, n))
+    return tuple(segs)
+
+
+def leading_ws(s):
+    return s[:len(s) - len(s.lstrip(' \t'))]
+
+
+# --------------------------------------------------------------------------- #
+#  Languages and the syntax tokenizer                                          #
+# --------------------------------------------------------------------------- #
+
+def _words(s):
+    return s.split()
+
+
+def _wordmap(**groups):
+    out = {}
+    for kind, text in groups.items():
+        for w in _words(text):
+            out[w] = kind
+    return out
+
+
+_C_KW = ("auto break case const continue default do else enum extern for goto if inline register "
+         "restrict return sizeof static struct switch typedef union volatile while "
+         "_Alignas _Alignof _Atomic _Complex _Generic _Noreturn _Static_assert _Thread_local")
+_C_TYPES = ("int char short long float double void signed unsigned bool _Bool size_t ssize_t "
+            "ptrdiff_t intptr_t uintptr_t wchar_t FILE off_t time_t "
+            "int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t")
+_CPP_KW = ("alignas alignof and and_eq asm bitand bitor catch class compl concept consteval "
+           "constexpr constinit const_cast co_await co_return co_yield decltype delete "
+           "dynamic_cast explicit export friend mutable namespace new noexcept not not_eq "
+           "operator or or_eq private protected public reinterpret_cast requires static_assert "
+           "static_cast template this thread_local throw try typeid typename using virtual "
+           "xor xor_eq override final")
+_CPP_TYPES = ("char8_t char16_t char32_t string string_view vector map set multimap multiset "
+              "unordered_map unordered_set list deque array pair tuple optional variant any "
+              "unique_ptr shared_ptr weak_ptr function thread mutex span ostream istream "
+              "stringstream auto")
+
+_PY_KW = ("and as assert async await break class continue def del elif else except finally for "
+          "from global if import in is lambda nonlocal not or pass raise return try while with yield")
+_PY_BUILTINS = ("print len range int str float list dict set tuple bool bytes bytearray type object "
+                "super isinstance issubclass open enumerate zip map filter sorted reversed sum min "
+                "max abs any all repr id input iter next hasattr getattr setattr delattr callable "
+                "format round divmod hash hex oct bin ord chr vars dir property staticmethod "
+                "classmethod frozenset slice complex memoryview globals locals exec eval compile "
+                "Exception BaseException ValueError TypeError KeyError IndexError RuntimeError "
+                "OSError IOError AttributeError StopIteration NotImplementedError ImportError "
+                "NameError ZeroDivisionError AssertionError KeyboardInterrupt SystemExit "
+                "FileNotFoundError PermissionError")
+
+_RB_KW = ("alias and begin BEGIN break case class def defined? do else elsif end END ensure for "
+          "if in module next not or redo rescue retry return super then undef unless until "
+          "when while yield __method__ __FILE__ __LINE__ __dir__")
+_RB_BUILTINS = ("puts print p pp require require_relative load include extend prepend attr_accessor "
+                "attr_reader attr_writer private protected public module_function private_constant "
+                "raise lambda proc loop format sprintf printf gets catch throw block_given? "
+                "Integer Float String Array Hash Rational Complex freeze frozen? "
+                "Comparable Enumerable Kernel Object Struct Set Time File Dir IO Regexp Range")
+
+LANG_INFO = {
+    'python': dict(name='Python', comment='#', indent=4, lsp_id='python',
+                   words=_wordmap(kw=_PY_KW, type=_PY_BUILTINS, const="None True False",
+                                  spec="self cls")),
+    'ruby':   dict(name='Ruby', comment='#', indent=2, lsp_id='ruby',
+                   words=_wordmap(kw=_RB_KW, type=_RB_BUILTINS, const="nil true false",
+                                  spec="self")),
+    'c':      dict(name='C', comment='//', indent=4, lsp_id='c',
+                   words=_wordmap(kw=_C_KW, type=_C_TYPES, const="NULL true false")),
+    'cpp':    dict(name='C++', comment='//', indent=4, lsp_id='cpp',
+                   words=_wordmap(kw=_C_KW + ' ' + _CPP_KW, type=_C_TYPES + ' ' + _CPP_TYPES,
+                                  const="NULL true false nullptr")),
+}
+
+EXT_LANG = {
+    '.py': 'python', '.pyw': 'python', '.pyi': 'python',
+    '.rb': 'ruby', '.rake': 'ruby', '.gemspec': 'ruby', '.ru': 'ruby', '.rbw': 'ruby',
+    '.c': 'c', '.h': 'c',
+    '.cc': 'cpp', '.cpp': 'cpp', '.cxx': 'cpp', '.c++': 'cpp',
+    '.hpp': 'cpp', '.hh': 'cpp', '.hxx': 'cpp', '.h++': 'cpp', '.ipp': 'cpp',
+}
+NAME_LANG = {'Rakefile': 'ruby', 'Gemfile': 'ruby', 'Vagrantfile': 'ruby',
+             'Guardfile': 'ruby', 'Podfile': 'ruby', 'Capfile': 'ruby'}
+HEADER_EXTS = ('.h', '.hpp', '.hh', '.hxx', '.h++', '.ipp')
+
+
+def detect_language(path, lines):
+    base = os.path.basename(path)
+    ext = os.path.splitext(base)[1].lower()
+    lang = NAME_LANG.get(base) or EXT_LANG.get(ext)
+    if lang == 'c' and ext == '.h':
+        sample = '\n'.join(lines[:300])
+        if re.search(r'^\s*(?:class\s+\w+|namespace\s+\w+|template\s*<|using\s+namespace|'
+                     r'public:|private:|protected:)', sample, re.M):
+            lang = 'cpp'
+    if lang is None and lines and lines[0].startswith('#!'):
+        first = lines[0]
+        if 'python' in first:
+            lang = 'python'
+        elif 'ruby' in first:
+            lang = 'ruby'
+    return lang
+
+
+_Q_DQ = r'"(?:\\.|[^"\\])*(?:"|$)'
+_Q_SQ = r"'(?:\\.|[^'\\])*(?:'|$)"
+_Q_BQ = r'`(?:\\.|[^`\\])*(?:`|$)'
+
+_C_TOKEN = re.compile('|'.join([
+    r'(?P<com>//.*)',
+    r'(?P<bc>/\*)',
+    f'(?P<str>{_Q_DQ})',
+    f'(?P<chr>{_Q_SQ})',
+    r'(?P<num>(?<![\w.])(?:0[xX][\da-fA-F]+|0[bB][01]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[uUlLfF]*)',
+    r'(?P<id>[A-Za-z_]\w*)',
+]))
+
+_PY_TOKEN = re.compile('|'.join([
+    r'(?P<com>#.*)',
+    r'(?P<str>(?:[rRbBuUfF]{1,2})?(?P<q>"""|\x27{3}|"|\x27))',
+    r'(?P<deco>@[A-Za-z_][\w.]*)',
+    r'(?P<num>(?<![\w.])(?:0[xX][\da-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|'
+    r'(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][+-]?\d+)?[jJ]?))',
+    r'(?P<id>[A-Za-z_]\w*)',
+]))
+
+_RB_TOKEN = re.compile('|'.join([
+    r'(?P<com>#.*)',
+    f'(?P<str>{_Q_DQ}|{_Q_SQ}|{_Q_BQ})',
+    r'(?P<sym>(?<![:\w]):(?:[A-Za-z_]\w*[?!=]?|"(?:\\.|[^"\\])*"))',
+    r'(?P<ivar>@@?[A-Za-z_]\w*|\$(?:[A-Za-z_]\w*|[!@&~0-9*$?:"<>,./\\;]))',
+    r'(?P<hd><<[~-]?(?:(?P<hq>["\x27`])(?P<hid1>[A-Za-z_]\w*)(?P=hq)|(?P<hid2>[A-Za-z_]\w*)))',
+    r'(?P<num>(?<![\w.])(?:0[xX][\da-fA-F_]+|0[bB][01_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?))',
+    r'(?P<id>[A-Za-z_]\w*[?!]?)',
+    r'(?P<pct>%[wWiIqQr]?[\[({<|!/])',
+    r'(?P<re>/)',
+]))
+
+_TOKENS = {'c': _C_TOKEN, 'cpp': _C_TOKEN, 'python': _PY_TOKEN, 'ruby': _RB_TOKEN}
+_RB_REGEX_WORDS = {'if', 'unless', 'when', 'and', 'or', 'not', 'while', 'until', 'return',
+                   'then', 'puts', 'p', 'print'}
+_CLOSERS = {'[': ']', '(': ')', '{': '}', '<': '>'}
+
+
+def _find_close(text, i, delim):
+    """Index just past the first unescaped `delim` at/after i, or -1."""
+    n = len(text)
+    d = len(delim)
+    while i < n:
+        if text[i] == '\\':
+            i += 2
+            continue
+        if text.startswith(delim, i):
+            return i + d
+        i += 1
+    return -1
+
+
+def _rb_regex_ok(text, pos, pct):
+    before = text[:pos]
+    stripped = before.rstrip()
+    if not stripped:
+        return True
+    if pct:
+        return before[-1] in ' \t([{,='
+    if stripped[-1] in '(,=~!|&{[;:?<>+-*%^':
+        return True
+    m = re.search(r'([A-Za-z_]\w*)$', stripped)
+    return bool(m and m.group(1) in _RB_REGEX_WORDS)
+
+
+@lru_cache(maxsize=60000)
+def tokenize(lang, text, state):
+    """
+    Lex one line. `state` is the lexer state at the start of the line (None or a
+    tuple describing an unfinished multi-line construct). Returns
+    (spans, end_state) where spans is a tuple of (start, end, kind); kinds are
+    kw type func str com num pre const spec.
+    """
+    spans = []
+    n = len(text)
+    i = 0
+    info = LANG_INFO[lang]
+    fam = 'c' if lang in ('c', 'cpp') else lang
+    words = info['words']
+
+    if state is not None:
+        kind = state[0]
+        if kind == 'BC':
+            j = text.find('*/')
+            if j < 0:
+                return (((0, n, 'com'),) if n else ()), state
+            spans.append((0, j + 2, 'com'))
+            i, state = j + 2, None
+        elif kind == 'PP':
+            if n:
+                spans.append((0, n, 'pre'))
+            return tuple(spans), (('PP',) if text.rstrip().endswith('\\') else None)
+        elif kind == 'TQ':
+            j = _find_close(text, 0, state[1])
+            if j < 0:
+                return (((0, n, 'str'),) if n else ()), state
+            spans.append((0, j, 'str'))
+            i, state = j, None
+        elif kind == 'RB':
+            if n:
+                spans.append((0, n, 'com'))
+            return tuple(spans), (None if text.startswith('=end') else state)
+        elif kind == 'HD':
+            _, term, flex = state
+            if n:
+                spans.append((0, n, 'str'))
+            done = (text.strip() if flex else text.rstrip()) == term
+            return tuple(spans), (None if done else state)
+    elif fam == 'ruby' and text.startswith('=begin'):
+        return ((0, n, 'com'),), ('RB',)
+
+    pp_cont = False
+    if fam == 'c' and i == 0 and state is None:
+        m = re.match(r'\s*#', text)
+        if m:
+            cuts = [p for p in (text.find('//'), text.find('/*')) if p >= 0]
+            j = min(cuts) if cuts else n
+            if text[m.end() - 1:j].strip():
+                spans.append((m.end() - 1, j, 'pre'))
+            i = j
+            pp_cont = text.rstrip().endswith('\\')
+
+    pat = _TOKENS[lang]
+    prev = None                    # previous identifier (for def / class names)
+    pending = None                 # heredoc opened on this line (ruby)
+    while i < n:
+        m = pat.search(text, i)
+        if not m:
+            break
+        kind = m.lastgroup
+        s, e = m.start(), m.end()
+        if kind == 'com':
+            spans.append((s, n, 'com'))
+            i = n
+            break
+        if kind == 'bc':
+            k = text.find('*/', e)
+            if k < 0:
+                spans.append((s, n, 'com'))
+                state = ('BC',)
+                i = n
+                break
+            spans.append((s, k + 2, 'com'))
+            i = k + 2
+            prev = None
+            continue
+        if kind == 'str' and fam == 'python':
+            q = m.group('q')
+            k = _find_close(text, e, q)
+            if k < 0:
+                spans.append((s, n, 'str'))
+                if len(q) == 3:
+                    state = ('TQ', q)
+                i = n
+                break
+            spans.append((s, k, 'str'))
+            i = k
+            prev = None
+            continue
+        if kind in ('str', 'chr'):
+            spans.append((s, e, 'str'))
+            i = e
+            prev = None
+            continue
+        if kind == 'num':
+            spans.append((s, e, 'num'))
+            i = e
+            prev = None
+            continue
+        if kind == 'deco':
+            if not text[:s].strip():
+                spans.append((s, e, 'spec'))
+            i = e
+            prev = None
+            continue
+        if kind in ('sym', 'ivar'):
+            spans.append((s, e, 'spec'))
+            i = e
+            prev = None
+            continue
+        if kind == 'hd':
+            term = m.group('hid1') or m.group('hid2')
+            if m.group('hid2') and not re.fullmatch(r'[A-Z_][A-Z0-9_]*', term):
+                i = s + 2
+                continue
+            spans.append((s, e, 'spec'))
+            pending = ('HD', term, text[s + 2] in '~-')
+            i = e
+            continue
+        if kind in ('pct', 're'):
+            if not _rb_regex_ok(text, s, kind == 'pct'):
+                i = e
+                continue
+            if kind == 're':
+                k = _find_close(text, e, '/')
+            else:
+                o = m.group()[-1]
+                k = _find_close(text, e, _CLOSERS.get(o, o))
+            if k < 0:
+                i = e
+                continue
+            while kind == 're' and k < n and text[k] in 'imxounse':
+                k += 1
+            spans.append((s, k, 'str'))
+            i = k
+            prev = None
+            continue
+
+        # identifiers
+        word = m.group()
+        if fam == 'ruby' and word.endswith('!') and text[e:e + 1] == '=':
+            word, e = word[:-1], e - 1
+        k = words.get(word)
+        if k is None:
+            if prev == 'def' and fam in ('python', 'ruby'):
+                k = 'func'
+            elif prev in ('class', 'struct', 'union', 'enum', 'namespace', 'typename', 'module'):
+                k = 'type'
+            elif fam == 'ruby' and word[0].isupper():
+                k = 'const' if word.isupper() and len(word) > 1 else 'type'
+            elif fam == 'c' and len(word) > 2 and word.isupper() and '_' in word + 'X':
+                k = 'const'
+            elif re.match(r'\s*\(', text[e:]):
+                k = 'func'
+        elif k == 'kw' and prev == 'def' and fam == 'ruby':
+            k = 'func'
+        if k:
+            spans.append((s, e, k))
+        i = e
+        if fam == 'ruby' and word == 'self' and prev == 'def':
+            continue                       # def self.name
+        prev = word
+
+    if state is None:
+        state = pending or (('PP',) if pp_cont else None)
+    return tuple(spans), state
+
+
+@lru_cache(maxsize=30000)
+def blank_code(lang, text, state):
+    """The line with strings, comments and preprocessor text replaced by spaces."""
+    spans, _ = tokenize(lang, text, state)
+    if not spans:
+        return text
+    chars = list(text)
+    for s, e, k in spans:
+        if k in ('str', 'com', 'pre'):
+            chars[s:e] = ' ' * (e - s)
+    return ''.join(chars)
+
+
+# ---- indentation rules ---------------------------------------------------- #
+
+_RB_OPEN = re.compile(r'^\s*(?:def|class|module|if|unless|while|until|for|case|begin)\b'
+                      r'|\bdo(?:\s*\|[^|]*\|)?\s*$'
+                      r'|=\s*(?:if|unless|case|begin|while|until)\b'
+                      r'|^\s*(?:private|protected|public)\s+def\b')
+_RB_MID = re.compile(r'^\s*(?:else|elsif|when|rescue|ensure|in)\b')
+_RB_KEYLINE = re.compile(r'^\s*(?:end|else|elsif|when|rescue|ensure|in)\b')
+_RB_BRACE_OPEN = re.compile(r'[{(\[]\s*(?:\|[^|]*\|)?\s*$')
+_RB_ENDLESS = re.compile(r'^\s*def\s+[\w.?!]+\s*(?:\([^)]*\))?\s*=(?![=~>])')
+_PY_DEDENT = re.compile(r'^\s*(?:return|pass|break|continue|raise)\b')
+_PY_KEYLINE = re.compile(r'^\s*(else|elif\b.*|except\b.*|finally)\s*:\s*$')
+_PY_OPENERS = {'else': ('if', 'elif', 'for', 'while', 'try', 'except'),
+               'elif': ('if', 'elif'),
+               'except': ('try', 'except'),
+               'finally': ('try', 'except', 'else')}
+_C_CTRL = re.compile(r'^\s*(?:(?:\}\s*)?else\s+if|if|for|while)\b.*\)\s*$'
+                     r'|^\s*(?:\}\s*)?else\s*$|^\s*do\s*$')
+_C_CASE = re.compile(r'^\s*(?:case\b.*|default\s*):\s*$')
+
+
+def rb_is_opener(code):
+    s = code.strip()
+    if not s or not _RB_OPEN.search(s):
+        return False
+    if re.search(r'\bend\s*$', s) or _RB_ENDLESS.match(s):
+        return False
+    if re.search(r'\bthen\b\s*\S', s):
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------- #
+#  Colour themes (cycle with ^T)                                               #
+# --------------------------------------------------------------------------- #
+# Each theme: (name, description, text (fg, bg), bars (fg, bg), accent (fg, bg), palette)
+# Colours are xterm-256 palette indices (-1 = terminal default). On terminals
+# with only 8/16 colours they are approximated by to_basic_color().
+
+THEMES = [
+    ("Terminal",  "your terminal's own colours",     (-1, -1),   (15, 4),    (0, 11),    'ansi'),
+    ("Ocean",     "light blue on navy",              (117, 17),  (17, 117),  (17, 215),  'dark'),
+    ("Midnight",  "soft grey on near-black",         (250, 233), (233, 250), (233, 180), 'dark'),
+    ("Slate",     "muted grey-blue on charcoal",     (146, 235), (235, 146), (235, 222), 'dark'),
+    ("Forest",    "pale green on deep green",        (151, 22),  (22, 151),  (22, 222),  'dark'),
+    ("Amber",     "amber on black, old CRT style",   (214, 232), (232, 214), (232, 227), 'mono'),
+    ("Phosphor",  "green on black, old CRT style",   (84, 232),  (232, 84),  (232, 227), 'mono'),
+    ("Nord",      "frosty white on blue-grey",       (189, 236), (236, 110), (236, 222), 'dark'),
+    ("Gruvbox",   "warm cream on brown-black",       (223, 235), (235, 142), (235, 214), 'dark'),
+    ("Paper",     "dark ink on cream, for daylight", (236, 230), (230, 94),  (236, 221), 'light'),
+]
+
+PALETTES = {
+    'dark':  dict(kw=177, type=79, func=111, str=150, com=244, num=215, pre=173, const=209, spec=180),
+    'light': dict(kw=90,  type=24, func=25,  str=28,  com=102, num=130, pre=94,  const=160, spec=96),
+    'ansi':  dict(kw=13,  type=14, func=12,  str=10,  com=8,   num=11,  pre=9,   const=9,   spec=11),
+}
+SYNTAX_KINDS = ('kw', 'type', 'func', 'str', 'com', 'num', 'pre', 'const', 'spec')
+
+THEME_FILE = os.path.join(CONFIG_DIR, "theme")
+
+
+def to_basic_color(c):
+    """Approximate an xterm-256 colour index with one of the 8 basic colours."""
+    if c < 0:
+        return -1
+    if c < 16:
+        return c % 8
+    if c >= 232:                                   # greyscale ramp
+        return 0 if c < 244 else 7
+    c -= 16
+    r, g, b = c // 36, (c // 6) % 6, c % 6         # 6x6x6 colour cube, levels 0-5
+    bits = (1 if r >= 3 else 0) | (2 if g >= 3 else 0) | (4 if b >= 3 else 0)
+    if bits == 0 and max(r, g, b) > 0:             # dark shade: keep its dominant hue
+        top = max(r, g, b)
+        bits = (1 if r == top else 0) | (2 if g == top else 0) | (4 if b == top else 0)
+    return bits
+
+
+def load_theme_index():
+    env = os.environ.get("PROGEDIT_THEME")
+    for source in (env, None):
+        try:
+            raw = source if source is not None else open(THEME_FILE).read()
+            return int(raw.strip()) % len(THEMES)
+        except (OSError, ValueError, TypeError):
+            continue
+    return 1
+
+
+def save_theme_index(idx):
+    try:
+        os.makedirs(os.path.dirname(THEME_FILE), exist_ok=True)
+        with open(THEME_FILE, "w") as f:
+            f.write(f"{idx}\n")
+        return True
+    except OSError:
+        return False
+
+
+def show_cursor():
+    """Make the cursor visible; silently ignored on terminals that cannot."""
+    try:
+        curses.curs_set(1)
+    except curses.error:
+        pass
+
+
+def tty_write(s):
+    try:
+        sys.stdout.write(s)
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        pass
+
+
+ESC_SEQUENCES = {
+    '[A': curses.KEY_UP, '[B': curses.KEY_DOWN, '[C': curses.KEY_RIGHT, '[D': curses.KEY_LEFT,
+    'OA': curses.KEY_UP, 'OB': curses.KEY_DOWN, 'OC': curses.KEY_RIGHT, 'OD': curses.KEY_LEFT,
+    '[H': curses.KEY_HOME, '[F': curses.KEY_END, 'OH': curses.KEY_HOME, 'OF': curses.KEY_END,
+    '[1~': curses.KEY_HOME, '[4~': curses.KEY_END, '[7~': curses.KEY_HOME, '[8~': curses.KEY_END,
+    '[5~': curses.KEY_PPAGE, '[6~': curses.KEY_NPAGE, '[3~': curses.KEY_DC, '[2~': curses.KEY_IC,
+    '[Z': curses.KEY_BTAB,
+    'OP': curses.KEY_F1, '[11~': curses.KEY_F1, 'OQ': curses.KEY_F2, 'OR': curses.KEY_F3,
+    'OS': curses.KEY_F4, '[15~': curses.KEY_F5, '[17~': curses.KEY_F6, '[18~': curses.KEY_F7,
+    '[19~': curses.KEY_F8, '[24~': curses.KEY_F12,
+    '[200~': PASTE_START,
+}
+
+HELP_LINES = [
+    "progedit - keyboard reference",
+    "",
+    "  Arrows, PgUp/PgDn      Move (Up/Down follow wrapped rows)",
+    "  Home / End, ^A / ^E    Start / end of line",
+    "  ^G                     Go to line (also 'line:col')",
+    "  Enter                  New line, auto-indented (splits {} () [] into a block)",
+    "  Tab / Shift-Tab        Indent (soft tabs) / dedent;  Tab after a word = complete (LSP)",
+    "  Backspace              Delete left (steps back one indent level in leading spaces)",
+    "  ^_  or  Alt-/          Toggle comment on the line (^/ on most terminals)",
+    "",
+    "  ^W                     Find (search starts after the cursor)",
+    "  ^N / ^P                Find next / find previous",
+    "  ^R                     Search & replace (asks y/n/a/q per match)",
+    "     in the search box:  ^T toggles Case-sensitive, ^R toggles Regex",
+    "",
+    "  ^B  or  F5             Save, compile (C/C++) and run the program",
+    "  ^F  or  F6             Set program arguments, then run",
+    "  F7 / F8  (Alt-p/Alt-n) Previous / next diagnostic (compiler or language server)",
+    "",
+    "  Language server (pylsp, pyright, clangd, ruby-lsp, solargraph ...):",
+    "  ^@ (Ctrl-Space)        Completion         ^Q  or  F2   Hover information",
+    "  ^]  or  F12            Go to definition   ^\\            Jump back",
+    "",
+    "  ^K / ^U                Cut line(s) / paste cut lines (repeat ^K to cut a block)",
+    "  ^Z / ^Y                Undo / redo",
+    "  ^L                     Toggle soft word-wrap    F4   Toggle line numbers",
+    "  ^T                     Cycle colour theme (remembered in ~/.config/progedit/theme)",
+    "  ^D                     Word, character and line count",
+    "  ^S / ^O / ^X           Save / Save as / Exit",
+    "",
+    "  Server commands can be overridden in ~/.config/progedit/lsp.json, e.g.",
+    "  {\"python\": [\"pyright-langserver\", \"--stdio\"]};  PROGEDIT_LSP=0 or --no-lsp disables.",
+    "",
+    "Press any key to return.",
+]
+
+
+# --------------------------------------------------------------------------- #
+#  Language Server Protocol client                                             #
+# --------------------------------------------------------------------------- #
+
+LSP_SERVERS = {
+    'python': [['pylsp'], ['pyright-langserver', '--stdio'], ['basedpyright-langserver', '--stdio'],
+               ['jedi-language-server'], ['ruff', 'server']],
+    'c':      [['clangd'], ['ccls']],
+    'cpp':    [['clangd'], ['ccls']],
+    'ruby':   [['ruby-lsp'], ['solargraph', 'stdio'], ['rubocop', '--lsp']],
+}
+ROOT_MARKERS = ('.git', 'pyproject.toml', 'setup.py', 'setup.cfg', 'pyrightconfig.json',
+                'compile_commands.json', 'compile_flags.txt', '.clangd', 'Gemfile', '.hg')
+
+
+def find_lsp_command(lang):
+    """First installed server for the language (config file wins), or None."""
+    try:
+        with open(os.path.join(CONFIG_DIR, 'lsp.json')) as f:
+            cfg = json.load(f)
+        cmd = cfg.get(lang)
+        if isinstance(cmd, str):
+            cmd = shlex.split(cmd)
+        if cmd and shutil.which(cmd[0]):
+            return list(cmd)
+    except (OSError, ValueError, AttributeError):
+        pass
+    for cmd in LSP_SERVERS.get(lang, []):
+        if shutil.which(cmd[0]):
+            return list(cmd)
+    return None
+
+
+def find_project_root(path):
+    d = os.path.dirname(os.path.abspath(path))
+    cur = d
+    while True:
+        if any(os.path.exists(os.path.join(cur, m)) for m in ROOT_MARKERS):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return d
+        cur = parent
+
+
+def path_to_uri(path):
+    return 'file://' + quote(os.path.abspath(path))
+
+
+def uri_to_path(uri):
+    u = urlparse(uri)
+    return unquote(u.path) if u.scheme == 'file' else None
+
+
+def to_utf16(line, col):
+    if line.isascii():
+        return col
+    return sum(2 if ord(c) > 0xFFFF else 1 for c in line[:col])
+
+
+def from_utf16(line, u):
+    if line.isascii():
+        return min(u, len(line))
+    n = 0
+    for i, c in enumerate(line):
+        if n >= u:
+            return i
+        n += 2 if ord(c) > 0xFFFF else 1
+    return len(line)
+
+
+class LspClient:
+    """Minimal JSON-RPC/LSP client over a subprocess; one reader thread feeds a queue."""
+
+    def __init__(self, name, cmd, root):
+        self.name = name
+        self.cmd = cmd
+        self.root = root
+        self.proc = None
+        self.q = queue.Queue()
+        self.next_id = 1
+        self.pending = {}
+        self.state = 'starting'            # starting | ready | dead
+        self.error = ''
+        self.docs = {}                     # uri -> {lang, version, text, sent}
+        self.diags = {}                    # uri -> raw diagnostics list
+        self.diag_rev = 0
+        self.caps = {}
+
+    # ---- transport ----------------------------------------------------------
+
+    def start(self):
+        try:
+            self.proc = subprocess.Popen(self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, cwd=self.root,
+                                         start_new_session=True)
+        except OSError as e:
+            self.state, self.error = 'dead', str(e)
+            return False
+        threading.Thread(target=self._reader, daemon=True).start()
+        self.request('initialize', {
+            'processId': os.getpid(),
+            'clientInfo': {'name': 'progedit'},
+            'rootUri': path_to_uri(self.root),
+            'rootPath': self.root,
+            'workspaceFolders': [{'uri': path_to_uri(self.root), 'name': os.path.basename(self.root)}],
+            'capabilities': {
+                'general': {'positionEncodings': ['utf-16']},
+                'workspace': {'workspaceFolders': True, 'configuration': True},
+                'textDocument': {
+                    'synchronization': {'didSave': True},
+                    'publishDiagnostics': {},
+                    'completion': {'completionItem': {'snippetSupport': False,
+                                                      'documentationFormat': ['plaintext']}},
+                    'hover': {'contentFormat': ['plaintext', 'markdown']},
+                    'definition': {'linkSupport': True},
+                },
+            },
+        }, self._on_initialized)
+        return True
+
+    def _reader(self):
+        out = self.proc.stdout
+        try:
+            while True:
+                length = None
+                while True:
+                    line = out.readline()
+                    if not line:
+                        raise EOFError
+                    line = line.strip()
+                    if not line:
+                        break
+                    if line.lower().startswith(b'content-length:'):
+                        length = int(line.split(b':', 1)[1])
+                if length is None:
+                    continue
+                body = out.read(length)
+                if len(body) < length:
+                    raise EOFError
+                self.q.put(json.loads(body))
+        except Exception:
+            pass
+        self.q.put(None)
+
+    def _send(self, msg):
+        if self.state == 'dead' or self.proc is None:
+            return
+        body = json.dumps(msg, separators=(',', ':')).encode('utf-8')
+        try:
+            self.proc.stdin.write(b'Content-Length: %d\r\n\r\n' % len(body) + body)
+            self.proc.stdin.flush()
+        except (OSError, ValueError):
+            self.state, self.error = 'dead', self.error or 'server exited'
+
+    def notify(self, method, params):
+        self._send({'jsonrpc': '2.0', 'method': method, 'params': params})
+
+    def request(self, method, params, cb=None):
+        rid = self.next_id
+        self.next_id += 1
+        self.pending[rid] = cb
+        self._send({'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params})
+        return rid
+
+    def poll(self, wait=0.0):
+        """Process queued server messages; True if something visible changed."""
+        changed = False
+        first = True
+        while True:
+            try:
+                msg = self.q.get(timeout=wait) if (first and wait) else self.q.get_nowait()
+            except queue.Empty:
+                break
+            first = False
+            if msg is None:
+                if self.state != 'dead':
+                    self.state, self.error = 'dead', self.error or 'server exited'
+                    changed = True
+                break
+            changed |= self._dispatch(msg)
+        return changed
+
+    def _dispatch(self, msg):
+        method = msg.get('method')
+        if method is not None and 'id' in msg:                    # request from the server
+            result = None
+            if method == 'workspace/configuration':
+                result = [None] * len(msg.get('params', {}).get('items', []))
+            self._send({'jsonrpc': '2.0', 'id': msg['id'], 'result': result})
+            return False
+        if method is not None:                                    # notification
+            if method == 'textDocument/publishDiagnostics':
+                p = msg.get('params', {})
+                self.diags[p.get('uri')] = p.get('diagnostics', [])
+                self.diag_rev += 1
+                return True
+            return False
+        cb = self.pending.pop(msg.get('id'), None)                # response
+        if cb:
+            err = msg.get('error')
+            cb(msg.get('result'), err.get('message', 'error') if err else None)
+        return False
+
+    def _on_initialized(self, result, error):
+        if error or not isinstance(result, dict):
+            self.state, self.error = 'dead', error or 'bad initialize reply'
+            return
+        self.caps = result.get('capabilities', {})
+        self.notify('initialized', {})
+        self.state = 'ready'
+        for uri, d in self.docs.items():
+            self._did_open(uri, d)
+
+    # ---- documents ----------------------------------------------------------
+
+    def _did_open(self, uri, d):
+        d['sent'] = True
+        self.notify('textDocument/didOpen', {'textDocument': {
+            'uri': uri, 'languageId': d['lang'], 'version': d['version'], 'text': d['text']}})
+
+    def open(self, uri, lang, text):
+        d = self.docs[uri] = {'lang': lang, 'version': 1, 'text': text, 'sent': False}
+        if self.state == 'ready':
+            self._did_open(uri, d)
+
+    def change(self, uri, text):
+        d = self.docs.get(uri)
+        if not d:
+            return
+        d['version'] += 1
+        d['text'] = text
+        if d['sent']:
+            self.notify('textDocument/didChange', {
+                'textDocument': {'uri': uri, 'version': d['version']},
+                'contentChanges': [{'text': text}]})
+
+    def save(self, uri):
+        if self.docs.get(uri, {}).get('sent'):
+            self.notify('textDocument/didSave', {'textDocument': {'uri': uri}})
+
+    def close(self, uri):
+        d = self.docs.pop(uri, None)
+        if d and d['sent']:
+            self.notify('textDocument/didClose', {'textDocument': {'uri': uri}})
+        if self.diags.pop(uri, None) is not None:
+            self.diag_rev += 1
+
+    # ---- synchronous helpers (used for completion / hover / definition) -----
+
+    def wait_ready(self, timeout=6.0, abort=None):
+        end = time.monotonic() + timeout
+        while self.state == 'starting' and time.monotonic() < end:
+            self.poll(0.05)
+            if abort and abort():
+                return False
+        return self.state == 'ready'
+
+    def request_sync(self, method, params, timeout=5.0, abort=None):
+        """Returns (result, error)."""
+        if not self.wait_ready(timeout, abort):
+            return None, 'language server not ready' if self.state != 'dead' else self.error
+        box = []
+        self.request(method, params, lambda r, e: box.append((r, e)))
+        end = time.monotonic() + timeout
+        while not box and self.state != 'dead' and time.monotonic() < end:
+            self.poll(0.05)
+            if abort and abort():
+                return None, 'cancelled'
+        return box[0] if box else (None, 'timed out')
+
+    def stop(self):
+        if self.proc is None:
+            return
+        try:
+            if self.state == 'ready':
+                self.request_sync('shutdown', None, timeout=0.6)
+                self.notify('exit', None)
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(0.4)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+        self.state = 'dead'
+
+
+_BUILD_RE = re.compile(r'^(?P<file>[^\s:][^:]*):(?P<line>\d+):(?:(?P<col>\d+):)?\s*'
+                       r'(?P<sev>fatal error|error|warning|note):\s*(?P<msg>.*)$')
+_SEV_NUM = {'fatal error': 1, 'error': 1, 'warning': 2, 'note': 3}
+
+
+def parse_build_output(text, path):
+    """gcc/clang diagnostics for `path` -> [(line, col, line, col, severity, message, 'build')]."""
+    base = os.path.basename(path)
+    out = []
+    for raw in text.splitlines():
+        m = _BUILD_RE.match(raw)
+        if not m or os.path.basename(m.group('file')) != base:
+            continue
+        line = int(m.group('line')) - 1
+        col = max(0, int(m.group('col') or 1) - 1)
+        out.append((line, col, line, col + 1, _SEV_NUM[m.group('sev')], m.group('msg'), 'build'))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  The editor                                                                  #
+# --------------------------------------------------------------------------- #
+
+class Editor:
+    def __init__(self, stdscr, filepath, lsp_enabled=True, goto=None):
+        self.stdscr = stdscr
+        self.lsp_enabled = lsp_enabled
+        self.lsp_clients = {}
+        self.lsp = None
+        self.lsp_uri = None
+        self.lsp_note = ''
+        self.jump_stack = []
+        self.pushback = []
+
+        self._dirty = False
+        self.rev = 0                   # bumped on every modification
+        self.seen_rev = 0
+        self.rev_time = 0.0
+        self.lsp_rev = 0
+
+        self.cur_line = 0
+        self.cur_col = 0
+        self.goal_x = None             # remembered x for vertical movement
+
+        self.top_line = 0
+        self.top_seg = 0
+        self.col_offset = 0            # horizontal scroll when wrap is off
+        self.wrap = False
+        self.show_numbers = True
+        self.gutter_w = 0
+        self.width = 80
+        self.height = 24
+
+        self.search_query = ""
+        self.replace_text = ""
+        self.search_case = False
+        self.search_regex = False
+        self.match = None              # (line, start, end) of highlighted match
+        self.bracket_pair = None       # [(line, col), (line, col)]
+
+        self.cut_buffer = []
+        self.last_action = None
+        self.last_edit_line = -1
+        self.undo_stack = []
+        self.redo_stack = []
+
+        self.run_args = ""
+        self.build_diags = []
+        self.build_serial = 0
+        self._diag_cache = (None, [])
+        self.cursor_screen = (1, 0)
+        self.need_draw = True
+
+        self.default_status = ("^S Save | ^W Find | ^B Run | ^T Theme | ^G GoTo | "
+                               "^Q Hover | ^] Def | F1 Help | ^X Exit")
+        self._status = ""
+        self._status_t = 0.0
+        self._status_cleared = True
+
+        note = self.load_file(filepath)
+        if goto:
+            self.cur_line = max(0, min(goto - 1, len(self.lines) - 1))
+        self.status_msg = note or ""
+        self.init_curses()
+
+    # ---- status message with expiry ----------------------------------------
+
+    @property
+    def status_msg(self):
+        if self._status and time.monotonic() - self._status_t <= STATUS_TTL:
+            return self._status
+        return ""
+
+    @status_msg.setter
+    def status_msg(self, value):
+        self._status = value
+        self._status_t = time.monotonic()
+        self._status_cleared = not value
+
+    @property
+    def dirty(self):
+        return self._dirty
+
+    @dirty.setter
+    def dirty(self, value):
+        if value:
+            self.rev += 1
+        self._dirty = bool(value)
+
+    # ---- document loading ---------------------------------------------------
+
+    def load_file(self, path, line=0, col=0):
+        self.lsp_detach()
+        (self.lines, self.eol, self.trailing_nl, note) = load_document(path)
+        self.filepath = path
+        self._dirty = False
+        self.cur_line = max(0, min(line, len(self.lines) - 1))
+        self.cur_col = max(0, min(col, len(self.lines[self.cur_line])))
+        self.goal_x = None
+        self.top_line = self.top_seg = self.col_offset = 0
+        self.undo_stack, self.redo_stack = [], []
+        self.last_action = None
+        self.match = None
+        self.build_diags = []
+        self.build_serial += 1
+        self.hl_states = [None]
+        self.lang = detect_language(path, self.lines)
+        self.indent_unit = self.detect_indent()
+        self.lsp_attach()
+        if self.lang:
+            note = note or f"{LANG_INFO[self.lang]['name']}: ^B runs the file, F1 for help"
+        return note
+
+    def detect_indent(self):
+        info = LANG_INFO.get(self.lang)
+        default = ' ' * info['indent'] if info else '\t'
+        tabs = spaces = 0
+        indents = []
+        for l in self.lines[:2000]:
+            if not l.strip():
+                continue
+            if l[0] == '\t':
+                tabs += 1
+            elif l[0] == ' ':
+                spaces += 1
+                indents.append(len(l) - len(l.lstrip(' ')))
+        if tabs > spaces:
+            return '\t'
+        if os.path.basename(self.filepath) == 'Makefile':
+            return '\t'
+        deltas = {}
+        prev = 0
+        for ind in indents:
+            d = abs(ind - prev)
+            if 2 <= d <= 8:
+                deltas[d] = deltas.get(d, 0) + 1
+            prev = ind
+        if deltas:
+            return ' ' * max(deltas, key=lambda k: (deltas[k], -k))
+        return default
+
+    def document_text(self):
+        return '\n'.join(self.lines) + ('\n' if self.trailing_nl else '')
+
+    # ---- curses setup -------------------------------------------------------
+
+    def tune_tty(self):
+        try:
+            fd = sys.stdin.fileno()
+            attrs = termios.tcgetattr(fd)
+            attrs[0] &= ~(termios.IXON | termios.IXOFF)      # free ^S / ^Q
+            if hasattr(termios, 'VDISCARD') and termios.VDISCARD < len(attrs[6]):
+                attrs[6][termios.VDISCARD] = 0               # free ^O
+            if hasattr(termios, 'VLNEXT') and termios.VLNEXT < len(attrs[6]):
+                attrs[6][termios.VLNEXT] = 0                 # free ^V
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        except Exception:
+            pass
+
+    def init_curses(self):
+        curses.raw()
+        show_cursor()
+        self.stdscr.keypad(True)
+        self.stdscr.timeout(TICK_MS)
+        self.has_color = False
+        try:
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                self.has_color = True
+        except curses.error:
+            self.has_color = False
+        self.tune_tty()
+        tty_write('\x1b[?2004h')                             # bracketed paste
+        self.theme_idx = load_theme_index()
+        self.apply_theme(self.theme_idx)
+
+    def apply_theme(self, idx):
+        """Install colour pairs for THEMES[idx] and paint the window background."""
+        self.theme_idx = idx % len(THEMES)
+        name, desc, text, bar, accent, palette = THEMES[self.theme_idx]
+        mono = {'kw': curses.A_BOLD, 'type': curses.A_BOLD, 'func': curses.A_NORMAL,
+                'str': curses.A_NORMAL, 'com': curses.A_DIM, 'num': curses.A_NORMAL,
+                'pre': curses.A_BOLD, 'const': curses.A_BOLD, 'spec': curses.A_BOLD}
+        if not self.has_color:
+            self.attr_text = curses.A_NORMAL
+            self.attr_bar = curses.A_REVERSE
+            self.attr_prompt = curses.A_REVERSE | curses.A_BOLD
+            self.attr_match = curses.A_REVERSE | curses.A_BOLD
+            self.attr_key = curses.A_REVERSE | curses.A_BOLD
+            self.attr_syn = dict(mono)
+            self.attr_err = curses.A_UNDERLINE | curses.A_BOLD
+            self.attr_warn = curses.A_UNDERLINE
+            return
+        ncolors = curses.COLORS
+        conv = (lambda c: c) if ncolors >= 256 else to_basic_color
+
+        def pair(n, fg, bg):
+            try:
+                curses.init_pair(n, conv(fg), conv(bg))
+            except curses.error:
+                curses.init_pair(n, -1, -1)
+            return curses.color_pair(n)
+
+        self.attr_text = pair(1, text[0], text[1])
+        self.attr_bar = pair(3, bar[0], bar[1])
+        accent_attr = pair(4, accent[0], accent[1]) | curses.A_BOLD
+        self.attr_prompt = accent_attr
+        self.attr_match = accent_attr
+        self.attr_key = pair(6, bar[1], bar[0]) | curses.A_BOLD
+        if palette == 'mono':
+            self.attr_syn = dict(mono)
+            err_fg, warn_fg = text[0], text[0]
+        else:
+            pal = PALETTES[palette]
+            self.attr_syn = {k: pair(10 + i, pal[k], text[1]) for i, k in enumerate(SYNTAX_KINDS)}
+            self.attr_syn['kw'] |= curses.A_BOLD
+            err_fg, warn_fg = (196, 220) if palette != 'ansi' else (9, 11)
+            if palette == 'light':
+                err_fg, warn_fg = 160, 130
+        self.attr_err = pair(20, err_fg, text[1]) | curses.A_UNDERLINE | curses.A_BOLD
+        self.attr_warn = pair(21, warn_fg, text[1]) | curses.A_UNDERLINE
+        self.stdscr.bkgd(' ', self.attr_text)
+
+    def cycle_theme(self, step=1):
+        self.apply_theme(self.theme_idx + step)
+        name, desc = THEMES[self.theme_idx][0], THEMES[self.theme_idx][1]
+        saved = save_theme_index(self.theme_idx)
+        self.status_msg = f"Theme {self.theme_idx + 1}/{len(THEMES)}: {name} ({desc})"
+        if not self.has_color:
+            self.status_msg += " - this terminal has no colour support"
+        elif curses.COLORS < 256:
+            self.status_msg += " - approximated, terminal reports only 8/16 colours"
+        elif not saved:
+            self.status_msg += " - could not save preference"
+
+    def update_geometry(self):
+        max_y, max_x = self.stdscr.getmaxyx()
+        self.gutter_w = (len(str(len(self.lines))) + 2) if self.show_numbers else 0
+        self.width = max(1, max_x - 1 - self.gutter_w)
+        self.height = max(1, max_y - 3)
+
+    # ---- wrapping / coordinate helpers --------------------------------------
+
+    def segs(self, li):
+        text = self.lines[li]
+        if self.wrap:
+            return wrap_line(text, self.width)
+        return ((0, len(text)),)
+
+    def seg_of_col(self, li, col):
+        segs = self.segs(li)
+        for k, (s, e) in enumerate(segs):
+            if col < e:
+                return k
+        return len(segs) - 1
+
+    def x_of(self, li, start, col):
+        return text_width(self.lines[li][start:col])
+
+    def col_from_x(self, li, k, goal):
+        segs = self.segs(li)
+        s, e = segs[k]
+        last = e if k == len(segs) - 1 else max(s, e - 1)
+        text = self.lines[li]
+        col = s
+        x = 0
+        while col < last:
+            cw = cell_width(text[col])
+            if x + cw > goal:
+                break
+            x += cw
+            col += 1
+        return col
+
+    def next_visual(self, pos):
+        li, k = pos
+        if k + 1 < len(self.segs(li)):
+            return (li, k + 1)
+        if li + 1 < len(self.lines):
+            return (li + 1, 0)
+        return None
+
+    def prev_visual(self, pos):
+        li, k = pos
+        if k > 0:
+            return (li, k - 1)
+        if li > 0:
+            return (li - 1, len(self.segs(li - 1)) - 1)
+        return None
+
+    def clamp_cursor(self):
+        n = len(self.lines)
+        self.cur_line = max(0, min(self.cur_line, n - 1))
+        self.cur_col = max(0, min(self.cur_col, len(self.lines[self.cur_line])))
+
+    def ensure_visible(self):
+        n = len(self.lines)
+        self.top_line = max(0, min(self.top_line, n - 1))
+        self.top_seg = max(0, min(self.top_seg, len(self.segs(self.top_line)) - 1))
+
+        cur = (self.cur_line, self.seg_of_col(self.cur_line, self.cur_col))
+        top = (self.top_line, self.top_seg)
+        if cur < top:
+            top = cur
+        else:
+            pos = top
+            rows = 0
+            while pos != cur and rows < self.height and pos is not None:
+                pos = self.next_visual(pos)
+                rows += 1
+            if rows >= self.height or pos is None:
+                top = cur
+                for _ in range(self.height - 1):
+                    p = self.prev_visual(top)
+                    if p is None:
+                        break
+                    top = p
+        self.top_line, self.top_seg = top
+
+        if self.wrap:
+            self.col_offset = 0
+        else:
+            x = self.x_of(self.cur_line, 0, self.cur_col)
+            if x < self.col_offset:
+                self.col_offset = x
+            elif x >= self.col_offset + self.width:
+                self.col_offset = x - self.width + 1
+
+    # ---- syntax state --------------------------------------------------------
+
+    def invalidate(self, line):
+        """Lines after `line` may have a different lexer state now."""
+        del self.hl_states[max(0, line) + 1:]
+
+    def line_state(self, li):
+        if not self.lang:
+            return None
+        st = self.hl_states
+        while len(st) <= li:
+            k = len(st) - 1
+            st.append(tokenize(self.lang, self.lines[k], st[k])[1])
+        return st[li]
+
+    def line_spans(self, li):
+        if not self.lang:
+            return ()
+        return tokenize(self.lang, self.lines[li], self.line_state(li))[0]
+
+    def blank_line(self, li):
+        if not self.lang:
+            return self.lines[li]
+        return blank_code(self.lang, self.lines[li], self.line_state(li))
+
+    # ---- diagnostics ---------------------------------------------------------
+
+    def diagnostics(self):
+        """Merged LSP + build diagnostics as (sl, sc, el, ec, severity, message, source)."""
+        key = (self.lsp.diag_rev if self.lsp else 0, self.build_serial, self.lsp_uri)
+        if self._diag_cache[0] == key:
+            return self._diag_cache[1]
+        out = list(self.build_diags)
+        if self.lsp and self.lsp_uri in self.lsp.diags:
+            n = len(self.lines)
+            for d in self.lsp.diags[self.lsp_uri]:
+                try:
+                    r = d['range']
+                    sl, el = r['start']['line'], r['end']['line']
+                    if sl >= n:
+                        continue
+                    el = min(el, n - 1)
+                    sc = from_utf16(self.lines[sl], r['start']['character'])
+                    ec = from_utf16(self.lines[el], r['end']['character'])
+                    out.append((sl, sc, el, ec, d.get('severity', 1),
+                                d.get('message', '').strip(), d.get('source', 'lsp')))
+                except (KeyError, TypeError):
+                    continue
+        out.sort(key=lambda d: (d[0], d[1]))
+        self._diag_cache = (key, out)
+        return out
+
+    def diag_attr(self, sev):
+        return self.attr_err if sev == 1 else self.attr_warn
+
+    def jump_diagnostic(self, step):
+        diags = [d for d in self.diagnostics() if d[4] <= 3]
+        if not diags:
+            self.status_msg = "No diagnostics."
+            return
+        here = (self.cur_line, self.cur_col)
+        if step > 0:
+            cands = [d for d in diags if (d[0], d[1]) > here]
+            d = cands[0] if cands else diags[0]
+        else:
+            cands = [d for d in diags if (d[0], d[1]) < here]
+            d = cands[-1] if cands else diags[-1]
+        self.cur_line, self.cur_col = d[0], d[1]
+        self.goal_x = None
+        label = {1: 'error', 2: 'warning', 3: 'info'}.get(d[4], 'hint')
+        self.status_msg = f"{label}: {d[5].splitlines()[0] if d[5] else ''}"
+
+    # ---- drawing ------------------------------------------------------------
+
+    def row_attrs(self, li, s, e):
+        """Display attribute for each character index in [s, e) of line li."""
+        attrs = [curses.A_NORMAL] * (e - s)
+        syn = self.attr_syn
+        for ss, se, kind in self.line_spans(li):
+            if se <= s:
+                continue
+            if ss >= e:
+                break
+            a = syn.get(kind, curses.A_NORMAL)
+            for j in range(max(ss, s), min(se, e)):
+                attrs[j - s] = a
+        text = self.lines[li]
+        for sl, sc, el, ec, sev, _msg, _src in self.diagnostics():
+            if sev > 2 or li < sl or li > el:
+                continue
+            a = self.diag_attr(sev)
+            ds = sc if li == sl else 0
+            de = ec if li == el else len(text)
+            if de <= ds:
+                de = ds + 1
+            for j in range(max(ds, s), min(de, e)):
+                attrs[j - s] = a
+        if self.bracket_pair:
+            for bl, bc in self.bracket_pair:
+                if bl == li and s <= bc < e:
+                    attrs[bc - s] = self.attr_match
+        if self.match and self.match[0] == li:
+            for j in range(max(self.match[1], s), min(self.match[2], e)):
+                attrs[j - s] = self.attr_match
+        return attrs
+
+    def render_row(self, y, li, k):
+        s, e = self.segs(li)[k]
+        text = self.lines[li]
+        x = 0 if self.wrap else -self.col_offset
+        W = self.width
+        g = self.gutter_w
+
+        if g:
+            digits = g - 2
+            mark = ' '
+            mark_attr = curses.A_NORMAL
+            if k == 0:
+                worst = None
+                for d in self.diagnostics():
+                    if d[0] <= li <= d[2] and d[4] <= 2 and (worst is None or d[4] < worst):
+                        worst = d[4]
+                if worst:
+                    mark = 'E' if worst == 1 else 'W'
+                    mark_attr = self.diag_attr(worst)
+                num = str(li + 1).rjust(digits)
+            else:
+                num = ' ' * digits
+            try:
+                self.stdscr.addstr(y, 0, mark, mark_attr)
+                self.stdscr.addstr(y, 1, num + ' ', self.attr_syn.get('com', curses.A_DIM))
+            except curses.error:
+                pass
+
+        attrs = self.row_attrs(li, s, e)
+        runs = []                      # (display string, attr, display width)
+        buf = []
+        buf_w = 0
+        cur_attr = None
+        row_start_x = None
+        for idx in range(s, e):
+            ch = text[idx]
+            cw = cell_width(ch)
+            if x < 0 or x + cw > W:    # clipped (horizontal scroll / wide char at edge)
+                x += cw
+                continue
+            attr = attrs[idx - s]
+            if attr != cur_attr:
+                if buf:
+                    runs.append(("".join(buf), cur_attr, buf_w))
+                    buf, buf_w = [], 0
+                cur_attr = attr
+            if row_start_x is None:
+                row_start_x = x
+            buf.append(display_str(ch))
+            buf_w += cw
+            x += cw
+        if buf:
+            runs.append(("".join(buf), cur_attr, buf_w))
+
+        draw_x = g + (row_start_x or 0)
+        for string, attr, w in runs:
+            try:
+                self.stdscr.addstr(y, draw_x, string, attr)
+            except curses.error:
+                pass
+            draw_x += w
+
+    def lsp_label(self):
+        if not self.lang:
+            return ""
+        if self.lsp:
+            if self.lsp.state == 'ready':
+                return f"LSP {self.lsp.name}"
+            if self.lsp.state == 'starting':
+                return f"LSP {self.lsp.name}..."
+            return "LSP off"
+        return f"LSP {self.lsp_note}" if self.lsp_note else ""
+
+    def draw(self):
+        self.stdscr.erase()
+        max_y, max_x = self.stdscr.getmaxyx()
+        if max_y < 6 or max_x < 20:
+            try:
+                self.stdscr.addstr(0, 0, "Terminal too small!")
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            return
+        self.update_geometry()
+        self.clamp_cursor()
+        self.ensure_visible()
+        self.bracket_pair = self.find_bracket_pair()
+
+        total_lines, total_words, total_chars = self.doc_stats()
+        diags = self.diagnostics()
+        n_err = sum(1 for d in diags if d[4] == 1)
+        n_warn = sum(1 for d in diags if d[4] == 2)
+
+        # 1. Title bar
+        mod_str = " [Modified]" if self.dirty else ""
+        eol = " | CRLF" if self.eol == '\r\n' else ""
+        lang = f" | {LANG_INFO[self.lang]['name']}" if self.lang else ""
+        lsp = f" | {self.lsp_label()}" if self.lsp_label() else ""
+        dg = f" | E{n_err} W{n_warn}" if (n_err or n_warn) else ""
+        title = (f" progedit | {os.path.basename(self.filepath)}{mod_str}{lang}"
+                 f" | Ln {self.cur_line + 1}/{total_lines}, Col {self.cur_col + 1}"
+                 f"{lsp}{dg}{eol} ")
+        try:
+            self.stdscr.addstr(0, 0, title[:max_x - 1].ljust(max_x - 1), self.attr_bar | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        # 2. Text area
+        pos = (self.top_line, self.top_seg)
+        cur = (self.cur_line, self.seg_of_col(self.cur_line, self.cur_col))
+        cursor_y = None
+        for row in range(self.height):
+            if pos is None:
+                break
+            y = 1 + row
+            self.render_row(y, pos[0], pos[1])
+            if pos == cur:
+                cursor_y = y
+            pos = self.next_visual(pos)
+
+        # 3. Status line (with right-aligned permanent L / W / C badge)
+        msg = self.status_msg
+        if not msg:
+            for sl, sc, el, ec, sev, text, src in diags:
+                if sl <= self.cur_line <= el and sev <= 3:
+                    tag = {1: 'error', 2: 'warning', 3: 'info'}[sev]
+                    msg = f"{tag}: {text.splitlines()[0] if text else ''}"
+                    break
+        msg = msg or self.default_status
+        counter_badge = f" [Ln {total_lines} | Wd {total_words} | Ch {total_chars}] "
+        avail_msg_w = max(1, (max_x - 1) - len(counter_badge))
+        left_status = f" {msg}"[:avail_msg_w].ljust(avail_msg_w)
+        status_line = (left_status + counter_badge)[:max_x - 1]
+        try:
+            self.stdscr.addstr(max_y - 2, 0, status_line.ljust(max_x - 1), self.attr_bar)
+        except curses.error:
+            pass
+
+        # 4. Nano-style shortcut bar
+        shortcuts = [
+            ("^S", "Save"), ("^X", "Exit"), ("^W", "Find"), ("^R", "Replace"), ("^B", "Run"),
+            ("^Z", "Undo"), ("^K", "Cut"), ("^U", "Paste"), ("^G", "GoTo"), ("^T", "Theme"),
+            ("^_", "Comment"), ("F1", "Help"),
+        ]
+        x_pos = 0
+        for key_str, desc in shortcuts:
+            if x_pos + len(key_str) + len(desc) + 3 >= max_x:
+                break
+            try:
+                self.stdscr.addstr(max_y - 1, x_pos, key_str, self.attr_key)
+                x_pos += len(key_str)
+                self.stdscr.addstr(max_y - 1, x_pos, f" {desc}  ", curses.A_NORMAL)
+                x_pos += len(desc) + 3
+            except curses.error:
+                pass
+
+        # 5. Cursor
+        if cursor_y is not None:
+            seg_start = self.segs(self.cur_line)[cur[1]][0]
+            x = self.x_of(self.cur_line, seg_start, self.cur_col)
+            if not self.wrap:
+                x -= self.col_offset
+            x = self.gutter_w + max(0, min(x, self.width - 1))
+            self.cursor_screen = (cursor_y, x)
+            try:
+                self.stdscr.move(cursor_y, x)
+            except curses.error:
+                pass
+        self.stdscr.refresh()
+
+    def show_text(self, title, lines):
+        """Full-screen scrollable text viewer."""
+        top = 0
+        while True:
+            self.stdscr.erase()
+            max_y, max_x = self.stdscr.getmaxyx()
+            body = max(1, max_y - 2)
+            wrapped = []
+            for l in lines:
+                l = l.expandtabs(TAB_WIDTH)
+                while len(l) > max_x - 2:
+                    wrapped.append(l[:max_x - 2])
+                    l = l[max_x - 2:]
+                wrapped.append(l)
+            top = max(0, min(top, max(0, len(wrapped) - body)))
+            try:
+                self.stdscr.addstr(0, 0, f" {title} "[:max_x - 1].ljust(max_x - 1), self.attr_bar | curses.A_BOLD)
+                for i, l in enumerate(wrapped[top:top + body]):
+                    self.stdscr.addstr(1 + i, 1, l[:max_x - 2])
+                self.stdscr.addstr(max_y - 1, 0, " Up/Down/PgUp/PgDn scroll, any other key closes "[:max_x - 1],
+                                   self.attr_bar)
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            ch = self.read_key()
+            if ch is None or ch == curses.KEY_RESIZE:
+                continue
+            if ch == curses.KEY_UP:
+                top -= 1
+            elif ch == curses.KEY_DOWN:
+                top += 1
+            elif ch == curses.KEY_PPAGE:
+                top -= body
+            elif ch == curses.KEY_NPAGE:
+                top += body
+            else:
+                return
+
+    def show_help(self):
+        self.show_text("progedit - help", HELP_LINES)
+
+    # ---- input --------------------------------------------------------------
+
+    def read_key(self):
+        """
+        Returns an int key code for special/control keys, a str for printable
+        text (Unicode-safe), ('ALT', key) for Escape-prefixed sequences, or
+        None when nothing arrived within the idle tick.
+        """
+        if self.pushback:
+            return self.pushback.pop()
+        try:
+            ch = self.stdscr.get_wch()
+        except curses.error:
+            return None
+        if isinstance(ch, str):
+            if len(ch) == 1:
+                o = ord(ch)
+                if o < 32 or o == 127:
+                    ch = o
+        if ch == 27:
+            # Collect an Escape-prefixed sequence (Alt+key, or a CSI/SS3 key
+            # sequence that curses did not translate).
+            seq = ""
+            self.stdscr.nodelay(True)
+            try:
+                while True:
+                    try:
+                        nxt = self.stdscr.get_wch()
+                    except curses.error:
+                        break
+                    if not isinstance(nxt, str):
+                        return nxt
+                    seq += nxt
+                    if seq[0] not in '[O':
+                        break                      # Alt+<char>
+                    if len(seq) >= 2 and 0x40 <= ord(nxt) <= 0x7E and nxt != '[':
+                        break                      # final byte of the sequence
+                    if len(seq) > 16:
+                        break
+            finally:
+                self.stdscr.timeout(TICK_MS)
+            if not seq:
+                return 27
+            return ESC_SEQUENCES.get(seq, ('ALT', seq))
+        return ch
+
+    def abort_requested(self):
+        """True if the user pressed Esc / ^C (used while waiting on the language server)."""
+        self.stdscr.timeout(0)
+        try:
+            try:
+                ch = self.stdscr.get_wch()
+            except curses.error:
+                return False
+            return ch in ('\x1b', '\x03', 27, 3)
+        finally:
+            self.stdscr.timeout(TICK_MS)
+
+    def prompt_input(self, label, initial="", extra_keys=None):
+        """
+        Single-line prompt on the status row. `label` may be a callable so it
+        can reflect toggles handled through `extra_keys` {keycode: callback}.
+        Returns the string, or None if cancelled (Esc / ^C).
+        """
+        buf = list(initial)
+        cursor = len(buf)
+        show_cursor()
+        try:
+            while True:
+                max_y, max_x = self.stdscr.getmaxyx()
+                lab = label() if callable(label) else label
+                prefix = f" {lab}: "
+                avail = max(5, max_x - len(prefix) - 2)
+                start_idx = max(0, cursor - avail + 1)
+                visible_buf = "".join(buf[start_idx:start_idx + avail])
+                try:
+                    self.stdscr.addstr(max_y - 2, 0, (prefix + visible_buf)[:max_x - 1].ljust(max_x - 1), self.attr_prompt)
+                    self.stdscr.move(max_y - 2, min(max_x - 2, len(prefix) + (cursor - start_idx)))
+                except curses.error:
+                    pass
+                self.stdscr.refresh()
+
+                ch = self.read_key()
+                if ch is None or isinstance(ch, tuple):
+                    continue
+                if extra_keys and ch in extra_keys:
+                    extra_keys[ch]()
+                    continue
+                if ch in (10, 13, curses.KEY_ENTER):
+                    return "".join(buf)
+                elif ch in (27, 7, 3):
+                    return None
+                elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                    if cursor > 0:
+                        buf.pop(cursor - 1)
+                        cursor -= 1
+                elif ch == curses.KEY_DC:
+                    if cursor < len(buf):
+                        buf.pop(cursor)
+                elif ch == curses.KEY_LEFT:
+                    cursor = max(0, cursor - 1)
+                elif ch == curses.KEY_RIGHT:
+                    cursor = min(len(buf), cursor + 1)
+                elif ch in (curses.KEY_HOME, 1):
+                    cursor = 0
+                elif ch in (curses.KEY_END, 5):
+                    cursor = len(buf)
+                elif ch == 21:                       # ^U clears the line
+                    buf.clear()
+                    cursor = 0
+                elif ch == curses.KEY_RESIZE:
+                    self.draw()
+                elif isinstance(ch, str):
+                    for c in ch:
+                        buf.insert(cursor, c)
+                        cursor += 1
+        finally:
+            show_cursor()
+
+    def ask_key(self, message):
+        """Redraw the editor, show `message` on the status row, return one key."""
+        self.draw()
+        max_y, max_x = self.stdscr.getmaxyx()
+        try:
+            self.stdscr.addstr(max_y - 2, 0, f" {message}"[:max_x - 1].ljust(max_x - 1), self.attr_prompt)
+        except curses.error:
+            pass
+        self.stdscr.refresh()
+        while True:
+            ch = self.read_key()
+            if ch is None or ch == curses.KEY_RESIZE:
+                continue
+            if isinstance(ch, tuple):
+                return 27
+            return ch.lower() if isinstance(ch, str) else ch
+
+    # ---- undo / redo --------------------------------------------------------
+
+    def snapshot(self):
+        return (list(self.lines), self.cur_line, self.cur_col)
+
+    def push_undo(self, kind, coalesce=False):
+        if coalesce and kind == self.last_action and self.last_edit_line == self.cur_line:
+            return
+        self.undo_stack.append(self.snapshot())
+        limit = 200 if len(self.lines) < 20000 else 30
+        if len(self.undo_stack) > limit:
+            del self.undo_stack[0]
+        self.redo_stack.clear()
+        self.last_action = kind
+        self.last_edit_line = self.cur_line
+
+    def restore(self, snap):
+        self.lines, self.cur_line, self.cur_col = list(snap[0]), snap[1], snap[2]
+        self.clamp_cursor()
+        self.dirty = True
+        self.last_action = None
+        self.invalidate(0)
+
+    def undo(self):
+        if not self.undo_stack:
+            self.status_msg = "Nothing to undo."
+            return
+        self.redo_stack.append(self.snapshot())
+        self.restore(self.undo_stack.pop())
+        self.status_msg = f"Undo ({len(self.undo_stack)} left)."
+
+    def redo(self):
+        if not self.redo_stack:
+            self.status_msg = "Nothing to redo."
+            return
+        self.undo_stack.append(self.snapshot())
+        self.restore(self.redo_stack.pop())
+        self.status_msg = "Redo."
+
+    # ---- editing ------------------------------------------------------------
+
+    def insert_text(self, s):
+        self.push_undo('type', coalesce=True)
+        line = self.lines[self.cur_line]
+        self.lines[self.cur_line] = line[:self.cur_col] + s + line[self.cur_col:]
+        self.cur_col += len(s)
+        self.last_edit_line = self.cur_line
+        self.dirty = True
+        self.goal_x = None
+
+    def type_char(self, ch):
+        self.insert_text(ch)
+        if self.lang and len(ch) == 1:
+            self.electric(ch)
+
+    def insert_paste(self, text):
+        """Insert pasted text verbatim (no auto-indent)."""
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        if not text:
+            return
+        self.push_undo('paste_text')
+        line = self.lines[self.cur_line]
+        parts = text.split('\n')
+        before, after = line[:self.cur_col], line[self.cur_col:]
+        if len(parts) == 1:
+            self.lines[self.cur_line] = before + text + after
+            self.cur_col += len(text)
+        else:
+            new = [before + parts[0]] + parts[1:-1] + [parts[-1] + after]
+            self.lines[self.cur_line:self.cur_line + 1] = new
+            self.cur_line += len(parts) - 1
+            self.cur_col = len(parts[-1])
+        self.dirty = True
+        self.goal_x = None
+        self.status_msg = f"Pasted {len(parts)} line(s)."
+
+    def read_paste(self):
+        """Collect text until the bracketed-paste end marker."""
+        buf = []
+        end = '\x1b[201~'
+        self.stdscr.timeout(2000)
+        try:
+            while True:
+                try:
+                    ch = self.stdscr.get_wch()
+                except curses.error:
+                    break
+                if isinstance(ch, str):
+                    buf.append(ch)
+                    if ch == '~' and ''.join(buf[-6:]) == end:
+                        del buf[-6:]
+                        break
+        finally:
+            self.stdscr.timeout(TICK_MS)
+        return ''.join(buf)
+
+    # ---- indentation ----------------------------------------------------------
+
+    def indent_width(self):
+        return TAB_WIDTH if self.indent_unit == '\t' else len(self.indent_unit)
+
+    def dedent_ws(self, ws):
+        if ws.endswith('\t'):
+            return ws[:-1]
+        if ws.strip(' '):
+            return ws[:-1]
+        return ws[:max(0, len(ws) - self.indent_width())]
+
+    def set_indent(self, li, new_ws):
+        line = self.lines[li]
+        old = leading_ws(line)
+        if old == new_ws:
+            return
+        self.lines[li] = new_ws + line[len(old):]
+        if li == self.cur_line:
+            self.cur_col = max(0, self.cur_col + len(new_ws) - len(old))
+        self.dirty = True
+
+    def code_part(self, li, col=None):
+        b = self.blank_line(li)
+        return (b if col is None else b[:col]).rstrip()
+
+    def prev_code_line(self, li):
+        for j in range(li - 1, max(-1, li - 200), -1):
+            if self.code_part(j).strip():
+                return j
+        return None
+
+    def indent_after(self, li, col):
+        """Whitespace the line created by pressing Enter at (li, col) should start with."""
+        base = leading_ws(self.lines[li])
+        unit = self.indent_unit
+        lang = self.lang
+        code = self.code_part(li, col)
+        if not code.strip():
+            return base
+        if lang == 'python':
+            if code.endswith((':', '(', '[', '{')):
+                return base + unit
+            if _PY_DEDENT.match(code):
+                return self.dedent_ws(base)
+        elif lang in ('c', 'cpp'):
+            if code.lstrip().startswith('#'):
+                return base
+            if code.endswith('{') or _C_CASE.match(code) or _C_CTRL.match(code):
+                return base + unit
+            if code.endswith(';'):
+                pj = self.prev_code_line(li)
+                if (pj is not None and _C_CTRL.match(self.code_part(pj))
+                        and len(base) > len(leading_ws(self.lines[pj]))):
+                    return leading_ws(self.lines[pj])
+        elif lang == 'ruby':
+            if rb_is_opener(code) or _RB_MID.match(code) or _RB_BRACE_OPEN.search(code):
+                return base + unit
+        return base
+
+    def ruby_opener_indent(self, li):
+        depth = 0
+        for j in range(li - 1, max(-1, li - 3000), -1):
+            code = self.code_part(j)
+            s = code.strip()
+            if not s:
+                continue
+            if re.match(r'end\b', s):
+                if not rb_is_opener(re.sub(r'^end\b', '', s).strip()):
+                    depth += 1
+            elif rb_is_opener(code):
+                if depth == 0:
+                    return leading_ws(self.lines[j])
+                depth -= 1
+        return None
+
+    def python_opener_indent(self, li, keyword):
+        cur = len(leading_ws(self.lines[li]).expandtabs(TAB_WIDTH))
+        for j in range(li - 1, max(-1, li - 3000), -1):
+            if not self.code_part(j).strip():
+                continue
+            ws = leading_ws(self.lines[j])
+            if len(ws.expandtabs(TAB_WIDTH)) < cur:
+                m = re.match(r'\s*(\w+)', self.code_part(j))
+                if m and m.group(1) in _PY_OPENERS[keyword]:
+                    return ws
+                return None
+        return None
+
+    def reindent_keyword_line(self, li):
+        """Align else/elif/except/finally (Python), end/else/when/... (Ruby) with their opener."""
+        line = self.lines[li]
+        if self.lang == 'ruby' and _RB_KEYLINE.match(self.code_part(li)):
+            target = self.ruby_opener_indent(li)
+        elif self.lang == 'python':
+            m = _PY_KEYLINE.match(self.code_part(li))
+            if not m:
+                return
+            target = self.python_opener_indent(li, m.group(1).split()[0].rstrip(':'))
+        else:
+            return
+        if target is not None:
+            self.set_indent(li, target)
+
+    def electric(self, ch):
+        li = self.cur_line
+        before = self.lines[li][:self.cur_col]
+        if ch in ')]}' and before.strip() == ch:
+            m = self.find_match(li, self.cur_col - 1)
+            if m:
+                self.set_indent(li, leading_ws(self.lines[m[0]]))
+        elif self.lang == 'python' and ch == ':':
+            self.reindent_keyword_line(li)
+        elif self.lang == 'ruby' and (
+                re.fullmatch(r'\s*(?:else|elsif|when|rescue|ensure|in|end)\W', before)
+                or (ch.isalnum() and re.fullmatch(r'\s*(?:else|elsif|when|rescue|ensure|end)', before))):
+            self.reindent_keyword_line(li)
+
+    def find_match(self, li, col, limit=400):
+        """Matching bracket for the one at lines[li][col] (ignoring strings/comments)."""
+        pairs = {'(': ')', '[': ']', '{': '}'}
+        rev = {v: k for k, v in pairs.items()}
+        ch = self.lines[li][col] if col < len(self.lines[li]) else ''
+        if self.blank_line(li)[col:col + 1] != ch or (ch not in pairs and ch not in rev):
+            return None
+        n = len(self.lines)
+        if ch in pairs:
+            target, step, depth = pairs[ch], 1, 0
+            rng = range(li, min(n, li + limit))
+        else:
+            target, step, depth = rev[ch], -1, 0
+            rng = range(li, max(-1, li - limit), -1)
+        for j in rng:
+            s = self.blank_line(j)
+            idxs = range(len(s)) if step > 0 else range(len(s) - 1, -1, -1)
+            for k in idxs:
+                if j == li and ((step > 0 and k < col) or (step < 0 and k > col)):
+                    continue
+                c = s[k]
+                if c == ch:
+                    depth += 1
+                elif c == target:
+                    depth -= 1
+                    if depth == 0:
+                        return (j, k)
+        return None
+
+    def find_bracket_pair(self):
+        if not self.lang:
+            return None
+        li, col = self.cur_line, self.cur_col
+        line = self.lines[li]
+        for c in (col, col - 1):
+            if 0 <= c < len(line) and line[c] in '()[]{}':
+                m = self.find_match(li, c)
+                if m:
+                    return [(li, c), m]
+        return None
+
+    def newline(self):
+        li = self.cur_line
+        self.push_undo('newline')
+        if self.lang:
+            self.reindent_keyword_line(li)
+        line = self.lines[li]
+        col = self.cur_col
+        before, after = line[:col], line[col:]
+        base = leading_ws(line)
+        ind = self.indent_after(li, col) if self.lang else base
+        if not before.strip():
+            before = ''
+        rest = after.lstrip(' \t')
+        closer = {'(': ')', '[': ']', '{': '}'}.get(before.rstrip()[-1:])
+        if self.lang and closer and rest.startswith(closer):
+            self.lines[li:li + 1] = [before, ind, base + rest]
+            self.cur_line = li + 1
+            self.cur_col = len(ind)
+        else:
+            self.lines[li:li + 1] = [before, ind + rest]
+            self.cur_line = li + 1
+            self.cur_col = len(ind)
+        self.dirty = True
+        self.goal_x = None
+
+    def tab_key(self):
+        li, col = self.cur_line, self.cur_col
+        line = self.lines[li]
+        before = line[:col]
+        after = line[col:col + 1]
+        if (self.lsp and self.lsp.state != 'dead' and before.strip()
+                and (before[-1].isalnum() or before[-1] in '_.')
+                and not (after.isalnum() or after == '_')):
+            self.complete()
+            return
+        if self.indent_unit == '\t':
+            self.insert_text('\t')
+        else:
+            w = self.indent_width()
+            self.insert_text(' ' * (w - (text_width(before) % w)))
+
+    def dedent_line(self):
+        li = self.cur_line
+        line = self.lines[li]
+        ws = leading_ws(line)
+        if not ws:
+            return
+        self.push_undo('dedent')
+        self.set_indent(li, self.dedent_ws(ws))
+        self.goal_x = None
+
+    def backspace(self):
+        if self.cur_col > 0:
+            line = self.lines[self.cur_line]
+            before = line[:self.cur_col]
+            w = self.indent_width()
+            if self.indent_unit != '\t' and before.strip(' ') == '' and w > 1:
+                n = ((self.cur_col - 1) % w) + 1
+                self.push_undo('backspace', coalesce=True)
+                self.lines[self.cur_line] = line[:self.cur_col - n] + line[self.cur_col:]
+                self.cur_col -= n
+            else:
+                self.push_undo('backspace', coalesce=True)
+                self.lines[self.cur_line] = line[:self.cur_col - 1] + line[self.cur_col:]
+                self.cur_col -= 1
+        elif self.cur_line > 0:
+            self.push_undo('join')
+            prev = self.lines[self.cur_line - 1]
+            self.cur_col = len(prev)
+            self.lines[self.cur_line - 1] = prev + self.lines.pop(self.cur_line)
+            self.cur_line -= 1
+        else:
+            return
+        self.last_edit_line = self.cur_line
+        self.dirty = True
+        self.goal_x = None
+
+    def delete_char(self):
+        line = self.lines[self.cur_line]
+        if self.cur_col < len(line):
+            self.push_undo('delete', coalesce=True)
+            self.lines[self.cur_line] = line[:self.cur_col] + line[self.cur_col + 1:]
+        elif self.cur_line + 1 < len(self.lines):
+            self.push_undo('join')
+            self.lines[self.cur_line] = line + self.lines.pop(self.cur_line + 1)
+        else:
+            return
+        self.dirty = True
+        self.goal_x = None
+
+    def toggle_comment(self):
+        info = LANG_INFO.get(self.lang)
+        if not info:
+            self.status_msg = "No comment syntax known for this file type."
+            return
+        mark = info['comment']
+        li = self.cur_line
+        line = self.lines[li]
+        ws = leading_ws(line)
+        body = line[len(ws):]
+        self.push_undo('comment')
+        if body.startswith(mark):
+            rest = body[len(mark):]
+            if rest.startswith(' '):
+                rest = rest[1:]
+            new = ws + rest
+        else:
+            new = ws + mark + ' ' + body if body else ws + mark + ' '
+        self.cur_col = max(0, min(len(new), self.cur_col + len(new) - len(line)))
+        self.lines[li] = new
+        self.dirty = True
+        self.goal_x = None
+
+    def cut_line(self):
+        if self.last_action != 'cut':
+            self.cut_buffer = []
+        self.push_undo('cut', coalesce=True)
+        self.cut_buffer.append(self.lines.pop(self.cur_line))
+        if not self.lines:
+            self.lines = ['']
+        self.cur_line = min(self.cur_line, len(self.lines) - 1)
+        self.cur_col = 0
+        self.last_edit_line = self.cur_line
+        self.dirty = True
+        self.goal_x = None
+        self.status_msg = f"Cut {len(self.cut_buffer)} line(s). ^U pastes them."
+
+    def paste_lines(self):
+        if not self.cut_buffer:
+            self.status_msg = "Cut buffer is empty (use ^K first)."
+            return
+        self.push_undo('paste')
+        self.lines[self.cur_line:self.cur_line] = list(self.cut_buffer)
+        self.cur_line += len(self.cut_buffer)
+        self.cur_col = 0
+        self.dirty = True
+        self.goal_x = None
+        self.status_msg = f"Pasted {len(self.cut_buffer)} line(s)."
+
+    # ---- movement -----------------------------------------------------------
+
+    def move_left(self):
+        if self.cur_col > 0:
+            self.cur_col -= 1
+        elif self.cur_line > 0:
+            self.cur_line -= 1
+            self.cur_col = len(self.lines[self.cur_line])
+        self.goal_x = None
+
+    def move_right(self):
+        if self.cur_col < len(self.lines[self.cur_line]):
+            self.cur_col += 1
+        elif self.cur_line + 1 < len(self.lines):
+            self.cur_line += 1
+            self.cur_col = 0
+        self.goal_x = None
+
+    def _vertical(self, direction):
+        k = self.seg_of_col(self.cur_line, self.cur_col)
+        if self.goal_x is None:
+            self.goal_x = self.x_of(self.cur_line, self.segs(self.cur_line)[k][0], self.cur_col)
+        pos = self.next_visual((self.cur_line, k)) if direction > 0 else self.prev_visual((self.cur_line, k))
+        if pos is None:
+            return False
+        self.cur_line, k = pos
+        self.cur_col = self.col_from_x(self.cur_line, k, self.goal_x)
+        return True
+
+    def move_up(self):
+        self._vertical(-1)
+
+    def move_down(self):
+        self._vertical(+1)
+
+    def page(self, direction):
+        step = max(1, self.height - 1)
+        for _ in range(step):
+            if not self._vertical(direction):
+                break
+            top = (self.top_line, self.top_seg)
+            nxt = self.next_visual(top) if direction > 0 else self.prev_visual(top)
+            if nxt is not None:
+                self.top_line, self.top_seg = nxt
+
+    def home_key(self):
+        """Smart Home: first non-blank, then column 0."""
+        ws = len(leading_ws(self.lines[self.cur_line]))
+        self.cur_col = ws if self.cur_col != ws else 0
+        self.goal_x = None
+
+    def goto_line(self):
+        ans = self.prompt_input(f"Go to line (1-{len(self.lines)}, or line:col)", "")
+        if not ans:
+            self.status_msg = "Go to cancelled."
+            return
+        m = re.match(r'^\s*(\d+)\s*(?:[:,]\s*(\d+))?\s*$', ans)
+        if not m:
+            self.status_msg = "Enter a line number, e.g. 42 or 42:7."
+            return
+        self.cur_line = max(0, min(int(m.group(1)) - 1, len(self.lines) - 1))
+        col = int(m.group(2)) - 1 if m.group(2) else 0
+        self.cur_col = max(0, min(col, len(self.lines[self.cur_line])))
+        self.goal_x = None
+        self.status_msg = f"Line {self.cur_line + 1}."
+
+    # ---- search & replace ---------------------------------------------------
+
+    def _search_label(self, verb):
+        def label():
+            case = "Case" if self.search_case else "NoCase"
+            mode = "Regex" if self.search_regex else "Literal"
+            return f"{verb} [{case} | {mode}] (^T case, ^R regex, Esc cancel)"
+        return label
+
+    def _search_toggles(self):
+        def toggle_case():
+            self.search_case = not self.search_case
+
+        def toggle_regex():
+            self.search_regex = not self.search_regex
+        return {20: toggle_case, 18: toggle_regex}
+
+    def _compile_search(self):
+        if not self.search_query:
+            return None
+        flags = 0 if self.search_case else re.IGNORECASE
+        pattern = self.search_query if self.search_regex else re.escape(self.search_query)
+        try:
+            return re.compile(pattern, flags)
+        except re.error as e:
+            self.status_msg = f"Invalid regex: {e}"
+            return None
+
+    def _find_forward(self, pat, line, col):
+        n = len(self.lines)
+        if col <= len(self.lines[line]):
+            m = pat.search(self.lines[line], col)
+            if m:
+                return (line, m.start(), m.end(), False)
+        for k in range(1, n + 1):
+            i = (line + k) % n
+            m = pat.search(self.lines[i])
+            if m:
+                return (i, m.start(), m.end(), line + k >= n)
+        return None
+
+    def _find_backward(self, pat, line, col):
+        n = len(self.lines)
+
+        def last_before(text, limit):
+            found = None
+            for m in pat.finditer(text):
+                if m.start() < limit:
+                    found = m
+                else:
+                    break
+            return found
+
+        m = last_before(self.lines[line], col)
+        if m:
+            return (line, m.start(), m.end(), False)
+        for k in range(1, n + 1):
+            i = (line - k) % n
+            m = last_before(self.lines[i], len(self.lines[i]) + 1)
+            if m:
+                return (i, m.start(), m.end(), line - k < 0)
+        return None
+
+    def search(self, prompt_new=True, backward=False):
+        if prompt_new or not self.search_query:
+            q = self.prompt_input(self._search_label("Search"), self.search_query, self._search_toggles())
+            if not q:
+                self.status_msg = "Search cancelled."
+                return
+            self.search_query = q
+        pat = self._compile_search()
+        if pat is None:
+            return
+
+        if backward:
+            res = self._find_backward(pat, self.cur_line, self.cur_col)
+        else:
+            line, col = self.cur_line, self.cur_col + 1
+            pre_wrapped = False
+            if col > len(self.lines[line]):
+                line, col = line + 1, 0
+                if line >= len(self.lines):
+                    line, pre_wrapped = 0, True
+            res = self._find_forward(pat, line, col)
+            if res:
+                res = (res[0], res[1], res[2], res[3] or pre_wrapped)
+
+        if res:
+            li, s, e, wrapped = res
+            self.cur_line, self.cur_col = li, s
+            self.goal_x = None
+            self.match = (li, s, e)
+            shown = self.search_query if len(self.search_query) < 30 else self.search_query[:27] + "..."
+            self.status_msg = f"Found '{shown}' at line {li + 1}, col {s + 1}" + (" (wrapped around)" if wrapped else "")
+        else:
+            self.status_msg = f"'{self.search_query}' not found."
+
+    def replace(self):
+        q = self.prompt_input(self._search_label("Replace: search for"), self.search_query, self._search_toggles())
+        if not q:
+            self.status_msg = "Replace cancelled."
+            return
+        self.search_query = q
+        pat = self._compile_search()
+        if pat is None:
+            return
+        rep = self.prompt_input("Replace with (Enter accepts, Esc cancels)", self.replace_text)
+        if rep is None:
+            self.status_msg = "Replace cancelled."
+            return
+        self.replace_text = rep
+
+        n = len(self.lines)
+        start_line, start_col = self.cur_line, self.cur_col
+        # Visit: rest of the current line, every following line (wrapping
+        # around), and finally the untouched part of the current line before
+        # the cursor. Each entry is (line, start_pos, limit) with limit the
+        # exclusive upper bound for match starts (None = whole line).
+        order = [(start_line, start_col, None)]
+        order += [((start_line + k) % n, 0, None) for k in range(1, n)]
+        order.append((start_line, 0, start_col))
+
+        count = 0
+        replace_all = False
+        aborted = False
+        pushed = False
+        for li, pos, limit in order:
+            if aborted:
+                break
+            while True:
+                text = self.lines[li]
+                if pos > len(text):
+                    break
+                m = pat.search(text, pos)
+                if not m or (limit is not None and m.start() >= limit):
+                    break
+                try:
+                    new = m.expand(rep) if self.search_regex else rep
+                except (re.error, IndexError, KeyError) as e:
+                    self.status_msg = f"Bad replacement: {e}"
+                    self.match = None
+                    return
+                empty = (m.end() == m.start())
+                if not replace_all:
+                    self.cur_line, self.cur_col = li, m.start()
+                    self.match = (li, m.start(), m.end())
+                    ans = self.ask_key(f"Replace this match? [y]es [n]o [a]ll [q]uit   ({count} replaced so far)")
+                    if ans in ('q', 27, 3, 24):
+                        aborted = True
+                        break
+                    if ans == 'a':
+                        replace_all = True
+                    elif ans != 'y':
+                        pos = m.end() + (1 if empty else 0)
+                        continue
+                if not pushed:
+                    self.push_undo('replace')
+                    pushed = True
+                self.lines[li] = text[:m.start()] + new + text[m.end():]
+                self.dirty = True
+                count += 1
+                self.cur_line, self.cur_col = li, m.start() + len(new)
+                pos = m.start() + len(new) + (1 if empty else 0)
+                if limit is not None:
+                    limit += len(new) - (m.end() - m.start())
+
+        self.invalidate(0)
+        self.match = None
+        self.goal_x = None
+        self.status_msg = f"Replaced {count} occurrence(s)." + (" Stopped." if aborted else "")
+
+    # ---- misc commands ------------------------------------------------------
+
+    def word_count(self):
+        words = sum(len(l.split()) for l in self.lines)
+        chars = sum(len(l) for l in self.lines) + max(0, len(self.lines) - 1)
+        nonblank = sum(1 for l in self.lines if l.strip())
+        self.status_msg = (f"{words} words | {chars} characters | {len(self.lines)} lines "
+                           f"({nonblank} non-blank)")
+
+    def doc_stats(self):
+        """Return (lines, words, chars) using cached per-line stats."""
+        words = 0
+        chars = 0
+        for l in self.lines:
+            w, c = line_stats(l)
+            words += w
+            chars += c
+        total_lines = len(self.lines)
+        chars += max(0, total_lines - 1)  # include newline characters
+        return total_lines, words, chars
+
+    def toggle_wrap(self):
+        self.wrap = not self.wrap
+        self.top_seg = 0
+        self.col_offset = 0
+        self.goal_x = None
+        self.status_msg = f"Word-wrap {'on' if self.wrap else 'off'}."
+
+    def toggle_numbers(self):
+        self.show_numbers = not self.show_numbers
+        self.status_msg = f"Line numbers {'on' if self.show_numbers else 'off'}."
+
+    def save_prompt(self, quick=False):
+        if quick:
+            target = self.filepath
+        else:
+            target = self.prompt_input("Save file as (Enter to confirm, Esc to cancel)", self.filepath)
+            if not target:
+                self.status_msg = "Save cancelled."
+                return False
+        try:
+            saved = save_document(target, self.lines, self.eol, self.trailing_nl)
+        except Exception as e:
+            self.status_msg = f"Error saving: {e}"
+            return False
+        self.dirty = False
+        self.status_msg = f"Saved {len(self.lines)} lines to '{saved}'."
+        if saved != self.filepath:
+            self.lsp_detach()
+            self.filepath = saved
+            self.hl_states = [None]
+            self.lang = detect_language(saved, self.lines)
+            self.lsp_attach()
+        elif self.lsp:
+            self.lsp_flush()
+            self.lsp.save(self.lsp_uri)
+        return True
+
+    # ---- language server integration ---------------------------------------
+
+    def lsp_attach(self):
+        self.lsp, self.lsp_uri, self.lsp_note = None, None, ''
+        self._diag_cache = (None, [])
+        if not self.lsp_enabled or not self.lang:
+            return
+        cmd = find_lsp_command(self.lang)
+        if not cmd:
+            self.lsp_note = 'none'
+            return
+        root = find_project_root(self.filepath)
+        key = (tuple(cmd), root)
+        client = self.lsp_clients.get(key)
+        if client is None or client.state == 'dead':
+            client = LspClient(os.path.basename(cmd[0]), cmd, root)
+            client.start()
+            self.lsp_clients[key] = client
+        if client.state == 'dead':
+            self.lsp_note = 'failed'
+            return
+        self.lsp = client
+        self.lsp_uri = path_to_uri(self.filepath)
+        client.open(self.lsp_uri, LANG_INFO[self.lang]['lsp_id'], self.document_text())
+        self.lsp_rev = self.seen_rev = self.rev
+        self.rev_time = time.monotonic()
+
+    def lsp_detach(self):
+        if getattr(self, 'lsp', None) and self.lsp.state != 'dead':
+            self.lsp.close(self.lsp_uri)
+        self.lsp, self.lsp_uri = None, None
+
+    def lsp_flush(self):
+        if self.lsp and self.rev != self.lsp_rev:
+            self.lsp.change(self.lsp_uri, self.document_text())
+            self.lsp_rev = self.rev
+
+    def lsp_shutdown(self):
+        for c in self.lsp_clients.values():
+            c.stop()
+
+    def tick(self):
+        """Idle housekeeping: server messages, debounced didChange, status expiry."""
+        now = time.monotonic()
+        for c in self.lsp_clients.values():
+            if c.poll():
+                self.need_draw = True
+        if self.rev != self.seen_rev:
+            self.seen_rev = self.rev
+            self.rev_time = now
+        if self.lsp and self.rev != self.lsp_rev and now - self.rev_time >= 0.3:
+            self.lsp_flush()
+        if not self._status_cleared and now - self._status_t > STATUS_TTL:
+            self._status_cleared = True
+            self.need_draw = True
+
+    def lsp_request(self, method, extra=None):
+        """Synchronous position-based request; returns the result or None (status set)."""
+        client = self.lsp
+        if not client:
+            self.status_msg = ("No language server for this file type"
+                               + (" (install pylsp, clangd, solargraph...)" if self.lang else "") + ".")
+            return None
+        if client.state == 'dead':
+            self.status_msg = f"Language server stopped: {client.error}"
+            return None
+        self.lsp_flush()
+        if client.state == 'starting':
+            self.status_msg = "Waiting for language server (Esc cancels)..."
+            self.draw()
+        line = self.lines[self.cur_line]
+        params = {'textDocument': {'uri': self.lsp_uri},
+                  'position': {'line': self.cur_line, 'character': to_utf16(line, self.cur_col)}}
+        params.update(extra or {})
+        result, err = client.request_sync(method, params, abort=self.abort_requested)
+        if err:
+            self.status_msg = f"Language server: {err}"
+            return None
+        return result if result is not None else []
+
+    def complete(self):
+        result = self.lsp_request('textDocument/completion')
+        if result is None:
+            return
+        raw = result.get('items', []) if isinstance(result, dict) else result
+        line = self.lines[self.cur_line]
+        start = self.cur_col
+        while start > 0 and (line[start - 1].isalnum() or line[start - 1] == '_'):
+            start -= 1
+        items = []
+        for it in raw:
+            label = it.get('label', '')
+            text = it.get('insertText') or label
+            edit = it.get('textEdit')
+            estart = None
+            if isinstance(edit, dict):
+                r = edit.get('range') or edit.get('insert')
+                if r and r['start']['line'] == self.cur_line:
+                    estart = from_utf16(line, r['start']['character'])
+                    text = edit.get('newText', text)
+            if it.get('insertTextFormat') == 2:
+                text = re.sub(r'\$\{\d+:([^}]*)\}|\$\{\d+\}|\$\d+', lambda m: m.group(1) or '', text)
+            items.append({'label': label.strip(), 'text': text, 'start': estart,
+                          'detail': (it.get('detail') or '').splitlines()[0] if it.get('detail') else '',
+                          'sort': it.get('sortText') or label,
+                          'filter': (it.get('filterText') or label).lower()})
+        items.sort(key=lambda i: i['sort'])
+        word = line[start:self.cur_col]
+        shown = self._filter_completions(items, word)
+        if not shown:
+            self.status_msg = "No completions."
+            return
+        if len(shown) == 1:
+            self._apply_completion(shown[0], start)
+            return
+        self.completion_menu(items, start)
+
+    @staticmethod
+    def _filter_completions(items, word):
+        w = word.lower()
+        hits = [i for i in items if i['filter'].startswith(w)]
+        if not hits and w:
+            hits = [i for i in items if w in i['filter']]
+        return hits[:300]
+
+    def _apply_completion(self, item, word_start):
+        li = self.cur_line
+        line = self.lines[li]
+        start = item['start'] if item['start'] is not None and item['start'] <= self.cur_col else word_start
+        self.push_undo('complete')
+        self.lines[li] = line[:start] + item['text'] + line[self.cur_col:]
+        self.cur_col = start + len(item['text'])
+        self.dirty = True
+        self.goal_x = None
+
+    def completion_menu(self, items, start):
+        sel = top = 0
+        while True:
+            line = self.lines[self.cur_line]
+            word = line[start:self.cur_col]
+            shown = self._filter_completions(items, word)
+            if not shown:
+                return
+            sel = max(0, min(sel, len(shown) - 1))
+            self.draw()
+            max_y, max_x = self.stdscr.getmaxyx()
+            rows = min(8, len(shown))
+            cy, cx = self.cursor_screen
+            below = cy + 1 + rows <= max_y - 3
+            y0 = cy + 1 if below else max(1, cy - rows)
+            if sel < top:
+                top = sel
+            elif sel >= top + rows:
+                top = sel - rows + 1
+            label_w = min(max(len(i['label']) for i in shown[top:top + rows]), 40)
+            width = min(max_x - 2, label_w + 2 + 28)
+            x0 = max(0, min(cx - (self.cur_col - start), max_x - 1 - width))
+            for r in range(rows):
+                it = shown[top + r]
+                text = f" {it['label']:<{label_w}}  {it['detail']}"[:width].ljust(width)
+                attr = self.attr_prompt if top + r == sel else self.attr_bar
+                try:
+                    self.stdscr.addstr(y0 + r, x0, text, attr)
+                except curses.error:
+                    pass
+            try:
+                self.stdscr.move(cy, cx)
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            ch = self.read_key()
+            if ch is None:
+                continue
+            if ch == curses.KEY_UP:
+                sel = (sel - 1) % len(shown)
+            elif ch == curses.KEY_DOWN:
+                sel = (sel + 1) % len(shown)
+            elif ch == curses.KEY_PPAGE:
+                sel = max(0, sel - rows)
+            elif ch == curses.KEY_NPAGE:
+                sel = min(len(shown) - 1, sel + rows)
+            elif ch in (10, 13, 9, curses.KEY_ENTER):
+                self._apply_completion(shown[sel], start)
+                return
+            elif ch in (27, 3, 7):
+                return
+            elif isinstance(ch, str) and (ch.isalnum() or ch == '_'):
+                self.insert_text(ch)
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                if self.cur_col <= start:
+                    return
+                self.backspace()
+            else:
+                self.pushback.append(ch)
+                return
+
+    def hover(self):
+        result = self.lsp_request('textDocument/hover')
+        if not result:
+            if result is not None:
+                self.status_msg = "No hover information here."
+            return
+
+        def flat(c):
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):
+                return '\n\n'.join(flat(x) for x in c)
+            if isinstance(c, dict):
+                return c.get('value', '')
+            return ''
+        text = flat(result.get('contents', ''))
+        lines = [l for l in text.replace('\r', '').splitlines() if not l.strip().startswith('```')]
+        while lines and not lines[-1].strip():
+            lines.pop()
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        if not lines:
+            self.status_msg = "No hover information here."
+            return
+        if len(lines) == 1 and len(lines[0]) < 200:
+            self.status_msg = lines[0].strip()
+            return
+        self.show_text("Hover", lines)
+
+    def goto_definition(self):
+        result = self.lsp_request('textDocument/definition')
+        if result is None:
+            return
+        locs = result if isinstance(result, list) else [result]
+        targets = []
+        for loc in locs:
+            uri = loc.get('targetUri') or loc.get('uri')
+            rng = loc.get('targetSelectionRange') or loc.get('range')
+            if uri and rng:
+                targets.append((uri, rng['start']['line'], rng['start']['character']))
+        if not targets:
+            self.status_msg = "No definition found."
+            return
+        uri, line, ch = targets[0]
+        path = uri_to_path(uri)
+        if path is None:
+            self.status_msg = f"Definition is at {uri}"
+            return
+        self.jump_stack.append((os.path.abspath(self.filepath), self.cur_line, self.cur_col))
+        if not self.jump_to(path, line, ch):
+            self.jump_stack.pop()
+            return
+        self.status_msg = ("Definition" + (f" (1 of {len(targets)}; ^\\ goes back)"
+                                           if len(targets) > 1 else " (^\\ goes back)"))
+
+    def jump_to(self, path, line, utf16_col):
+        if os.path.abspath(path) != os.path.abspath(self.filepath):
+            if not self.confirm_leave():
+                return False
+            try:
+                self.load_file(path)
+            except Exception as e:
+                self.status_msg = f"Cannot open {path}: {e}"
+                return False
+        self.cur_line = max(0, min(line, len(self.lines) - 1))
+        self.cur_col = from_utf16(self.lines[self.cur_line], utf16_col)
+        self.goal_x = None
+        return True
+
+    def jump_back(self):
+        if not self.jump_stack:
+            self.status_msg = "Jump stack is empty."
+            return
+        path, line, col = self.jump_stack.pop()
+        if os.path.abspath(path) != os.path.abspath(self.filepath):
+            if not self.confirm_leave():
+                self.jump_stack.append((path, line, col))
+                return
+            try:
+                self.load_file(path)
+            except Exception as e:
+                self.status_msg = f"Cannot open {path}: {e}"
+                return
+        self.cur_line = max(0, min(line, len(self.lines) - 1))
+        self.cur_col = max(0, min(col, len(self.lines[self.cur_line])))
+        self.goal_x = None
+
+    def confirm_leave(self):
+        if not self.dirty:
+            return True
+        ans = self.prompt_input("Save changes before switching files? (y/n/Esc)", "y")
+        if ans is None:
+            return False
+        if ans.lower().startswith('y'):
+            return self.save_prompt(quick=True)
+        return True
+
+    # ---- running programs ---------------------------------------------------
+
+    def suspend(self):
+        tty_write('\x1b[?2004l')
+        curses.def_prog_mode()
+        curses.endwin()
+
+    def resume(self):
+        curses.reset_prog_mode()
+        self.stdscr.keypad(True)
+        self.tune_tty()
+        self.stdscr.timeout(TICK_MS)
+        tty_write('\x1b[?2004h')
+        self.stdscr.clearok(True)
+        self.stdscr.refresh()
+        self.need_draw = True
+
+    def run_program(self, ask_args=False):
+        lang = self.lang
+        ext = os.path.splitext(self.filepath)[1].lower()
+        if lang not in LANG_INFO:
+            self.status_msg = "Don't know how to run this file type (Python, Ruby, C and C++ are supported)."
+            return
+        if lang in ('c', 'cpp') and ext in HEADER_EXTS:
+            self.status_msg = "A header file cannot be run; open the .c/.cpp file instead."
+            return
+        if ask_args:
+            ans = self.prompt_input("Program arguments", self.run_args)
+            if ans is None:
+                self.status_msg = "Run cancelled."
+                return
+            self.run_args = ans
+        try:
+            args = shlex.split(self.run_args)
+        except ValueError as e:
+            self.status_msg = f"Bad arguments: {e}"
+            return
+        if self.dirty or not os.path.exists(self.filepath):
+            if not self.save_prompt(quick=True):
+                return
+        path = os.path.abspath(self.filepath)
+        cwd = os.path.dirname(path)
+
+        tmpdir = None
+        diags = None
+        self.suspend()
+        try:
+            run_cmd = None
+            try:
+                if lang == 'python':
+                    run_cmd = [shutil.which('python3') or sys.executable, path] + args
+                elif lang == 'ruby':
+                    run_cmd = [shutil.which('ruby') or 'ruby', path] + args
+                else:
+                    cpp = lang == 'cpp'
+                    cc = os.environ.get('CXX' if cpp else 'CC') or next(
+                        (c for c in (('c++', 'g++', 'clang++') if cpp else ('cc', 'gcc', 'clang'))
+                         if shutil.which(c)), None)
+                    if not cc:
+                        print("No C/C++ compiler found (install gcc or clang).")
+                    else:
+                        tmpdir = tempfile.mkdtemp(prefix='progedit-')
+                        exe = os.path.join(tmpdir, 'prog')
+                        flags = ['-g', '-Wall', '-Wextra'] + shlex.split(
+                            os.environ.get('PROGEDIT_CXXFLAGS' if cpp else 'PROGEDIT_CFLAGS', ''))
+                        if cpp and not any(f.startswith('-std=') for f in flags):
+                            flags.append('-std=c++17')
+                        cmd = [cc] + flags + ['-o', exe, path] + ([] if cpp else ['-lm'])
+                        print(f"$ {shlex.join(cmd)}", flush=True)
+                        r = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, text=True, errors='replace')
+                        if r.stdout:
+                            print(r.stdout, end='' if r.stdout.endswith('\n') else '\n')
+                        diags = parse_build_output(r.stdout, path)
+                        if r.returncode != 0:
+                            print("[compilation failed]")
+                        else:
+                            run_cmd = [exe] + args
+            except FileNotFoundError as e:
+                print(f"Cannot start: {e}")
+            except KeyboardInterrupt:
+                print("^C")
+
+            status = None
+            if run_cmd:
+                print(f"$ {shlex.join(run_cmd)}", flush=True)
+                t0 = time.monotonic()
+                try:
+                    status = subprocess.run(run_cmd, cwd=cwd).returncode
+                except KeyboardInterrupt:
+                    status = 130
+                except OSError as e:
+                    print(f"Cannot start: {e}")
+                if status is not None:
+                    print(f"\n[exit status {status}, {time.monotonic() - t0:.2f}s]")
+            try:
+                input("Press Enter to return to the editor...")
+            except (EOFError, KeyboardInterrupt):
+                pass
+        finally:
+            if tmpdir:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            self.resume()
+
+        if diags is not None:
+            self.build_diags = diags
+            self.build_serial += 1
+            errs = [d for d in diags if d[4] == 1]
+            if errs:
+                self.cur_line, self.cur_col = errs[0][0], errs[0][1]
+                self.status_msg = (f"Build failed: {len(errs)} error(s). "
+                                   f"error: {errs[0][5]}  (F8 next)")
+            elif diags:
+                self.status_msg = f"Built with {len(diags)} warning(s) (F8 to step through)."
+            else:
+                self.status_msg = "Build succeeded."
+        elif status is not None:
+            self.status_msg = f"Program exited with status {status}."
+
+    # ---- main loop ----------------------------------------------------------
+
+    def exit_prompt(self):
+        """Returns True if the editor should quit."""
+        if not self.dirty:
+            return True
+        ans = self.prompt_input("Save modified text before exiting? (y/n/Esc)", "y")
+        if ans is None:
+            self.status_msg = "Exit cancelled."
+            return False
+        if ans.lower().startswith('y'):
+            return self.save_prompt(quick=False)
+        return ans.lower().startswith('n')
+
+    def run(self):
+        while True:
+            self.tick()
+            if self.need_draw:
+                self.draw()
+                self.need_draw = False
+            ch = self.read_key()
+            if ch is None or ch == curses.KEY_RESIZE:
+                if ch is not None:
+                    self.need_draw = True
+                continue
+            self.need_draw = True
+            self.invalidate(self.cur_line - 1)
+
+            keep_match = ch in (14, 16)
+            if not keep_match:
+                self.match = None
+
+            if isinstance(ch, tuple):                  # Alt+key
+                key = ch[1]
+                if key == '/':
+                    self.toggle_comment()
+                elif key == 'n':
+                    self.jump_diagnostic(+1)
+                elif key == 'p':
+                    self.jump_diagnostic(-1)
+                continue
+
+            # Navigation
+            if ch == curses.KEY_UP:
+                self.move_up()
+                self.last_action = None
+            elif ch == curses.KEY_DOWN:
+                self.move_down()
+                self.last_action = None
+            elif ch == curses.KEY_LEFT:
+                self.move_left()
+                self.last_action = None
+            elif ch == curses.KEY_RIGHT:
+                self.move_right()
+                self.last_action = None
+            elif ch == curses.KEY_PPAGE:
+                self.page(-1)
+                self.last_action = None
+            elif ch == curses.KEY_NPAGE:
+                self.page(+1)
+                self.last_action = None
+            elif ch == curses.KEY_HOME:
+                self.home_key()
+                self.last_action = None
+            elif ch == 1:                              # ^A
+                self.cur_col = 0
+                self.goal_x = None
+                self.last_action = None
+            elif ch in (curses.KEY_END, 5):            # End / ^E
+                self.cur_col = len(self.lines[self.cur_line])
+                self.goal_x = None
+                self.last_action = None
+            elif ch == 7:                              # ^G
+                self.goto_line()
+                self.last_action = None
+
+            # Editing
+            elif ch in (10, 13, curses.KEY_ENTER):
+                self.newline()
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                self.backspace()
+            elif ch == curses.KEY_DC:
+                self.delete_char()
+            elif ch == 9:                              # Tab
+                self.tab_key()
+            elif ch == curses.KEY_BTAB:                # Shift-Tab
+                self.dedent_line()
+            elif ch in (31,):                          # ^_  (Ctrl-/)
+                self.toggle_comment()
+            elif ch == 11:                             # ^K
+                self.cut_line()
+            elif ch == 21:                             # ^U
+                self.paste_lines()
+            elif ch == 26:                             # ^Z
+                self.undo()
+            elif ch == 25:                             # ^Y
+                self.redo()
+            elif ch == PASTE_START:
+                self.insert_paste(self.read_paste())
+
+            # Search / replace
+            elif ch == 23:                             # ^W
+                self.search(prompt_new=True)
+                self.last_action = None
+            elif ch == 14:                             # ^N
+                self.search(prompt_new=False)
+                self.last_action = None
+            elif ch == 16:                             # ^P
+                self.search(prompt_new=False, backward=True)
+                self.last_action = None
+            elif ch == 18:                             # ^R
+                self.replace()
+                self.last_action = None
+
+            # Programming features
+            elif ch in (2, curses.KEY_F5):             # ^B / F5
+                self.run_program()
+            elif ch in (6, curses.KEY_F6):             # ^F / F6
+                self.run_program(ask_args=True)
+            elif ch == curses.KEY_F8:
+                self.jump_diagnostic(+1)
+            elif ch == curses.KEY_F7:
+                self.jump_diagnostic(-1)
+            elif ch == 0:                              # ^Space
+                self.complete()
+            elif ch in (17, curses.KEY_F2):            # ^Q
+                self.hover()
+            elif ch in (29, curses.KEY_F12):           # ^]
+                self.goto_definition()
+            elif ch == 28:                             # ^\
+                self.jump_back()
+
+            # File / view
+            elif ch == 19:                             # ^S
+                self.save_prompt(quick=True)
+            elif ch == 15:                             # ^O
+                self.save_prompt(quick=False)
+            elif ch == 12:                             # ^L
+                self.toggle_wrap()
+            elif ch == curses.KEY_F4:
+                self.toggle_numbers()
+            elif ch == 20:                             # ^T
+                self.cycle_theme()
+            elif ch == 4:                              # ^D
+                self.word_count()
+            elif ch == curses.KEY_F1:
+                self.show_help()
+            elif ch in (24, 3):                        # ^X / ^C
+                if self.exit_prompt():
+                    break
+
+            # Plain text (including non-ASCII)
+            elif isinstance(ch, str):
+                self.type_char(ch)
+
+
+def main():
+    argv = sys.argv[1:]
+    lsp_enabled = os.environ.get('PROGEDIT_LSP', '1') != '0'
+    if '--no-lsp' in argv:
+        lsp_enabled = False
+        argv.remove('--no-lsp')
+    if argv and argv[0] in ('-h', '--help'):
+        print("Usage: progedit [--no-lsp] [file[:line]]")
+        print("A nano-style terminal editor for programmers: syntax highlighting, auto-indent,")
+        print("LSP support and run/compile for Python, Ruby, C and C++ (^B). F1 shows the keys.")
+        sys.exit(0)
+
+    filepath = argv[0] if argv else "untitled.txt"
+    goto = None
+    m = re.match(r'^(.*):(\d+)$', filepath)
+    if m and not os.path.exists(filepath):
+        filepath, goto = m.group(1), int(m.group(2))
+    os.environ.setdefault('ESCDELAY', '25')
+    try:
+        locale.setlocale(locale.LC_ALL, '')
+    except locale.Error:
+        pass
+
+    editors = []
+
+    def run(stdscr):
+        ed = Editor(stdscr, filepath, lsp_enabled, goto)
+        editors.append(ed)
+        ed.run()
+
+    try:
+        curses.wrapper(run)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        tty_write('\x1b[?2004l')
+        for ed in editors:
+            ed.lsp_shutdown()
+
+
+if __name__ == "__main__":
+    main()
