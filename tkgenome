@@ -2,39 +2,69 @@
 """tkgenome - GenBank viewer for bacterial genomes, in Python + Tk.
 
 Standard library only.  Opens a GenBank flat file (plain or gzip-compressed)
-and shows two linked panels:
+and shows linked views of the genome:
 
-  * a circular genome map, position 0 at the top, running clockwise, with
-    forward-strand features on the outer ring and reverse-strand features on
-    the inner ring;
-  * a scrollable feature table (id, type, start, end, strand, annotation).
-
-Click a row in the table, or a feature on the map, to highlight it in both.
+  * a circular map, position 0 at the top running clockwise; forward-strand
+    features on the outer ring, reverse-strand features on the inner ring,
+    plus optional GC-content and GC-skew rings and a colour legend;
+  * a linear detail strip (gene arrows with labels) for the region around the
+    selected feature;
+  * a sortable, filterable feature table;
+  * a sequence pane: nucleotide / protein (FASTA) and qualifiers of the
+    selected feature(s).
 
 Usage:  tkgenome [file.gb | file.gbk.gz]
 
-Keys:
-  Ctrl-O / Cmd-O   open a file
-  Ctrl-Q / Cmd-Q   quit
-  Click a column heading to sort the table.
+Mouse (circular map)
+  click            select a feature (Ctrl/Cmd-click adds to the selection)
+  wheel            zoom about the pointer       drag        pan
+  Shift-drag       rotate the circle            double-click on empty space
+                   resets the view
+  hover            tooltip with the feature's details
+Mouse (detail strip)
+  click / hover    as above                     wheel       zoom
+  drag             pan                          double-click fit the selection
+Keys (with the map or strip focused)
+  + / -  zoom      0  reset view                Left / Right  pan the strip
+Other
+  Ctrl/Cmd-O open a file, Ctrl/Cmd-Q quit.  "Go to" takes a coordinate
+  (1234567, 1.2m, 500k, 1000-2000) or a gene / locus tag.
+
+Filter box syntax (terms are ANDed, "!" negates):
+  dnaA                      substring of id / type / product / gene
+  type:CDS  strand:-        feature type, strand
+  len>1000  start>=100000   numeric comparison on len, start, end
+  product:transpos  EC_number:2.7  note:frameshift   any qualifier
+  rec:name                  record name   !pseudo   hide matches
 """
 
 import gzip
 import math
 import re
+import shlex
 import sys
+import textwrap
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from xml.sax.saxutils import escape as xml_escape
 
 # ---------------------------------------------------------------- parsing
 
 SEG_RE = re.compile(r"(\d+)(?:(?:\.\.|\^|\.)[<>]?(\d+))?")
 REMOTE_RE = re.compile(r"[A-Za-z_][\w.]*:")
+SEQ_STRIP = {ord(c): None for c in "0123456789 \t"}
+RNA_TYPES = {"tRNA", "rRNA", "tmRNA", "ncRNA", "misc_RNA"}
 
 
 class Feature:
     __slots__ = ("type", "loc", "segs", "strand", "start", "end", "qual",
-                 "id", "ann")
+                 "quals", "id", "ann", "rec", "off", "gsegs", "gmin", "gmax",
+                 "idx", "length", "pseudo", "cls", "lane", "hay")
+
+    def __init__(self):
+        self.cls = None
+        self.lane = 0
+        self.off = 0
 
 
 class Record:
@@ -43,23 +73,30 @@ class Record:
         self.definition = ""
         self.organism = ""
         self.length = 0
-        self.seqlen = 0
+        self.seq = ""
         self.features = []
 
     def finish(self):
-        if not self.length:
-            self.length = self.seqlen
-        if not self.length and self.features:
+        if self.seq:
+            self.length = len(self.seq)
+        elif not self.length and self.features:
             self.length = max(e for f in self.features for _, e in f.segs)
         counts = {}
         for f in self.features:
+            f.rec = self
             f.start, f.end = span(f.segs, self.length)
+            f.length = sum(e - s + 1 for s, e in f.segs)
             q = f.qual
             n = counts[f.type] = counts.get(f.type, 0) + 1
             f.id = (q.get("locus_tag") or q.get("gene") or q.get("protein_id")
                     or q.get("old_locus_tag") or "%s_%d" % (f.type, n))
+            f.pseudo = "pseudo" in q or "pseudogene" in q
             f.ann = (q.get("product") or q.get("note") or q.get("function")
                      or q.get("gene") or "")
+            if f.pseudo:
+                f.ann = "(pseudo) " + f.ann
+            f.hay = " ".join((f.id, f.type, f.ann, q.get("gene", ""),
+                              q.get("product", ""), self.name)).lower()
 
 
 def span(segs, length):
@@ -71,7 +108,7 @@ def span(segs, length):
     hi = max(e for _, e in ss)
     if len(ss) == 1 or not length:
         return lo, hi
-    best, best_i, maxend = lo + length - hi, -1, ss[0][1]
+    best, best_i, best_end, maxend = lo + length - hi, -1, 0, ss[0][1]
     for i in range(len(ss) - 1):
         maxend = max(maxend, ss[i][1])
         gap = ss[i + 1][0] - maxend
@@ -89,8 +126,7 @@ def parse_location(loc):
         a = int(a)
         b = int(b) if b else a
         segs.append((min(a, b), max(a, b)))
-    strand = -1 if "complement" in s else 1
-    return segs, strand
+    return segs, (-1 if "complement" in s else 1)
 
 
 def make_feature(lines):
@@ -112,10 +148,12 @@ def make_feature(lines):
     if not f.segs:
         return None
     f.qual = {}
+    f.quals = []
     for name, parts in quals:
         val = ("" if name == "translation" else " ").join(parts).strip()
         if len(val) >= 2 and val[0] == val[-1] == '"':
             val = val[1:-1].replace('""', '"')
+        f.quals.append((name, val))
         f.qual.setdefault(name, val)
     return f
 
@@ -133,6 +171,7 @@ def parse_genbank(path):
     rec = None
     mode = None
     feat = []
+    parts = []
 
     def flush():
         nonlocal feat
@@ -143,12 +182,14 @@ def parse_genbank(path):
         feat = []
 
     def end_record():
-        nonlocal rec
+        nonlocal rec, parts
         flush()
         if rec is not None:
+            rec.seq = "".join(parts).lower()
             rec.finish()
             records.append(rec)
         rec = None
+        parts = []
 
     with open_text(path) as fh:
         for line in fh:
@@ -159,8 +200,8 @@ def parse_genbank(path):
                 if kw == "LOCUS":
                     end_record()
                     rec = Record()
-                    parts = rest.split()
-                    rec.name = parts[0] if parts else ""
+                    toks = rest.split()
+                    rec.name = toks[0] if toks else ""
                     m = re.search(r"(\d+)\s+(?:bp|aa)\b", rest)
                     if m:
                         rec.length = int(m.group(1))
@@ -190,7 +231,7 @@ def parse_genbank(path):
                 elif feat:
                     feat.append(line)
             elif mode == "seq":
-                rec.seqlen += sum(c.isalpha() for c in line)
+                parts.append(line.translate(SEQ_STRIP))
             elif mode == "def":
                 rec.definition += " " + line.strip()
             elif mode == "other":
@@ -201,8 +242,118 @@ def parse_genbank(path):
     return records
 
 
-# ------------------------------------------------------------------- GUI
+# ---------------------------------------------------------- sequence tools
 
+COMP = str.maketrans("acgtnrykmswbdhvACGTNRYKMSWBDHV",
+                     "tgcanyrmkswvhdbTGCANYRMKSWVHDB")
+_B = "tcag"
+_AA = "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG"
+CODONS = {a + b + c: _AA[16 * i + 4 * j + k]
+          for i, a in enumerate(_B) for j, b in enumerate(_B)
+          for k, c in enumerate(_B)}
+CODONS_4 = dict(CODONS, tga="W")
+ALT_STARTS = {"gtg", "ttg", "ctg", "att", "atc", "ata"}
+
+
+def revcomp(s):
+    return s.translate(COMP)[::-1]
+
+
+def translate(nt, table=11, codon_start=1, partial=False):
+    tab = CODONS_4 if table == 4 else CODONS
+    nt = nt[max(0, codon_start - 1):].lower()
+    aa = [tab.get(nt[i:i + 3], "X") for i in range(0, len(nt) - 2, 3)]
+    if aa and not partial and codon_start == 1 and table != 4 \
+            and nt[:3] in ALT_STARTS:
+        aa[0] = "M"
+    if aa and aa[-1] == "*":
+        aa.pop()
+    return "".join(aa)
+
+
+def nt_of(f):
+    s = f.rec.seq
+    if not s:
+        return None
+    nt = "".join(s[a - 1:b] for a, b in f.segs)
+    return revcomp(nt) if f.strand < 0 else nt
+
+
+def protein_of(f):
+    """(protein, computed) for a feature, or None."""
+    tr = f.qual.get("translation")
+    if tr:
+        return tr.replace(" ", ""), False
+    if f.type != "CDS":
+        return None
+    nt = nt_of(f)
+    if not nt:
+        return None
+
+    def num(key, default):
+        try:
+            return int(f.qual.get(key, default))
+        except ValueError:
+            return default
+    return translate(nt, num("transl_table", 11), num("codon_start", 1),
+                     "<" in f.loc or ">" in f.loc), True
+
+
+def wrap(s, n=60):
+    return "\n".join(s[i:i + n] for i in range(0, len(s), n))
+
+
+# ------------------------------------------------------------------ scope
+
+class Scope:
+    """What is being viewed: one record, or several laid end to end."""
+
+    def __init__(self, records):
+        self.records = records
+        self.bounds = []
+        self.features = []
+        off = 0
+        for r in records:
+            self.bounds.append((r.name, off, r.length))
+            for f in r.features:
+                f.off = off
+                f.gsegs = [(s + off, e + off) for s, e in f.segs]
+                f.gmin = min(s for s, _ in f.gsegs)
+                f.gmax = max(e for _, e in f.gsegs)
+                f.idx = len(self.features)
+                self.features.append(f)
+            off += r.length
+        self.length = off
+        self.seq = ("".join(r.seq for r in records)
+                    if all(r.seq for r in records) else "")
+        first = records[0]
+        base = first.organism or first.definition or first.name
+        self.title = (base if len(records) == 1
+                      else "%s (%d records)" % (base, len(records)))
+        self._gc = None
+
+    def gc_bins(self):
+        if self._gc is None:
+            s, L = self.seq, self.length
+            nb = max(1, min(1000, L // 500))
+            gcv, sk = [], []
+            for i in range(nb):
+                a, b = i * L // nb, (i + 1) * L // nb
+                w = s[a:b]
+                g, c = w.count("g"), w.count("c")
+                gcv.append((g + c) / (b - a) if b > a else 0.0)
+                sk.append((g - c) / (g + c) if g + c else 0.0)
+            mean = (s.count("g") + s.count("c")) / float(L)
+            dev = max(abs(v - mean) for v in gcv) or 1e-9
+            sdev = max(abs(v) for v in sk) or 1e-9
+            self._gc = (nb, gcv, mean, dev, sk, sdev)
+        return self._gc
+
+
+# ---------------------------------------------------------------- colours
+
+HL = "#ff0000"
+COL_OTHER = "#777777"
 COL_TYPE = {
     "CDS": ("#2f6fd0", "#e8892b"),     # (+ strand, - strand)
     "tRNA": ("#2e9e48", "#2e9e48"),
@@ -211,59 +362,950 @@ COL_TYPE = {
     "ncRNA": ("#7a56c8", "#7a56c8"),
     "gene": ("#8aa6d6", "#e6b98a"),
 }
-COL_OTHER = "#777777"
-COL_HL = "#ff1f1f"
-MIN_DEG = 0.35
-FILTER_DEFAULT = "Default (no gene/source)"
-FILTER_ALL = "All (no source)"
-COLUMNS = (("id", "ID", 120, "w"), ("type", "Type", 70, "w"),
-           ("start", "Start", 85, "e"), ("end", "End", 85, "e"),
-           ("strand", "Strand", 55, "center"), ("ann", "Annotation", 320, "w"))
+
+FUNC_CLASSES = [
+    ("RNA gene", "#2e9e48", None),
+    ("Pseudogene", "#8d6e63", None),
+    ("Mobile element / phage", "#d4a017", re.compile(
+        r"transpos|integrase|insertion sequence|\bIS\d|phage|resolvase|"
+        r"recombinase|mobile|retron|reverse transcriptase|invertase", re.I)),
+    ("Translation", "#7b4fc4", re.compile(
+        r"ribosom|tRNA|elongation factor|initiation factor|translation|"
+        r"release factor|aminoacyl", re.I)),
+    ("Transport / secretion", "#1aa3a3", re.compile(
+        r"transporter|permease|\bABC\b|efflux|porin|channel|exporter|"
+        r"importer|porter|secretion|\bSec[A-Z]\b", re.I)),
+    ("Regulation", "#d63f8f", re.compile(
+        r"regulator|transcription|sigma|repressor|activator", re.I)),
+    ("DNA replication / repair", "#6d8f1f", re.compile(
+        r"\bDNA\b|replication|helicase|gyrase|topoisomerase|repair|"
+        r"recombination|primase|nuclease", re.I)),
+    ("Enzyme / metabolism", "#3a7bd5", re.compile(
+        r"ase\b|synthetase|synthase", re.I)),
+    ("Hypothetical / unknown", "#9e9e9e", re.compile(
+        r"hypothetical|uncharacteri|DUF|domain-containing|family protein|"
+        r"unknown", re.I)),
+    ("Other", "#4a6fa5", None),
+]
 
 
-def feat_color(f):
+def func_class(f):
+    if f.cls is None:
+        idx = len(FUNC_CLASSES) - 1
+        if f.type in RNA_TYPES:
+            idx = 0
+        elif f.pseudo:
+            idx = 1
+        else:
+            for i in range(2, len(FUNC_CLASSES) - 1):
+                if FUNC_CLASSES[i][2].search(f.ann):
+                    idx = i
+                    break
+        f.cls = idx
+    return f.cls
+
+
+def col_type_strand(f):
     c = COL_TYPE.get(f.type)
     if c is None:
         return COL_OTHER
     return c[0] if f.strand > 0 else c[1]
 
 
+def col_strand(f):
+    return "#2f6fd0" if f.strand > 0 else "#e8892b"
+
+
+def col_func(f):
+    return FUNC_CLASSES[func_class(f)][1]
+
+
+def col_pseudo(f):
+    if f.type in RNA_TYPES:
+        return "#2e9e48"
+    if f.pseudo:
+        return "#8d6e63"
+    if f.type == "CDS":
+        return "#9e9e9e" if func_class(f) == len(FUNC_CLASSES) - 2 \
+            else "#2f6fd0"
+    return COL_OTHER
+
+
+MODES = {
+    "Type / strand": (col_type_strand, [
+        ("#2f6fd0", "CDS +"), ("#e8892b", "CDS -"), ("#2e9e48", "tRNA"),
+        ("#a4239a", "rRNA"), ("#7a56c8", "ncRNA"), ("#2aa6a6", "tmRNA"),
+        (COL_OTHER, "other")]),
+    "Strand": (col_strand, [("#2f6fd0", "+ strand"), ("#e8892b", "- strand")]),
+    "Functional class": (col_func, [(c, n) for n, c, _ in FUNC_CLASSES]),
+    "Pseudo / hypothetical": (col_pseudo, [
+        ("#2f6fd0", "annotated CDS"), ("#9e9e9e", "hypothetical"),
+        ("#8d6e63", "pseudogene"), ("#2e9e48", "RNA gene"),
+        (COL_OTHER, "other")]),
+}
+
+# ------------------------------------------------------- filter-box query
+
+CMP_RE = re.compile(r"^(len|start|end)(>=|<=|>|<|=)(\d+)$", re.I)
+OPS = {">": lambda a, b: a > b, "<": lambda a, b: a < b,
+       ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b,
+       "=": lambda a, b: a == b}
+
+
+def qget(f, col):
+    v = f.qual.get(col)
+    if v is None:
+        for k, val in f.qual.items():
+            if k.lower() == col:
+                return val
+        return ""
+    return v
+
+
+def parse_query(text):
+    """Return a predicate f -> bool for the filter-box syntax."""
+    try:
+        toks = shlex.split(text)
+    except ValueError:
+        toks = text.split()
+    preds = []
+    for t in toks:
+        neg = t.startswith("!") and len(t) > 1
+        if neg:
+            t = t[1:]
+        m = CMP_RE.match(t)
+        if m:
+            key, op, val = m.group(1).lower(), OPS[m.group(2)], int(m.group(3))
+            attr = {"len": "length", "start": "start", "end": "end"}[key]
+            fn = (lambda f, a=attr, o=op, v=val: o(getattr(f, a), v))
+        elif ":" in t:
+            col, _, val = t.partition(":")
+            col, val = col.lower(), val.lower()
+            if col == "type":
+                fn = (lambda f, v=val: f.type.lower() == v)
+            elif col == "strand":
+                want = 1 if val in ("+", "plus", "fwd", "1") else -1
+                fn = (lambda f, w=want: f.strand == w)
+            elif col == "id":
+                fn = (lambda f, v=val: v in f.id.lower())
+            elif col == "rec":
+                fn = (lambda f, v=val: v in f.rec.name.lower())
+            elif col in ("ann", "annotation"):
+                fn = (lambda f, v=val: v in f.ann.lower())
+            else:
+                fn = (lambda f, c=col, v=val: v in qget(f, c).lower())
+        else:
+            low = t.lower()
+            fn = (lambda f, v=low: v in f.hay)
+        preds.append((neg, fn))
+    return lambda f: all(fn(f) != neg for neg, fn in preds)
+
+
+# ----------------------------------------------------------- number format
+
+def fmt_bp(n):
+    n = float(n)
+    if n >= 1e6:
+        return "%.2f Mb" % (n / 1e6)
+    if n >= 1e3:
+        return "%.1f kb" % (n / 1e3)
+    return "%d bp" % n
+
+
+def nice_step(raw):
+    raw = max(raw, 1.0)
+    mag = 10 ** math.floor(math.log10(raw))
+    for m in (1, 2, 5, 10):
+        if m * mag >= raw:
+            return m * mag
+
+
+def fmt_tick(pos, step):
+    if pos == 0:
+        return "0"
+    if step >= 1e6:
+        u, name = 1e6, "Mb"
+    elif step >= 1e3:
+        u, name = 1e3, "kb"
+    else:
+        return "%d" % pos
+    dec = max(0, int(math.ceil(-math.log10(step / u) - 1e-9)))
+    return "%.*f %s" % (dec, pos / u, name)
+
+
+# ---------------------------------------------------------------- painters
+
+class Painter:
+    """Draws on a Tk canvas.  Angles are degrees clockwise from the top."""
+
+    def __init__(self, canvas):
+        self.c = canvas
+
+    def arc(self, cx, cy, r, a0, a1, color, width, tags=("map",)):
+        self.c.create_arc(cx - r, cy - r, cx + r, cy + r, start=90 - a0,
+                          extent=-(a1 - a0), style="arc", outline=color,
+                          width=width, tags=tags)
+
+    def line(self, x0, y0, x1, y1, color, width=1, tags=("map",)):
+        self.c.create_line(x0, y0, x1, y1, fill=color, width=width, tags=tags)
+
+    def rect(self, x0, y0, x1, y1, fill, tags=("map",)):
+        self.c.create_rectangle(x0, y0, x1, y1, fill=fill, outline="",
+                                tags=tags)
+
+    def text(self, x, y, s, color="#000000", size=10, anchor="center",
+             bold=False, tags=("map",)):
+        self.c.create_text(x, y, text=s, fill=color, anchor=anchor,
+                           font=("Helvetica", size,
+                                 "bold" if bold else "normal"), tags=tags)
+
+
+class SVGPainter:
+    def __init__(self, w, h):
+        self.w, self.h = w, h
+        self.o = []
+
+    def arc(self, cx, cy, r, a0, a1, color, width, tags=None):
+        ext = a1 - a0
+        if ext >= 359.9:
+            self.o.append('<circle cx="%.2f" cy="%.2f" r="%.2f" fill="none" '
+                          'stroke="%s" stroke-width="%.2f"/>'
+                          % (cx, cy, r, color, width))
+            return
+
+        def pt(a):
+            t = math.radians(a)
+            return cx + r * math.sin(t), cy - r * math.cos(t)
+        x0, y0 = pt(a0)
+        x1, y1 = pt(a1)
+        self.o.append('<path d="M%.2f %.2f A%.2f %.2f 0 %d 1 %.2f %.2f" '
+                      'fill="none" stroke="%s" stroke-width="%.2f"/>'
+                      % (x0, y0, r, r, 1 if ext > 180 else 0, x1, y1,
+                         color, width))
+
+    def line(self, x0, y0, x1, y1, color, width=1, tags=None):
+        self.o.append('<line x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f" '
+                      'stroke="%s" stroke-width="%.2f"/>'
+                      % (x0, y0, x1, y1, color, width))
+
+    def rect(self, x0, y0, x1, y1, fill, tags=None):
+        self.o.append('<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" '
+                      'fill="%s"/>' % (x0, y0, x1 - x0, y1 - y0, fill))
+
+    def text(self, x, y, s, color="#000000", size=10, anchor="center",
+             bold=False, tags=None):
+        ta = ("middle" if anchor == "center" else
+              "start" if "w" in anchor else "end" if "e" in anchor
+              else "middle")
+        self.o.append('<text x="%.2f" y="%.2f" fill="%s" font-size="%.1f" '
+                      'font-family="Helvetica,Arial,sans-serif" '
+                      'font-weight="%s" text-anchor="%s" '
+                      'dominant-baseline="central">%s</text>'
+                      % (x, y, color, size * 1.33,
+                         "bold" if bold else "normal", ta, xml_escape(s)))
+
+    def svg(self):
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<svg xmlns="http://www.w3.org/2000/svg" width="%d" '
+                'height="%d" viewBox="0 0 %d %d">\n'
+                '<rect width="100%%" height="100%%" fill="white"/>\n%s\n'
+                '</svg>\n' % (self.w, self.h, self.w, self.h,
+                              "\n".join(self.o)))
+
+
+# ------------------------------------------------------- circular map core
+
+class Geo:
+    """Geometry of the circular map for one drawing."""
+
+    def __init__(self, scope, cx, cy, r0, rot, rect=None):
+        self.scope = scope
+        self.cx, self.cy, self.r0, self.rot, self.rect = cx, cy, r0, rot, rect
+        self.L = float(scope.length)
+        self.k = 360.0 / self.L
+        self.lw = max(4.0, min(40.0, r0 * 0.05))     # feature ring thickness
+        self.off = self.lw * 0.6 + 1                 # ring offset from r0
+        self.H = self.lw * 2.0                       # GC track height
+        self.gc_c = r0 - self.off - self.lw / 2 - 6 - self.H / 2
+        self.sk_c = self.gc_c - self.H - 6
+        self.inner = self.sk_c - self.H / 2
+
+    def ang(self, pos):
+        return (pos - self.rot) * self.k
+
+    def xy(self, a, r):
+        t = math.radians(a)
+        return self.cx + r * math.sin(t), self.cy - r * math.cos(t)
+
+    def inview(self, x, y, m=40):
+        rc = self.rect
+        return (rc is None or
+                (rc[0] - m <= x <= rc[2] + m and rc[1] - m <= y <= rc[3] + m))
+
+    def arc_vis(self, a0, a1, r):
+        if self.rect is None:
+            return True
+        n = int(r * math.radians(a1 - a0) / 150.0) + 2
+        if n > 40:
+            return True
+        return any(self.inview(*self.xy(a0 + (a1 - a0) * j / n, r))
+                   for j in range(n + 1))
+
+    def ring_r(self, strand):
+        return self.r0 + self.off if strand > 0 else self.r0 - self.off
+
+
+def title_lines(scope, inner):
+    return textwrap.wrap(scope.title, max(10, int(inner * 1.7 / 7.0)))[:3]
+
+
+def render_circle(p, app, g):
+    sc = g.scope
+    L, k, r0, lw, off = g.L, g.k, g.r0, g.lw, g.off
+
+    def ring_line(r, color, width=1):
+        for j in range(36):
+            if g.arc_vis(j * 10.0, j * 10.0 + 10.0, r):
+                p.arc(g.cx, g.cy, r, j * 10.0, j * 10.0 + 10.0, color, width)
+
+    ring_line(r0, "#999999")
+
+    # ticks
+    step = nice_step(L * 55 / (2 * math.pi * r0))
+    rt = r0 + off + lw / 2
+    pos = 0
+    while pos < L - step * 0.25:
+        a = g.ang(pos)
+        x1, y1 = g.xy(a, rt + 2)
+        if g.inview(x1, y1):
+            x2, y2 = g.xy(a, rt + 9)
+            x3, y3 = g.xy(a, rt + 24)
+            p.line(x1, y1, x2, y2, "#555555")
+            p.text(x3, y3, fmt_tick(pos, step), "#555555", 9)
+        pos += step
+
+    # record boundaries
+    if len(sc.bounds) > 1:
+        for _, o, _ in sc.bounds:
+            a = g.ang(o)
+            x1, y1 = g.xy(a, r0 - off - lw)
+            if g.inview(x1, y1):
+                x2, y2 = g.xy(a, r0 + off + lw + 4)
+                p.line(x1, y1, x2, y2, "#000000", 2)
+
+    # GC content and GC skew rings
+    if sc.seq and (app.show_gc.get() or app.show_skew.get()):
+        nb, gcv, mean, dev, sk, sdev = sc.gc_bins()
+        for on, rc, name in ((app.show_gc.get(), g.gc_c, "gc"),
+                             (app.show_skew.get(), g.sk_c, "skew")):
+            if not on:
+                continue
+            ring_line(rc, "#d0d0d0")
+            bw = max(1.0, 2 * math.pi * rc / nb)
+            for i in range(nb):
+                a = g.ang((i + 0.5) * L / nb)
+                x0, y0 = g.xy(a, rc)
+                if not g.inview(x0, y0):
+                    continue
+                if name == "gc":
+                    d = max(-1.0, min(1.0, (gcv[i] - mean) / dev))
+                    col = "#444444" if d >= 0 else "#999999"
+                else:
+                    d = max(-1.0, min(1.0, sk[i] / sdev))
+                    col = "#2e9e48" if d >= 0 else "#8e44ad"
+                x1, y1 = g.xy(a, rc + d * g.H / 2)
+                p.line(x0, y0, x1, y1, col, bw)
+
+    # features
+    colour = app.feat_color
+    for f in app.vis_feats:
+        if f.strand > 0:
+            if not app.show_plus.get():
+                continue
+        elif not app.show_minus.get():
+            continue
+        r = g.ring_r(f.strand)
+        mind = math.degrees(1.5 / max(r, 1.0))
+        col = colour(f)
+        for s, e in f.gsegs:
+            a0 = g.ang(s - 1)
+            a1 = a0 + min(359.9, max(mind, (e - s + 1) * k))
+            if g.arc_vis(a0, a1, r):
+                p.arc(g.cx, g.cy, r, a0, a1, col, lw)
+
+    # position marker (from "Go to")
+    if app.mark is not None:
+        a = g.ang(app.mark)
+        x1, y1 = g.xy(a, r0 - off - lw - 4)
+        if g.inview(x1, y1):
+            x2, y2 = g.xy(a, r0 + off + lw + 10)
+            p.line(x1, y1, x2, y2, "#1e8e3e", 2)
+
+    # centre text
+    if g.inview(g.cx, g.cy, 0) and g.inner > 20:
+        tl = title_lines(sc, g.inner)
+        rows = ([(t, 11, True, "#222222") for t in tl] +
+                [("%s bp" % format(sc.length, ","), 9, False, "#555555"),
+                 ("%d features shown" % len(app.vis_feats), 9, False,
+                  "#555555"),
+                 ("outer: + strand   inner: - strand", 8, False, "#777777")])
+        y = g.cy - len(rows) * 7.5 + 7
+        for s, size, bold, col in rows:
+            p.text(g.cx, y, s, col, size, bold=bold)
+            y += 15
+
+
+def render_highlight(p, app, g):
+    sc = g.scope
+    if not app.sel:
+        return
+    tags = ("map", "hl")
+    for i in app.sel:
+        f = sc.features[i]
+        r = g.ring_r(f.strand)
+        mind = math.degrees(3.0 / max(r, 1.0))
+        for s, e in f.gsegs:
+            a0 = g.ang(s - 1)
+            a1 = a0 + min(359.9, max(mind, (e - s + 1) * g.k))
+            if g.arc_vis(a0, a1, r):
+                p.arc(g.cx, g.cy, r, a0, a1, HL, g.lw + 5, tags)
+    f = sc.features[app.primary if app.primary is not None else app.sel[-1]]
+    s, e = f.gsegs[0]
+    a = g.ang((s + e) / 2.0)
+    x1, y1 = g.xy(a, g.r0 - g.off - g.lw)
+    if g.inview(x1, y1):
+        x2, y2 = g.xy(a, g.r0 + g.off + g.lw)
+        p.line(x1, y1, x2, y2, HL, 1, tags)
+    if g.inview(g.cx, g.cy, 0) and g.inner > 20:
+        n = len(title_lines(sc, g.inner)) + 3
+        y = g.cy + n * 7.5 + 14
+        extra = ("  (+%d)" % (len(app.sel) - 1)) if len(app.sel) > 1 else ""
+        p.text(g.cx, y, f.id + extra, HL, 10, bold=True, tags=tags)
+        p.text(g.cx, y + 14, "%d..%d (%s)" % (f.start, f.end,
+                                              "+" if f.strand > 0 else "-"),
+               HL, 9, tags=tags)
+
+
+def render_legend(p, app, x, y):
+    for col, label in app.legend_entries():
+        p.rect(x, y - 5, x + 10, y + 5, col, tags=("legend",))
+        p.text(x + 16, y, label, "#333333", 9, anchor="w", tags=("legend",))
+        y += 14
+
+
+# ----------------------------------------------------------- circular view
+
+class CircleView:
+    def __init__(self, app, canvas):
+        self.app, self.c = app, canvas
+        self.p = Painter(canvas)
+        self.reset_all()
+        self._pending = False
+        self._press = None
+        self._drag = False
+        self.tip_idx = None
+        canvas.bind("<Configure>", lambda e: self.schedule())
+        canvas.bind("<ButtonPress-1>", self.on_press)
+        canvas.bind("<B1-Motion>", self.on_drag)
+        canvas.bind("<ButtonRelease-1>", self.on_release)
+        canvas.bind("<Motion>", self.on_hover)
+        canvas.bind("<Leave>", lambda e: self.clear_tip())
+        canvas.bind("<Enter>", lambda e: canvas.focus_set())
+        canvas.bind("<MouseWheel>", self.on_wheel)
+        canvas.bind("<Button-4>", self.on_wheel)
+        canvas.bind("<Button-5>", self.on_wheel)
+        canvas.bind("<Double-Button-1>", self.on_double)
+        for key in ("plus", "equal"):
+            canvas.bind("<%s>" % key, lambda e: self.zoom_by(1.4))
+        canvas.bind("<minus>", lambda e: self.zoom_by(1 / 1.4))
+        canvas.bind("<Key-0>", lambda e: self.reset_view())
+
+    # -- state
+
+    def reset_all(self):
+        self.z, self.ox, self.oy, self.rot = 1.0, 0.0, 0.0, 0.0
+
+    def reset_view(self):
+        self.z, self.ox, self.oy = 1.0, 0.0, 0.0
+        self.schedule()
+
+    def size(self):
+        return max(1, self.c.winfo_width()), max(1, self.c.winfo_height())
+
+    def geo(self):
+        w, h = self.size()
+        base = max(60.0, min(w, h) / 2.0 - 62)
+        return Geo(self.app.scope, w / 2.0 + self.ox, h / 2.0 + self.oy,
+                   base * self.z, self.rot, (0, 0, w, h))
+
+    def schedule(self):
+        if not self._pending:
+            self._pending = True
+            self.c.after_idle(self._do)
+
+    def _do(self):
+        self._pending = False
+        self.draw()
+
+    def zoom_at(self, mx, my, k):
+        w, h = self.size()
+        nz = max(1.0, min(40.0, self.z * k))
+        k = nz / self.z
+        cx = mx - (mx - (w / 2.0 + self.ox)) * k
+        cy = my - (my - (h / 2.0 + self.oy)) * k
+        self.ox, self.oy, self.z = cx - w / 2.0, cy - h / 2.0, nz
+        if nz <= 1.0:
+            self.ox = self.oy = 0.0
+        self.schedule()
+
+    def zoom_by(self, k):
+        w, h = self.size()
+        self.zoom_at(w / 2.0, h / 2.0, k)
+
+    # -- drawing
+
+    def draw(self):
+        c = self.c
+        c.delete("all")
+        self.tip_idx = None
+        if self.app.scope is None:
+            w, h = self.size()
+            c.create_text(w / 2, h / 2, text="Open a GenBank file (Ctrl-O)",
+                          fill="#888888", font=("Helvetica", 14))
+            return
+        g = self.geo()
+        render_circle(self.p, self.app, g)
+        render_highlight(self.p, self.app, g)
+        if self.app.show_legend.get():
+            render_legend(self.p, self.app, 12, 16)
+        self.draw_win()
+
+    def draw_highlight(self):
+        self.c.delete("hl")
+        if self.app.scope is not None:
+            render_highlight(self.p, self.app, self.geo())
+
+    def draw_win(self):
+        """Mark the detail strip's window on the backbone."""
+        self.c.delete("win")
+        app = self.app
+        if app.scope is None or app.strip is None:
+            return
+        g = self.geo()
+        a0 = g.ang(app.strip.w0)
+        a1 = a0 + max(0.4, (app.strip.w1 - app.strip.w0) * g.k)
+        if a1 - a0 < 359.9 and g.arc_vis(a0, a1, g.r0):
+            self.p.arc(g.cx, g.cy, g.r0, a0, a1, "#111111",
+                       min(3.0, g.lw * 0.25 + 1), tags=("win",))
+
+    # -- hit testing
+
+    def hit(self, x, y):
+        app = self.app
+        if app.scope is None:
+            return None
+        g = self.geo()
+        dx, dy = x - g.cx, y - g.cy
+        d = math.hypot(dx, dy)
+        if d < 1:
+            return None
+        cand = []
+        if app.show_plus.get() and abs(d - (g.r0 + g.off)) <= g.lw / 2 + 3:
+            cand.append(1)
+        if app.show_minus.get() and abs(d - (g.r0 - g.off)) <= g.lw / 2 + 3:
+            cand.append(-1)
+        if not cand:
+            return None
+        pos = (math.degrees(math.atan2(dx, -dy)) / 360.0 * g.L + g.rot) % g.L
+        tol = 3 * g.L / (2 * math.pi * g.r0)
+        best, bkey = None, None
+        for f in app.vis_feats:
+            if f.strand not in cand:
+                continue
+            for s, e in f.gsegs:
+                for q in (pos, pos - g.L, pos + g.L):
+                    if s - 1 - tol <= q <= e + tol:
+                        # prefer one under the pointer, then the shortest
+                        key = (max(s - 1 - q, q - e, 0), e - s)
+                        if bkey is None or key < bkey:
+                            best, bkey = f.idx, key
+        return best
+
+    # -- events
+
+    def clear_tip(self):
+        self.c.delete("tip")
+        self.tip_idx = None
+
+    def on_press(self, e):
+        self.c.focus_set()
+        w, h = self.size()
+        a0 = math.atan2(e.x - (w / 2.0 + self.ox), -(e.y - (h / 2.0 + self.oy)))
+        self._press = (e.x, e.y, self.ox, self.oy, self.rot, a0)
+        self._drag = False
+        self.clear_tip()
+
+    def on_drag(self, e):
+        if self._press is None or self.app.scope is None:
+            return
+        x0, y0, ox, oy, rot, a0 = self._press
+        if not self._drag and math.hypot(e.x - x0, e.y - y0) < 4:
+            return
+        self._drag = True
+        if e.state & 0x1:                                    # Shift: rotate
+            w, h = self.size()
+            a1 = math.atan2(e.x - (w / 2.0 + self.ox),
+                            -(e.y - (h / 2.0 + self.oy)))
+            d = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi
+            self.rot = (rot - d / (2 * math.pi) * self.app.scope.length) \
+                % self.app.scope.length
+        else:
+            self.ox, self.oy = ox + e.x - x0, oy + e.y - y0
+        self.schedule()
+
+    def on_release(self, e):
+        was_drag = self._drag
+        self._press = None
+        self._drag = False
+        if was_drag or self.app.scope is None:
+            return
+        add = bool(e.state & 0x4 or e.state & 0x8)
+        self.app.click_feature(self.hit(e.x, e.y), add)
+
+    def on_hover(self, e):
+        if self._press is not None or self.app.scope is None:
+            return
+        idx = self.hit(e.x, e.y)
+        if idx != self.tip_idx:
+            self.c.delete("tip")
+            self.tip_idx = idx
+            if idx is not None:
+                self.app.show_tip(self.c, e.x, e.y, idx)
+
+    def on_wheel(self, e):
+        if self.app.scope is None:
+            return
+        if getattr(e, "num", 0) == 4:
+            d = 120
+        elif getattr(e, "num", 0) == 5:
+            d = -120
+        else:
+            d = e.delta
+        n = d / 120.0 if abs(d) >= 120 else d / 6.0
+        self.zoom_at(e.x, e.y, 1.15 ** n)
+
+    def on_double(self, e):
+        if self.app.scope is not None and self.hit(e.x, e.y) is None:
+            self.reset_view()
+
+
+# -------------------------------------------------------------- strip view
+
+BAR_H, LANE_H = 13, 17
+
+
+class StripView:
+    """Linear detail view of a window of the genome."""
+
+    def __init__(self, app, canvas):
+        self.app, self.c = app, canvas
+        self.w0, self.w1 = 0.0, 20000.0
+        self.ya = 84
+        self._pending = False
+        self._press = None
+        self._drag = False
+        self.tip_idx = None
+        canvas.bind("<Configure>", lambda e: self.schedule())
+        canvas.bind("<ButtonPress-1>", self.on_press)
+        canvas.bind("<B1-Motion>", self.on_drag)
+        canvas.bind("<ButtonRelease-1>", self.on_release)
+        canvas.bind("<Motion>", self.on_hover)
+        canvas.bind("<Leave>", lambda e: self.clear_tip())
+        canvas.bind("<Enter>", lambda e: canvas.focus_set())
+        canvas.bind("<MouseWheel>", self.on_wheel)
+        canvas.bind("<Button-4>", self.on_wheel)
+        canvas.bind("<Button-5>", self.on_wheel)
+        canvas.bind("<Double-Button-1>", self.on_double)
+        canvas.bind("<Left>", lambda e: self.pan(-0.2))
+        canvas.bind("<Right>", lambda e: self.pan(0.2))
+        for key in ("plus", "equal"):
+            canvas.bind("<%s>" % key, lambda e: self.zoom_at(None, 1.4))
+        canvas.bind("<minus>", lambda e: self.zoom_at(None, 1 / 1.4))
+        canvas.bind("<Key-0>", lambda e: self.reset())
+
+    def width(self):
+        return max(1, self.c.winfo_width())
+
+    def reset(self):
+        sc = self.app.scope
+        L = sc.length if sc else 20000
+        self.set_window(0, min(L, 20000))
+
+    def set_window(self, w0, w1):
+        sc = self.app.scope
+        if sc is None:
+            return
+        L = float(sc.length)
+        wd = max(min(100.0, L), min(L, w1 - w0))
+        w0 = max(0.0, min(w0, L - wd))
+        self.w0, self.w1 = w0, w0 + wd
+        self.schedule()
+        if self.app.circle is not None:
+            self.app.circle.draw_win()
+
+    def pan(self, frac):
+        wd = self.w1 - self.w0
+        self.set_window(self.w0 + frac * wd, self.w1 + frac * wd)
+
+    def zoom_at(self, x, k):
+        wd = self.w1 - self.w0
+        if x is None:
+            x = self.width() / 2.0
+        pos = self.w0 + wd * x / self.width()
+        nw = wd / k
+        self.set_window(pos - (x / self.width()) * nw,
+                        pos + (1 - x / self.width()) * nw)
+
+    def schedule(self):
+        if not self._pending:
+            self._pending = True
+            self.c.after_idle(self._do)
+
+    def _do(self):
+        self._pending = False
+        self.draw()
+
+    # -- drawing
+
+    def lane_top(self, f):
+        if f.strand > 0:
+            return self.ya - 4 - (f.lane + 1) * LANE_H
+        return self.ya + 4 + f.lane * LANE_H
+
+    def draw(self):
+        c = self.c
+        c.delete("all")
+        self.tip_idx = None
+        app, sc = self.app, self.app.scope
+        if sc is None:
+            return
+        w, h = self.width(), max(1, c.winfo_height())
+        wd = self.w1 - self.w0
+        scale = w / wd
+        w0, ya, L = self.w0, self.ya, sc.length
+
+        def X(p):
+            return (p - w0) * scale
+
+        # ruler
+        c.create_line(0, 24, w, 24, fill="#888888")
+        step = nice_step(wd * 80.0 / w)
+        pos = int(math.ceil(w0 / step)) * step
+        while pos <= self.w1:
+            x = X(pos)
+            c.create_line(x, 24, x, 29, fill="#666666")
+            c.create_text(x, 13, text=fmt_tick(pos, step), fill="#555555",
+                          font=("Helvetica", 8))
+            pos += step
+        c.create_line(0, ya, w, ya, fill="#cccccc")
+        c.create_text(6, ya - 9, text="+", fill="#999999", anchor="w")
+        c.create_text(6, ya + 9, text="-", fill="#999999", anchor="w")
+
+        # record boundaries
+        if len(sc.bounds) > 1:
+            for name, o, _ in sc.bounds:
+                if w0 <= o <= self.w1:
+                    x = X(o)
+                    c.create_line(x, 30, x, h, fill="#999999", dash=(3, 3))
+                    c.create_text(x + 3, h - 10, text=name, anchor="w",
+                                  fill="#777777", font=("Helvetica", 8))
+
+        # features
+        sel = set(app.sel)
+        late = []
+        for f in app.vis_feats:
+            if (f.gmax < w0 or f.gmin - 1 > self.w1) and \
+                    not (len(f.gsegs) > 1 and f.gmax - f.gmin > L / 2):
+                continue
+            if f.idx in sel:
+                late.append(f)
+            else:
+                self.draw_feat(f, X, w, False)
+        for f in late:
+            self.draw_feat(f, X, w, True)
+
+        if app.mark is not None and w0 <= app.mark <= self.w1:
+            x = X(app.mark)
+            c.create_line(x, 26, x, h - 18, fill="#1e8e3e", width=2)
+        c.create_text(w - 6, h - 10, anchor="e", fill="#777777",
+                      font=("Helvetica", 8),
+                      text="%s..%s  (%s)" % (format(int(w0) + 1, ","),
+                                             format(int(self.w1), ","),
+                                             fmt_bp(wd)))
+
+    def draw_feat(self, f, X, w, selected):
+        c = self.c
+        col = self.app.feat_color(f)
+        top = self.lane_top(f)
+        mid = top + BAR_H / 2.0
+        gs = f.gsegs
+        head_i = len(gs) - 1 if f.strand > 0 else 0
+        label = f.qual.get("gene") or f.id
+        L = self.app.scope.length
+        if len(gs) > 1 and f.gmax - f.gmin <= L / 2:
+            ss = sorted(gs)
+            for (a, b), (cc, d) in zip(ss, ss[1:]):
+                xa, xb = X(b), X(cc - 1)
+                if xb > -5 and xa < w + 5 and xb > xa:
+                    c.create_line(max(xa, -5), mid, min(xb, w + 5), mid,
+                                  fill=col)
+        for i, (s, e) in enumerate(gs):
+            x0, x1 = X(s - 1), X(e)
+            if x1 < -5 or x0 > w + 5:
+                continue
+            tip = x1 if f.strand > 0 else x0
+            head = i == head_i and -6 <= tip <= w + 6
+            x0c, x1c = max(x0, -6), min(x1, w + 6)
+            x1c = max(x1c, x0c + 2)
+            hw = min(8.0, x1c - x0c) if head else 0
+            if head and f.strand > 0:
+                pts = [x0c, top, x1c - hw, top, x1c, mid, x1c - hw,
+                       top + BAR_H, x0c, top + BAR_H]
+            elif head:
+                pts = [x1c, top, x0c + hw, top, x0c, mid, x0c + hw,
+                       top + BAR_H, x1c, top + BAR_H]
+            else:
+                pts = [x0c, top, x1c, top, x1c, top + BAR_H, x0c, top + BAR_H]
+            c.create_polygon(pts, fill=col, outline=HL if selected else "",
+                             width=2 if selected else 1)
+            if x1c - x0c > len(label) * 6 + 14:
+                c.create_text((x0c + x1c) / 2.0, mid, text=label,
+                              fill="white", font=("Helvetica", 8, "bold"))
+
+    # -- hit testing
+
+    def hit(self, x, y):
+        app = self.app
+        if app.scope is None:
+            return None
+        scale = self.width() / (self.w1 - self.w0)
+        pos = self.w0 + x / scale
+        tol = 3 / scale
+        strand = 1 if y < self.ya else -1
+        row = (int((self.ya - 4 - y) // LANE_H) if strand > 0
+               else int((y - self.ya - 4) // LANE_H))
+        row = max(0, min(2, row))
+        found = None
+        for f in app.vis_feats:
+            if f.strand != strand:
+                continue
+            for s, e in f.gsegs:
+                if s - 1 - tol <= pos <= e + tol:
+                    if f.lane == row:
+                        return f.idx
+                    found = f.idx if found is None else found
+        return found
+
+    # -- events
+
+    def clear_tip(self):
+        self.c.delete("tip")
+        self.tip_idx = None
+
+    def on_press(self, e):
+        self.c.focus_set()
+        self._press = (e.x, e.y, self.w0, self.w1)
+        self._drag = False
+        self.clear_tip()
+
+    def on_drag(self, e):
+        if self._press is None or self.app.scope is None:
+            return
+        x0, y0, w0, w1 = self._press
+        if not self._drag and abs(e.x - x0) < 4 and abs(e.y - y0) < 4:
+            return
+        self._drag = True
+        d = (e.x - x0) * (w1 - w0) / self.width()
+        self.set_window(w0 - d, w1 - d)
+
+    def on_release(self, e):
+        was_drag = self._drag
+        self._press = None
+        self._drag = False
+        if was_drag or self.app.scope is None:
+            return
+        add = bool(e.state & 0x4 or e.state & 0x8)
+        self.app.click_feature(self.hit(e.x, e.y), add, source="strip")
+
+    def on_hover(self, e):
+        if self._press is not None or self.app.scope is None:
+            return
+        idx = self.hit(e.x, e.y)
+        if idx != self.tip_idx:
+            self.c.delete("tip")
+            self.tip_idx = idx
+            if idx is not None:
+                self.app.show_tip(self.c, e.x, e.y, idx)
+
+    def on_wheel(self, e):
+        if self.app.scope is None:
+            return
+        if getattr(e, "num", 0) == 4:
+            d = 120
+        elif getattr(e, "num", 0) == 5:
+            d = -120
+        else:
+            d = e.delta
+        n = d / 120.0 if abs(d) >= 120 else d / 6.0
+        self.zoom_at(e.x, 1.2 ** n)
+
+    def on_double(self, e):
+        app = self.app
+        if app.scope is not None and app.primary is not None:
+            app.center_strip(app.scope.features[app.primary], fit=True)
+
+
+# --------------------------------------------------------------------- GUI
+
+FILTER_DEFAULT = "Default (no gene/source)"
+FILTER_ALL = "All (no source)"
+COLUMNS = (("id", "ID", 120, "w"), ("rec", "Record", 90, "w"),
+           ("type", "Type", 65, "w"), ("start", "Start", 80, "e"),
+           ("end", "End", 80, "e"), ("len", "Len", 60, "e"),
+           ("strand", "Strand", 50, "center"), ("ann", "Annotation", 300, "w"))
+NUMERIC = ("start", "end", "len")
+STRIP_H = 175
+MAX_SEQ_FEATURES = 500
+
+
 class App:
     def __init__(self, root, path=None):
         self.root = root
         root.title("tkgenome")
-        root.geometry("1250x780")
+        root.geometry("1380x860")
         self.records = []
-        self.rec = None
-        self.visible = []       # indices into rec.features currently shown
-        self.sel = None
+        self.scope = None
+        self.vis_feats = []
+        self.sel = []
+        self.primary = None
+        self.mark = None
         self.sort_col = None
         self.sort_rev = False
-        self.geom = None
-        self._redraw_id = None
+        self.circle = None
+        self.strip = None
+        self._syncing = False
+        self._loading = False
+        self._search_job = None
 
-        bar = ttk.Frame(root, padding=4)
-        bar.pack(side="top", fill="x")
-        ttk.Button(bar, text="Open…", command=self.open_dialog).grid(
-            row=0, column=0, padx=(0, 8))
-        self.rec_var = tk.StringVar()
-        self.rec_box = ttk.Combobox(bar, textvariable=self.rec_var,
-                                    state="readonly", width=40)
-        self.rec_box.grid(row=0, column=1, padx=(0, 8))
-        self.rec_box.bind("<<ComboboxSelected>>", self.pick_record)
-        self.rec_box.grid_remove()
-        ttk.Label(bar, text="Show:").grid(row=0, column=2)
-        self.type_var = tk.StringVar(value=FILTER_DEFAULT)
-        self.type_box = ttk.Combobox(bar, textvariable=self.type_var,
-                                     state="readonly", width=24,
-                                     values=[FILTER_DEFAULT, FILTER_ALL])
-        self.type_box.grid(row=0, column=3, padx=(4, 12))
-        self.type_box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
-        ttk.Label(bar, text="Search:").grid(row=0, column=4)
-        self.search_var = tk.StringVar()
-        ttk.Entry(bar, textvariable=self.search_var, width=24).grid(
-            row=0, column=5, padx=4)
-        self.search_var.trace_add("write", lambda *a: self.refresh())
+        self.show_plus = tk.BooleanVar(value=True)
+        self.show_minus = tk.BooleanVar(value=True)
+        self.show_gc = tk.BooleanVar(value=True)
+        self.show_skew = tk.BooleanVar(value=True)
+        self.show_legend = tk.BooleanVar(value=True)
+        self.color_var = tk.StringVar(value=list(MODES)[0])
+
+        self.build_menu()
+        self.build_toolbars()
 
         self.status = tk.StringVar(value="Open a GenBank file (Ctrl-O).")
         ttk.Label(root, textvariable=self.status, anchor="w", padding=(6, 3),
@@ -273,40 +1315,176 @@ class App:
                             sashwidth=6)
         pw.pack(fill="both", expand=True)
 
-        self.canvas = tk.Canvas(pw, bg="white", highlightthickness=0,
-                                width=640, height=640)
-        pw.add(self.canvas, minsize=300, stretch="always")
-        self.canvas.bind("<Configure>", self.on_configure)
-        self.canvas.bind("<Button-1>", self.on_canvas_click)
+        lp = tk.PanedWindow(pw, orient="vertical", sashrelief="raised",
+                            sashwidth=6)
+        pw.add(lp, minsize=320, stretch="always")
+        self.canvas = tk.Canvas(lp, bg="white", highlightthickness=0,
+                                width=640, height=560)
+        lp.add(self.canvas, minsize=220, stretch="always")
+        self.strip_c = tk.Canvas(lp, bg="#fafafa", highlightthickness=0,
+                                 width=640, height=STRIP_H)
+        lp.add(self.strip_c, minsize=110, height=STRIP_H, stretch="never")
 
-        right = ttk.Frame(pw)
-        pw.add(right, minsize=300, stretch="always")
-        self.tree = ttk.Treeview(right, columns=[c[0] for c in COLUMNS],
-                                 show="headings", selectmode="browse")
-        for key, title, width, anchor in COLUMNS:
-            self.tree.heading(key, text=title,
-                              command=lambda k=key: self.sort_by(k))
-            self.tree.column(key, width=width, anchor=anchor,
-                             stretch=(key == "ann"))
-        ys = ttk.Scrollbar(right, orient="vertical", command=self.tree.yview)
-        xs = ttk.Scrollbar(right, orient="horizontal",
-                           command=self.tree.xview)
-        self.tree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        ys.grid(row=0, column=1, sticky="ns")
-        xs.grid(row=1, column=0, sticky="ew")
-        right.rowconfigure(0, weight=1)
-        right.columnconfigure(0, weight=1)
-        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        rp = tk.PanedWindow(pw, orient="vertical", sashrelief="raised",
+                            sashwidth=6)
+        pw.add(rp, minsize=320, stretch="always")
+        rp.add(self.build_table(rp), minsize=120, stretch="always")
+        rp.add(self.build_seqpane(rp), minsize=100, height=250,
+               stretch="never")
 
+        self.circle = CircleView(self, self.canvas)
+        self.strip = StripView(self, self.strip_c)
+        self.update_ring_states()
+        self.circle.draw()
+
+        if path:
+            root.after(50, lambda: self.load(path))
+
+    # -- widgets -----------------------------------------------------
+
+    def build_menu(self):
+        root = self.root
+        mb = tk.Menu(root)
+        fm = tk.Menu(mb, tearoff=0)
+        fm.add_command(label="Open...", accelerator="Ctrl-O",
+                       command=self.open_dialog)
+        fm.add_separator()
+        fm.add_command(label="Export map as SVG...", command=self.export_svg)
+        fm.add_command(label="Export map as PostScript...",
+                       command=self.export_ps)
+        fm.add_command(label="Export table as TSV...", command=self.export_tsv)
+        fm.add_separator()
+        fm.add_command(label="Quit", accelerator="Ctrl-Q",
+                       command=root.destroy)
+        mb.add_cascade(label="File", menu=fm)
+        vm = tk.Menu(mb, tearoff=0)
+        vm.add_command(label="Zoom in", command=lambda: self.circle.zoom_by(1.4))
+        vm.add_command(label="Zoom out",
+                       command=lambda: self.circle.zoom_by(1 / 1.4))
+        vm.add_command(label="Reset view", command=self.reset_views)
+        vm.add_separator()
+        vm.add_command(label="Rotate selection to top",
+                       command=self.rotate_to_top)
+        vm.add_command(label="Reset rotation", command=self.reset_rotation)
+        mb.add_cascade(label="View", menu=vm)
+        root.config(menu=mb)
         for seq in ("<Control-o>", "<Command-o>"):
             root.bind(seq, lambda e: self.open_dialog())
         for seq in ("<Control-q>", "<Command-q>"):
             root.bind(seq, lambda e: root.destroy())
 
-        self.draw()
-        if path:
-            root.after(50, lambda: self.load(path))
+    def build_toolbars(self):
+        bar = ttk.Frame(self.root, padding=(4, 4, 4, 0))
+        bar.pack(side="top", fill="x")
+        ttk.Button(bar, text="Open...", command=self.open_dialog).grid(
+            row=0, column=0, padx=(0, 8))
+        self.rec_var = tk.StringVar()
+        self.rec_box = ttk.Combobox(bar, textvariable=self.rec_var,
+                                    state="readonly", width=34)
+        self.rec_box.grid(row=0, column=1, padx=(0, 8))
+        self.rec_box.bind("<<ComboboxSelected>>", self.pick_record)
+        self.rec_box.grid_remove()
+        ttk.Label(bar, text="Show:").grid(row=0, column=2)
+        self.type_var = tk.StringVar(value=FILTER_DEFAULT)
+        self.type_box = ttk.Combobox(bar, textvariable=self.type_var,
+                                     state="readonly", width=22,
+                                     values=[FILTER_DEFAULT, FILTER_ALL])
+        self.type_box.grid(row=0, column=3, padx=(4, 10))
+        self.type_box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        ttk.Label(bar, text="Filter:").grid(row=0, column=4)
+        self.search_var = tk.StringVar()
+        ttk.Entry(bar, textvariable=self.search_var, width=26).grid(
+            row=0, column=5, padx=4)
+        self.search_var.trace_add("write", self.search_changed)
+        ttk.Button(bar, text="?", width=2, command=self.show_help).grid(
+            row=0, column=6, padx=(0, 10))
+        ttk.Label(bar, text="Go to:").grid(row=0, column=7)
+        self.goto_var = tk.StringVar()
+        ent = ttk.Entry(bar, textvariable=self.goto_var, width=18)
+        ent.grid(row=0, column=8, padx=4)
+        ent.bind("<Return>", lambda e: self.goto())
+        ttk.Button(bar, text="Go", width=3, command=self.goto).grid(
+            row=0, column=9)
+
+        bar2 = ttk.Frame(self.root, padding=(4, 0, 4, 4))
+        bar2.pack(side="top", fill="x")
+        for text, var in (("+ strand", self.show_plus),
+                          ("- strand", self.show_minus)):
+            ttk.Checkbutton(bar2, text=text, variable=var,
+                            command=self.redraw_map).pack(side="left", padx=3)
+        self.cb_gc = ttk.Checkbutton(bar2, text="GC", variable=self.show_gc,
+                                     command=self.redraw_map)
+        self.cb_gc.pack(side="left", padx=3)
+        self.cb_skew = ttk.Checkbutton(bar2, text="GC skew",
+                                       variable=self.show_skew,
+                                       command=self.redraw_map)
+        self.cb_skew.pack(side="left", padx=3)
+        ttk.Checkbutton(bar2, text="Legend", variable=self.show_legend,
+                        command=self.redraw_map).pack(side="left", padx=3)
+        ttk.Label(bar2, text="Colour by:").pack(side="left", padx=(14, 3))
+        cb = ttk.Combobox(bar2, textvariable=self.color_var, state="readonly",
+                          width=22, values=list(MODES))
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>", lambda e: self.redraw_all())
+        ttk.Button(bar2, text="Reset view", command=self.reset_views).pack(
+            side="left", padx=(14, 3))
+        ttk.Button(bar2, text="Rotate to top", command=self.rotate_to_top).pack(
+            side="left", padx=3)
+
+    def build_table(self, parent):
+        fr = ttk.Frame(parent)
+        self.tree = ttk.Treeview(fr, columns=[c[0] for c in COLUMNS],
+                                 show="headings", selectmode="extended")
+        for key, title, width, anchor in COLUMNS:
+            self.tree.heading(key, text=title,
+                              command=lambda k=key: self.sort_by(k))
+            self.tree.column(key, width=width, anchor=anchor,
+                             stretch=(key == "ann"))
+        ys = ttk.Scrollbar(fr, orient="vertical", command=self.tree.yview)
+        xs = ttk.Scrollbar(fr, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        ys.grid(row=0, column=1, sticky="ns")
+        xs.grid(row=1, column=0, sticky="ew")
+        fr.rowconfigure(0, weight=1)
+        fr.columnconfigure(0, weight=1)
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        return fr
+
+    def build_seqpane(self, parent):
+        fr = ttk.Frame(parent)
+        head = ttk.Frame(fr)
+        head.pack(fill="x")
+        self.seq_label = ttk.Label(head, text="Selected feature(s)")
+        self.seq_label.pack(side="left", padx=4)
+        ttk.Button(head, text="Save...", command=self.save_seq).pack(
+            side="right", padx=2)
+        ttk.Button(head, text="Copy", command=self.copy_seq).pack(
+            side="right", padx=2)
+        self.nb = ttk.Notebook(fr)
+        self.nb.pack(fill="both", expand=True)
+        self.texts = []
+        for name in ("Nucleotide", "Protein", "Qualifiers"):
+            tab = ttk.Frame(self.nb)
+            t = tk.Text(tab, wrap="char", height=8, state="disabled",
+                        font=("Courier", 10))
+            sb = ttk.Scrollbar(tab, command=t.yview)
+            t.configure(yscrollcommand=sb.set)
+            t.grid(row=0, column=0, sticky="nsew")
+            sb.grid(row=0, column=1, sticky="ns")
+            tab.rowconfigure(0, weight=1)
+            tab.columnconfigure(0, weight=1)
+            self.nb.add(tab, text=name)
+            self.texts.append(t)
+        return fr
+
+    # -- colour / legend ---------------------------------------------
+
+    def feat_color(self, f):
+        return MODES[self.color_var.get()][0](f)
+
+    def legend_entries(self):
+        return MODES[self.color_var.get()][1]
 
     # -- loading -----------------------------------------------------
 
@@ -320,7 +1498,7 @@ class App:
 
     def load(self, path):
         try:
-            records = parse_genbank(path)
+            records = [r for r in parse_genbank(path) if r.length]
         except Exception as e:
             messagebox.showerror("tkgenome", "Could not read %s:\n%s"
                                  % (path, e))
@@ -330,41 +1508,72 @@ class App:
                                  "No GenBank records found in " + path)
             return
         self.records = records
-        names = ["%s  %s (%s bp)" % (r.name, r.definition[:50],
-                                     format(r.length, ","))
-                 for r in records]
-        self.rec_box.configure(values=names)
-        self.rec_var.set(names[0])
         if len(records) > 1:
+            names = ["All records (%d)" % len(records)] + [
+                "%s  %s (%s bp)" % (r.name, r.definition[:40],
+                                    format(r.length, ",")) for r in records]
+            self.rec_box.configure(values=names)
+            self.rec_var.set(names[0])
             self.rec_box.grid()
         else:
             self.rec_box.grid_remove()
-        self.root.title("tkgenome - " + path.rsplit("/", 1)[-1])
-        self.set_record(records[0])
+        self.root.title("tkgenome - " + path.replace("\\", "/").rsplit("/", 1)[-1])
+        self.set_scope(records)
 
     def pick_record(self, _e=None):
         i = self.rec_box.current()
-        if i >= 0:
-            self.set_record(self.records[i])
+        if i == 0:
+            self.set_scope(self.records)
+        elif i > 0:
+            self.set_scope([self.records[i - 1]])
 
-    def set_record(self, rec):
-        self.rec = rec
-        self.sel = None
-        types = sorted({f.type for f in rec.features if f.type != "source"})
+    def set_scope(self, recs):
+        self.scope = Scope(recs)
+        self.sel, self.primary, self.mark = [], None, None
+        self.circle.reset_all()
+        self.strip.reset()
+        types = sorted({f.type for f in self.scope.features
+                        if f.type != "source"})
+        self._loading = True
+        if self._search_job:
+            self.root.after_cancel(self._search_job)
+            self._search_job = None
         self.type_box.configure(values=[FILTER_DEFAULT, FILTER_ALL] + types)
         self.type_var.set(FILTER_DEFAULT)
         self.search_var.set("")
+        self._loading = False
+        cols = [c[0] for c in COLUMNS]
+        if len(recs) == 1:
+            cols.remove("rec")
+        self.tree.configure(displaycolumns=cols)
+        self.update_ring_states()
         self.refresh()
 
-    # -- table -------------------------------------------------------
+    def update_ring_states(self):
+        has = bool(self.scope and self.scope.seq)
+        for cb in (self.cb_gc, self.cb_skew):
+            cb.configure(state="normal" if has else "disabled")
+
+    # -- table / filtering -------------------------------------------
+
+    def search_changed(self, *_):
+        if self._loading:
+            return
+        if self._search_job:
+            self.root.after_cancel(self._search_job)
+        self._search_job = self.root.after(250, self.refresh)
+
+    def show_help(self):
+        messagebox.showinfo("Filter syntax", __doc__.split(
+            "Filter box syntax", 1)[1].split("\n", 1)[1].strip("\n"))
 
     def refresh(self):
-        rec = self.rec
-        if rec is None:
+        self._search_job = None
+        sc = self.scope
+        if sc is None:
             return
         want = self.type_var.get()
-        q = self.search_var.get().strip().lower()
-        feats = rec.features
+        feats = sc.features
 
         def keep(f):
             if f.type == "source":
@@ -375,192 +1584,365 @@ class App:
                 return True
             return f.type == want
 
-        idx = [i for i, f in enumerate(feats) if keep(f)]
-        if want == FILTER_DEFAULT and not idx:
-            idx = [i for i, f in enumerate(feats) if f.type != "source"]
+        vis = [f for f in feats if keep(f)]
+        if want == FILTER_DEFAULT and not vis:
+            vis = [f for f in feats if f.type != "source"]
+        q = self.search_var.get().strip()
         if q:
-            idx = [i for i in idx
-                   if q in feats[i].id.lower() or q in feats[i].ann.lower()
-                   or q in feats[i].type.lower()]
-        self.visible = idx
+            pred = parse_query(q)
+            vis = [f for f in vis if pred(f)]
+        self.vis_feats = vis
+        self.assign_lanes()
 
-        self.tree.delete(*self.tree.get_children())
-        for i in idx:
-            f = feats[i]
-            self.tree.insert("", "end", iid=str(i), values=(
-                f.id, f.type, f.start, f.end,
-                "+" if f.strand > 0 else "-", f.ann))
-        if self.sort_col:
-            self.sort_by(self.sort_col, toggle=False)
-        if self.sel is not None and str(self.sel) in self.tree.get_children():
-            self.tree.selection_set(str(self.sel))
-        self.draw()
+        multi = len(sc.records) > 1
+        self._syncing = True
+        try:
+            self.tree.delete(*self.tree.get_children())
+            for f in vis:
+                self.tree.insert("", "end", iid=str(f.idx), values=(
+                    f.id, f.rec.name if multi else "", f.type, f.start, f.end,
+                    f.length, "+" if f.strand > 0 else "-", f.ann))
+            if self.sort_col:
+                self.sort_by(self.sort_col, toggle=False)
+            have = set(self.tree.get_children())
+            self.sel = [i for i in self.sel if str(i) in have]
+            if self.primary not in self.sel:
+                self.primary = self.sel[-1] if self.sel else None
+            self.tree.selection_set([str(i) for i in self.sel])
+        finally:
+            self._syncing = False
+        self.update_status()
+        self.update_seq()
+        self.redraw_all()
+
+    def assign_lanes(self):
+        L = self.scope.length
+        for strand in (1, -1):
+            ends = [-1e18, -1e18, -1e18]
+            fs = sorted((f for f in self.vis_feats if f.strand == strand),
+                        key=lambda f: f.gmin)
+            for f in fs:
+                if len(f.gsegs) > 1 and f.gmax - f.gmin > L / 2:
+                    f.lane = 0
+                    continue
+                lane = 2
+                for i in range(3):
+                    if ends[i] < f.gmin:
+                        lane = i
+                        break
+                ends[lane] = max(ends[lane], f.gmax)
+                f.lane = lane
 
     def sort_by(self, col, toggle=True):
         if toggle:
             self.sort_rev = (self.sort_col == col) and not self.sort_rev
         self.sort_col = col
-        numeric = col in ("start", "end")
         items = []
         for iid in self.tree.get_children():
             v = self.tree.set(iid, col)
-            items.append((int(v) if numeric else v.lower(), int(iid), iid))
+            items.append((int(v) if col in NUMERIC else v.lower(),
+                          int(iid), iid))
         items.sort(reverse=self.sort_rev)
         for pos, (_, _, iid) in enumerate(items):
             self.tree.move(iid, "", pos)
 
-    def on_tree_select(self, _e=None):
-        sel = self.tree.selection()
-        if sel:
-            self.select(int(sel[0]))
-
     # -- selection ---------------------------------------------------
 
-    def select(self, idx, see=False):
-        self.sel = idx
-        if see:
-            iid = str(idx)
-            if self.tree.selection() != (iid,):
-                self.tree.selection_set(iid)
-            self.tree.see(iid)
-        self.draw_highlight()
-        f = self.rec.features[idx]
+    def on_tree_select(self, _e=None):
+        if self._syncing:
+            return
+        ids = [int(i) for i in self.tree.selection()]
+        foc = self.tree.focus()
+        prim = int(foc) if foc and int(foc) in ids else \
+            (ids[-1] if ids else None)
+        self.set_selection(ids, prim, source="tree")
+
+    def click_feature(self, idx, add, source="circle"):
+        if idx is None:
+            if not add:
+                self.set_selection([], None, source)
+            return
+        if add:
+            ids = list(self.sel)
+            if idx in ids:
+                ids.remove(idx)
+            else:
+                ids.append(idx)
+            prim = idx if idx in ids else (ids[-1] if ids else None)
+        else:
+            ids, prim = [idx], idx
+        self.set_selection(ids, prim, source)
+
+    def set_selection(self, ids, primary, source="app"):
+        self.sel, self.primary = list(ids), primary
+        if source != "tree":
+            self._syncing = True
+            try:
+                self.tree.selection_set([str(i) for i in ids
+                                         if self.tree.exists(str(i))])
+                if primary is not None and self.tree.exists(str(primary)):
+                    self.tree.focus(str(primary))
+                    self.tree.see(str(primary))
+            finally:
+                self._syncing = False
+        self.circle.draw_highlight()
+        if primary is not None and source != "strip":
+            self.center_strip(self.scope.features[primary])
+        else:
+            self.strip.schedule()
+        self.update_status()
+        self.update_seq()
+
+    def center_strip(self, f, fit=False):
+        s, e = f.gsegs[0]
+        if len(f.gsegs) > 1 and f.gmax - f.gmin <= self.scope.length / 2:
+            s, e = f.gmin, f.gmax
+        ext = e - s + 1
+        cur = self.strip.w1 - self.strip.w0
+        wd = max(ext * 1.6, 500.0) if fit else max(cur, ext * 1.6)
+        mid = (s + e) / 2.0
+        self.strip.set_window(mid - wd / 2, mid + wd / 2)
+
+    def update_status(self):
+        sc = self.scope
+        if sc is None:
+            return
+        if self.primary is None:
+            self.status.set("%d features shown   (%s)" % (
+                len(self.vis_feats), fmt_bp(sc.length)))
+            return
+        f = sc.features[self.primary]
         q = f.qual
-        bits = ["%s %s" % (f.type, f.id), f.loc[:160]]
+        bits = ["%s %s" % (f.type, f.id), f.loc[:160], fmt_bp(f.length)]
         if q.get("gene"):
             bits.append("gene " + q["gene"])
         if f.ann:
             bits.append(f.ann)
-        if q.get("translation"):
-            bits.append("%d aa" % len(q["translation"]))
+        if len(self.sel) > 1:
+            bits.append("%d selected" % len(self.sel))
         self.status.set("  |  ".join(bits))
 
-    # -- circular map ------------------------------------------------
+    def show_tip(self, c, x, y, idx):
+        f = self.scope.features[idx]
+        head = "%s  [%s]  %d..%d (%s)  %s" % (
+            f.id, f.type, f.start, f.end, "+" if f.strand > 0 else "-",
+            fmt_bp(f.length))
+        lines = [head]
+        if len(self.scope.records) > 1:
+            lines.append("record " + f.rec.name)
+        if f.qual.get("gene"):
+            lines.append("gene " + f.qual["gene"])
+        if f.ann:
+            lines.append(f.ann[:100])
+        t = c.create_text(x + 14, y + 14, text="\n".join(lines), anchor="nw",
+                          font=("Helvetica", 9), fill="#000000", tags="tip")
+        bx = c.bbox(t)
+        dx = min(0, c.winfo_width() - bx[2] - 4)
+        dy = min(0, c.winfo_height() - bx[3] - 4)
+        if dx or dy:
+            c.move(t, dx, dy)
+            bx = c.bbox(t)
+        r = c.create_rectangle(bx[0] - 3, bx[1] - 2, bx[2] + 3, bx[3] + 2,
+                               fill="#ffffe0", outline="#888888", tags="tip")
+        c.tag_lower(r, t)
 
-    def on_configure(self, _e):
-        if self._redraw_id:
-            self.root.after_cancel(self._redraw_id)
-        self._redraw_id = self.root.after(40, self.draw)
+    # -- redraw ------------------------------------------------------
 
-    def pos_xy(self, pos, r):
-        a = 2 * math.pi * pos / self.rec.length
-        cx, cy = self.geom[0], self.geom[1]
-        return cx + r * math.sin(a), cy - r * math.cos(a)
+    def redraw_map(self):
+        self.circle.schedule()
 
-    def draw(self):
-        self._redraw_id = None
-        c = self.canvas
-        c.delete("all")
-        w, h = c.winfo_width(), c.winfo_height()
-        rec = self.rec
-        if rec is None or not rec.length:
-            c.create_text(w / 2, h / 2, text="Open a GenBank file (Ctrl-O)",
-                          fill="#888888", font=("Helvetica", 14))
-            self.geom = None
+    def redraw_all(self):
+        self.circle.schedule()
+        self.strip.schedule()
+
+    def reset_views(self):
+        self.circle.reset_view()
+        self.strip.reset()
+
+    def rotate_to_top(self):
+        sc = self.scope
+        if sc is None:
             return
-        L = rec.length
-        cx, cy = w / 2, h / 2
-        r0 = max(60, min(w, h) / 2 - 62)
-        lw = max(4, min(14, r0 * 0.05))
-        off = lw * 0.6 + 1
-        self.geom = (cx, cy, r0, lw, off)
+        if self.primary is not None:
+            s, e = sc.features[self.primary].gsegs[0]
+            pos = (s + e) / 2.0
+        elif self.mark is not None:
+            pos = self.mark
+        else:
+            return
+        self.circle.rot = pos % sc.length
+        self.circle.schedule()
 
-        c.create_oval(cx - r0, cy - r0, cx + r0, cy + r0,
-                      outline="#999999", width=1)
+    def reset_rotation(self):
+        self.circle.rot = 0.0
+        self.circle.schedule()
 
-        # ticks
-        raw = L / 12.0
-        mag = 10 ** math.floor(math.log10(raw))
-        step = next(m * mag for m in (1, 2, 5, 10) if m * mag >= raw)
-        pos = 0
-        while pos < L - step * 0.35:
-            x1, y1 = self.pos_xy(pos, r0 + off + lw / 2 + 2)
-            x2, y2 = self.pos_xy(pos, r0 + off + lw / 2 + 9)
-            x3, y3 = self.pos_xy(pos, r0 + off + lw / 2 + 24)
-            c.create_line(x1, y1, x2, y2, fill="#555555")
-            if pos == 0:
-                lab = "0"
-            elif step >= 1e6:
-                lab = "%g Mb" % (pos / 1e6)
-            elif step >= 1e3:
-                lab = "%g kb" % (pos / 1e3)
+    # -- go to -------------------------------------------------------
+
+    def goto(self):
+        sc = self.scope
+        t = self.goto_var.get().strip()
+        if sc is None or not t:
+            return
+        num = r"(\d+(?:\.\d+)?)\s*([kKmM]?)"
+        m = re.fullmatch(num + r"(?:\s*(?:\.\.|-|:)\s*" + num + ")?",
+                         t.replace(",", ""))
+        if m:
+            def val(a, u):
+                return float(a) * {"": 1, "k": 1e3, "m": 1e6}[u.lower()]
+            a = val(m.group(1), m.group(2))
+            b = val(m.group(3), m.group(4)) if m.group(3) else None
+            self.mark = min(max(a, 0), sc.length)
+            if b is None:
+                cur = self.strip.w1 - self.strip.w0
+                self.strip.set_window(a - cur / 2, a + cur / 2)
             else:
-                lab = str(int(pos))
-            c.create_text(x3, y3, text=lab, fill="#555555",
-                          font=("Helvetica", 9))
-            pos += step
-
-        # features
-        k = 360.0 / L
-        for i in self.visible:
-            f = self.rec.features[i]
-            r = r0 + off if f.strand > 0 else r0 - off
-            col = feat_color(f)
-            for s, e in f.segs:
-                ext = max(MIN_DEG, min(359.9, (e - s + 1) * k))
-                c.create_arc(cx - r, cy - r, cx + r, cy + r,
-                             start=90 - (s - 1) * k, extent=-ext,
-                             style="arc", outline=col, width=lw)
-
-        # centre text
-        title = rec.organism or rec.definition or rec.name
-        c.create_text(cx, cy - 34, text=title, width=r0 * 1.3, justify="center",
-                      font=("Helvetica", 13, "bold"), fill="#222222")
-        c.create_text(cx, cy + 4, justify="center", fill="#555555",
-                      font=("Helvetica", 10),
-                      text="%s bp\n%d features shown\nouter: + strand   "
-                           "inner: - strand"
-                           % (format(L, ","), len(self.visible)))
-        self.draw_highlight()
-
-    def draw_highlight(self):
-        c = self.canvas
-        c.delete("hl")
-        if self.geom is None or self.sel is None:
+                pad = max(100.0, abs(b - a) * 0.1)
+                self.strip.set_window(min(a, b) - pad, max(a, b) + pad)
+            self.circle.schedule()
+            self.strip.schedule()
+            self.status.set("position %s" % format(int(a), ","))
             return
-        cx, cy, r0, lw, off = self.geom
-        f = self.rec.features[self.sel]
-        k = 360.0 / self.rec.length
-        r = r0 + off if f.strand > 0 else r0 - off
-        for s, e in f.segs:
-            ext = max(MIN_DEG * 2, min(359.9, (e - s + 1) * k))
-            c.create_arc(cx - r, cy - r, cx + r, cy + r,
-                         start=90 - (s - 1) * k, extent=-ext, style="arc",
-                         outline=COL_HL, width=lw + 5, tags="hl")
-        # radial marker so even a tiny gene is easy to find
-        mid = (f.segs[0][0] + f.segs[0][1]) / 2.0
-        x1, y1 = self.pos_xy(mid, r0 - off - lw)
-        x2, y2 = self.pos_xy(mid, r0 + off + lw)
-        c.create_line(x1, y1, x2, y2, fill=COL_HL, width=1, tags="hl")
-        c.create_text(cx, cy + 62, width=r0 * 1.3, justify="center",
-                      fill=COL_HL, font=("Helvetica", 11, "bold"), tags="hl",
-                      text="%s\n%d..%d (%s)" % (f.id, f.start, f.end,
-                                                 "+" if f.strand > 0 else "-"))
-
-    def on_canvas_click(self, e):
-        if self.geom is None:
-            return
-        cx, cy, r0, lw, off = self.geom
-        dx, dy = e.x - cx, e.y - cy
-        d = math.hypot(dx, dy)
-        if abs(d - r0) > off + lw + 3:
-            return
-        L = self.rec.length
-        pos = (math.atan2(dx, -dy) % (2 * math.pi)) / (2 * math.pi) * L
-        tol = 2.5 * L / (2 * math.pi * r0)      # ~2.5 px in bp
-        strand = 1 if d >= r0 else -1
-        best, best_d = None, None
-        for i in self.visible:
-            f = self.rec.features[i]
-            if f.strand != strand:
+        low = t.lower()
+        hit = None
+        for f in sc.features:
+            if f.type == "source":
                 continue
-            for s, en in f.segs:
-                if s - 1 - tol <= pos <= en + tol:
-                    dist = abs(pos - (s + en) / 2.0)
-                    if best is None or dist < best_d:
-                        best, best_d = i, dist
-        if best is not None:
-            self.select(best, see=True)
+            if low in (f.id.lower(), qget(f, "gene").lower(),
+                       qget(f, "locus_tag").lower(),
+                       qget(f, "old_locus_tag").lower()):
+                hit = f
+                break
+        if hit is None:
+            for f in sc.features:
+                if f.type != "source" and low in f.hay:
+                    hit = f
+                    break
+        if hit is None:
+            self.status.set("Not found: " + t)
+            return
+        if hit not in self.vis_feats:
+            self.type_var.set(FILTER_ALL)
+            self.search_var.set("")
+            self.refresh()
+        self.set_selection([hit.idx], hit.idx)
+        self.center_strip(hit, fit=True)
+
+    # -- sequence pane -----------------------------------------------
+
+    def seq_texts(self):
+        sc = self.scope
+        feats = [sc.features[i] for i in self.sel[:MAX_SEQ_FEATURES]] \
+            if sc else []
+        nt, prot = [], []
+        for f in feats:
+            head = "%s %s %s:%d..%d(%s)" % (f.id, f.type, f.rec.name, f.start,
+                                            f.end, "+" if f.strand > 0 else "-")
+            s = nt_of(f)
+            nt.append(">%s %s\n%s" % (head, f.ann, wrap(s.upper()))
+                      if s else ">%s\n(no sequence in file)" % head)
+            pr = protein_of(f)
+            if pr:
+                aa, computed = pr
+                prot.append(">%s %s [%d aa]%s\n%s" % (
+                    f.id, f.ann, len(aa), " (computed)" if computed else "",
+                    wrap(aa)))
+        qual = ""
+        if feats:
+            f = sc.features[self.primary] if self.primary is not None \
+                else feats[-1]
+            qual = "%s  %s\n\n" % (f.type, f.loc)
+            for name, val in f.quals:
+                qual += textwrap.fill(
+                    "/%s=%s" % (name, val) if val else "/" + name, 90,
+                    subsequent_indent="    ") + "\n"
+        note = ("\n(showing first %d of %d)" % (MAX_SEQ_FEATURES, len(self.sel))
+                if len(self.sel) > MAX_SEQ_FEATURES else "")
+        return (("\n".join(nt) + note if nt else
+                 "Select a feature to see its sequence."),
+                ("\n".join(prot) + note if prot else
+                 "No protein-coding feature selected."),
+                qual or "Select a feature to see its qualifiers.")
+
+    def update_seq(self):
+        for t, s in zip(self.texts, self.seq_texts()):
+            t.configure(state="normal")
+            t.delete("1.0", "end")
+            t.insert("1.0", s)
+            t.configure(state="disabled")
+        n = len(self.sel)
+        self.seq_label.configure(
+            text="%d feature%s selected" % (n, "" if n == 1 else "s"))
+
+    def current_seq_text(self):
+        t = self.texts[self.nb.index(self.nb.select())]
+        return t.get("1.0", "end").rstrip("\n")
+
+    def copy_seq(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.current_seq_text())
+
+    def save_seq(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".fasta", title="Save sequence",
+            filetypes=[("FASTA", "*.fasta *.fa"), ("Text", "*.txt"),
+                       ("All files", "*")])
+        if path:
+            self.write(path, self.current_seq_text() + "\n")
+
+    # -- exports -----------------------------------------------------
+
+    def write(self, path, text):
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError as e:
+            messagebox.showerror("tkgenome", "Could not write %s:\n%s"
+                                 % (path, e))
+
+    def export_svg(self):
+        if self.scope is None:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".svg", title="Export map as SVG",
+            filetypes=[("SVG", "*.svg")])
+        if not path:
+            return
+        p = SVGPainter(1000, 1000)
+        g = Geo(self.scope, 500, 500, 380, self.circle.rot)
+        render_circle(p, self, g)
+        render_highlight(p, self, g)
+        if self.show_legend.get():
+            render_legend(p, self, 14, 20)
+        self.write(path, p.svg())
+
+    def export_ps(self):
+        if self.scope is None:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".ps", title="Export map as PostScript",
+            filetypes=[("PostScript", "*.ps")])
+        if path:
+            try:
+                self.canvas.postscript(file=path, colormode="color")
+            except tk.TclError as e:
+                messagebox.showerror("tkgenome", str(e))
+
+    def export_tsv(self):
+        if self.scope is None:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".tsv", title="Export table as TSV",
+            filetypes=[("TSV", "*.tsv"), ("All files", "*")])
+        if not path:
+            return
+        rows = ["record\tid\ttype\tstart\tend\tstrand\tlength\tannotation"]
+        for iid in self.tree.get_children():
+            f = self.scope.features[int(iid)]
+            rows.append("\t".join(str(x) for x in (
+                f.rec.name, f.id, f.type, f.start, f.end,
+                "+" if f.strand > 0 else "-", f.length, f.ann)))
+        self.write(path, "\n".join(rows) + "\n")
 
 
 def main():
