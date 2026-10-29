@@ -1,0 +1,573 @@
+#!/usr/bin/env python3
+"""tkgenome - GenBank viewer for bacterial genomes, in Python + Tk.
+
+Standard library only.  Opens a GenBank flat file (plain or gzip-compressed)
+and shows two linked panels:
+
+  * a circular genome map, position 0 at the top, running clockwise, with
+    forward-strand features on the outer ring and reverse-strand features on
+    the inner ring;
+  * a scrollable feature table (id, type, start, end, strand, annotation).
+
+Click a row in the table, or a feature on the map, to highlight it in both.
+
+Usage:  tkgenome [file.gb | file.gbk.gz]
+
+Keys:
+  Ctrl-O / Cmd-O   open a file
+  Ctrl-Q / Cmd-Q   quit
+  Click a column heading to sort the table.
+"""
+
+import gzip
+import math
+import re
+import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+# ---------------------------------------------------------------- parsing
+
+SEG_RE = re.compile(r"(\d+)(?:(?:\.\.|\^|\.)[<>]?(\d+))?")
+REMOTE_RE = re.compile(r"[A-Za-z_][\w.]*:")
+
+
+class Feature:
+    __slots__ = ("type", "loc", "segs", "strand", "start", "end", "qual",
+                 "id", "ann")
+
+
+class Record:
+    def __init__(self):
+        self.name = ""
+        self.definition = ""
+        self.organism = ""
+        self.length = 0
+        self.seqlen = 0
+        self.features = []
+
+    def finish(self):
+        if not self.length:
+            self.length = self.seqlen
+        if not self.length and self.features:
+            self.length = max(e for f in self.features for _, e in f.segs)
+        counts = {}
+        for f in self.features:
+            f.start, f.end = span(f.segs, self.length)
+            q = f.qual
+            n = counts[f.type] = counts.get(f.type, 0) + 1
+            f.id = (q.get("locus_tag") or q.get("gene") or q.get("protein_id")
+                    or q.get("old_locus_tag") or "%s_%d" % (f.type, n))
+            f.ann = (q.get("product") or q.get("note") or q.get("function")
+                     or q.get("gene") or "")
+
+
+def span(segs, length):
+    """Display start/end of a (possibly joined, possibly origin-spanning)
+    location.  The widest circular gap is where the feature is *not*, so a
+    feature crossing the origin comes out with start > end."""
+    ss = sorted(segs)
+    lo = ss[0][0]
+    hi = max(e for _, e in ss)
+    if len(ss) == 1 or not length:
+        return lo, hi
+    best, best_i, maxend = lo + length - hi, -1, ss[0][1]
+    for i in range(len(ss) - 1):
+        maxend = max(maxend, ss[i][1])
+        gap = ss[i + 1][0] - maxend
+        if gap > best:
+            best, best_i, best_end = gap, i, maxend
+    if best_i < 0:
+        return lo, hi
+    return ss[best_i + 1][0], best_end
+
+
+def parse_location(loc):
+    s = REMOTE_RE.sub("", loc)
+    segs = []
+    for a, b in SEG_RE.findall(s):
+        a = int(a)
+        b = int(b) if b else a
+        segs.append((min(a, b), max(a, b)))
+    strand = -1 if "complement" in s else 1
+    return segs, strand
+
+
+def make_feature(lines):
+    f = Feature()
+    f.type = lines[0][5:21].strip()
+    loc = lines[0][21:].strip()
+    quals = []
+    for line in lines[1:]:
+        t = line[21:].strip() if line.startswith(" " * 21) else line.strip()
+        if t.startswith("/"):
+            name, _, val = t[1:].partition("=")
+            quals.append([name, [val]])
+        elif quals:
+            quals[-1][1].append(t)
+        else:
+            loc += t
+    f.loc = loc
+    f.segs, f.strand = parse_location(loc)
+    if not f.segs:
+        return None
+    f.qual = {}
+    for name, parts in quals:
+        val = ("" if name == "translation" else " ").join(parts).strip()
+        if len(val) >= 2 and val[0] == val[-1] == '"':
+            val = val[1:-1].replace('""', '"')
+        f.qual.setdefault(name, val)
+    return f
+
+
+def open_text(path):
+    with open(path, "rb") as fh:
+        magic = fh.read(2)
+    if magic == b"\x1f\x8b":
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return open(path, "r", encoding="utf-8", errors="replace")
+
+
+def parse_genbank(path):
+    records = []
+    rec = None
+    mode = None
+    feat = []
+
+    def flush():
+        nonlocal feat
+        if feat and rec is not None:
+            f = make_feature(feat)
+            if f:
+                rec.features.append(f)
+        feat = []
+
+    def end_record():
+        nonlocal rec
+        flush()
+        if rec is not None:
+            rec.finish()
+            records.append(rec)
+        rec = None
+
+    with open_text(path) as fh:
+        for line in fh:
+            line = line.rstrip("\r\n")
+            if line[:1] not in (" ", ""):
+                kw, _, rest = line.partition(" ")
+                rest = rest.strip()
+                if kw == "LOCUS":
+                    end_record()
+                    rec = Record()
+                    parts = rest.split()
+                    rec.name = parts[0] if parts else ""
+                    m = re.search(r"(\d+)\s+(?:bp|aa)\b", rest)
+                    if m:
+                        rec.length = int(m.group(1))
+                    mode = "head"
+                elif rec is None:
+                    continue
+                elif kw.startswith("//"):
+                    end_record()
+                    mode = None
+                elif kw == "FEATURES":
+                    mode = "feat"
+                elif kw == "ORIGIN":
+                    flush()
+                    mode = "seq"
+                elif kw == "DEFINITION":
+                    rec.definition = rest
+                    mode = "def"
+                else:
+                    flush()
+                    mode = "other"
+            elif rec is None:
+                continue
+            elif mode == "feat":
+                if line[5:6].strip():
+                    flush()
+                    feat = [line]
+                elif feat:
+                    feat.append(line)
+            elif mode == "seq":
+                rec.seqlen += sum(c.isalpha() for c in line)
+            elif mode == "def":
+                rec.definition += " " + line.strip()
+            elif mode == "other":
+                t = line.strip()
+                if t.startswith("ORGANISM") and not rec.organism:
+                    rec.organism = t[8:].strip()
+    end_record()
+    return records
+
+
+# ------------------------------------------------------------------- GUI
+
+COL_TYPE = {
+    "CDS": ("#2f6fd0", "#e8892b"),     # (+ strand, - strand)
+    "tRNA": ("#2e9e48", "#2e9e48"),
+    "rRNA": ("#a4239a", "#a4239a"),
+    "tmRNA": ("#2aa6a6", "#2aa6a6"),
+    "ncRNA": ("#7a56c8", "#7a56c8"),
+    "gene": ("#8aa6d6", "#e6b98a"),
+}
+COL_OTHER = "#777777"
+COL_HL = "#ff1f1f"
+MIN_DEG = 0.35
+FILTER_DEFAULT = "Default (no gene/source)"
+FILTER_ALL = "All (no source)"
+COLUMNS = (("id", "ID", 120, "w"), ("type", "Type", 70, "w"),
+           ("start", "Start", 85, "e"), ("end", "End", 85, "e"),
+           ("strand", "Strand", 55, "center"), ("ann", "Annotation", 320, "w"))
+
+
+def feat_color(f):
+    c = COL_TYPE.get(f.type)
+    if c is None:
+        return COL_OTHER
+    return c[0] if f.strand > 0 else c[1]
+
+
+class App:
+    def __init__(self, root, path=None):
+        self.root = root
+        root.title("tkgenome")
+        root.geometry("1250x780")
+        self.records = []
+        self.rec = None
+        self.visible = []       # indices into rec.features currently shown
+        self.sel = None
+        self.sort_col = None
+        self.sort_rev = False
+        self.geom = None
+        self._redraw_id = None
+
+        bar = ttk.Frame(root, padding=4)
+        bar.pack(side="top", fill="x")
+        ttk.Button(bar, text="Open…", command=self.open_dialog).grid(
+            row=0, column=0, padx=(0, 8))
+        self.rec_var = tk.StringVar()
+        self.rec_box = ttk.Combobox(bar, textvariable=self.rec_var,
+                                    state="readonly", width=40)
+        self.rec_box.grid(row=0, column=1, padx=(0, 8))
+        self.rec_box.bind("<<ComboboxSelected>>", self.pick_record)
+        self.rec_box.grid_remove()
+        ttk.Label(bar, text="Show:").grid(row=0, column=2)
+        self.type_var = tk.StringVar(value=FILTER_DEFAULT)
+        self.type_box = ttk.Combobox(bar, textvariable=self.type_var,
+                                     state="readonly", width=24,
+                                     values=[FILTER_DEFAULT, FILTER_ALL])
+        self.type_box.grid(row=0, column=3, padx=(4, 12))
+        self.type_box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        ttk.Label(bar, text="Search:").grid(row=0, column=4)
+        self.search_var = tk.StringVar()
+        ttk.Entry(bar, textvariable=self.search_var, width=24).grid(
+            row=0, column=5, padx=4)
+        self.search_var.trace_add("write", lambda *a: self.refresh())
+
+        self.status = tk.StringVar(value="Open a GenBank file (Ctrl-O).")
+        ttk.Label(root, textvariable=self.status, anchor="w", padding=(6, 3),
+                  relief="sunken").pack(side="bottom", fill="x")
+
+        pw = tk.PanedWindow(root, orient="horizontal", sashrelief="raised",
+                            sashwidth=6)
+        pw.pack(fill="both", expand=True)
+
+        self.canvas = tk.Canvas(pw, bg="white", highlightthickness=0,
+                                width=640, height=640)
+        pw.add(self.canvas, minsize=300, stretch="always")
+        self.canvas.bind("<Configure>", self.on_configure)
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
+
+        right = ttk.Frame(pw)
+        pw.add(right, minsize=300, stretch="always")
+        self.tree = ttk.Treeview(right, columns=[c[0] for c in COLUMNS],
+                                 show="headings", selectmode="browse")
+        for key, title, width, anchor in COLUMNS:
+            self.tree.heading(key, text=title,
+                              command=lambda k=key: self.sort_by(k))
+            self.tree.column(key, width=width, anchor=anchor,
+                             stretch=(key == "ann"))
+        ys = ttk.Scrollbar(right, orient="vertical", command=self.tree.yview)
+        xs = ttk.Scrollbar(right, orient="horizontal",
+                           command=self.tree.xview)
+        self.tree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        ys.grid(row=0, column=1, sticky="ns")
+        xs.grid(row=1, column=0, sticky="ew")
+        right.rowconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+
+        for seq in ("<Control-o>", "<Command-o>"):
+            root.bind(seq, lambda e: self.open_dialog())
+        for seq in ("<Control-q>", "<Command-q>"):
+            root.bind(seq, lambda e: root.destroy())
+
+        self.draw()
+        if path:
+            root.after(50, lambda: self.load(path))
+
+    # -- loading -----------------------------------------------------
+
+    def open_dialog(self):
+        path = filedialog.askopenfilename(
+            title="Open GenBank file",
+            filetypes=[("GenBank", "*.gb *.gbk *.gbff *.genbank *.gz"),
+                       ("All files", "*")])
+        if path:
+            self.load(path)
+
+    def load(self, path):
+        try:
+            records = parse_genbank(path)
+        except Exception as e:
+            messagebox.showerror("tkgenome", "Could not read %s:\n%s"
+                                 % (path, e))
+            return
+        if not records:
+            messagebox.showerror("tkgenome",
+                                 "No GenBank records found in " + path)
+            return
+        self.records = records
+        names = ["%s  %s (%s bp)" % (r.name, r.definition[:50],
+                                     format(r.length, ","))
+                 for r in records]
+        self.rec_box.configure(values=names)
+        self.rec_var.set(names[0])
+        if len(records) > 1:
+            self.rec_box.grid()
+        else:
+            self.rec_box.grid_remove()
+        self.root.title("tkgenome - " + path.rsplit("/", 1)[-1])
+        self.set_record(records[0])
+
+    def pick_record(self, _e=None):
+        i = self.rec_box.current()
+        if i >= 0:
+            self.set_record(self.records[i])
+
+    def set_record(self, rec):
+        self.rec = rec
+        self.sel = None
+        types = sorted({f.type for f in rec.features if f.type != "source"})
+        self.type_box.configure(values=[FILTER_DEFAULT, FILTER_ALL] + types)
+        self.type_var.set(FILTER_DEFAULT)
+        self.search_var.set("")
+        self.refresh()
+
+    # -- table -------------------------------------------------------
+
+    def refresh(self):
+        rec = self.rec
+        if rec is None:
+            return
+        want = self.type_var.get()
+        q = self.search_var.get().strip().lower()
+        feats = rec.features
+
+        def keep(f):
+            if f.type == "source":
+                return False
+            if want == FILTER_DEFAULT:
+                return f.type != "gene"
+            if want == FILTER_ALL:
+                return True
+            return f.type == want
+
+        idx = [i for i, f in enumerate(feats) if keep(f)]
+        if want == FILTER_DEFAULT and not idx:
+            idx = [i for i, f in enumerate(feats) if f.type != "source"]
+        if q:
+            idx = [i for i in idx
+                   if q in feats[i].id.lower() or q in feats[i].ann.lower()
+                   or q in feats[i].type.lower()]
+        self.visible = idx
+
+        self.tree.delete(*self.tree.get_children())
+        for i in idx:
+            f = feats[i]
+            self.tree.insert("", "end", iid=str(i), values=(
+                f.id, f.type, f.start, f.end,
+                "+" if f.strand > 0 else "-", f.ann))
+        if self.sort_col:
+            self.sort_by(self.sort_col, toggle=False)
+        if self.sel is not None and str(self.sel) in self.tree.get_children():
+            self.tree.selection_set(str(self.sel))
+        self.draw()
+
+    def sort_by(self, col, toggle=True):
+        if toggle:
+            self.sort_rev = (self.sort_col == col) and not self.sort_rev
+        self.sort_col = col
+        numeric = col in ("start", "end")
+        items = []
+        for iid in self.tree.get_children():
+            v = self.tree.set(iid, col)
+            items.append((int(v) if numeric else v.lower(), int(iid), iid))
+        items.sort(reverse=self.sort_rev)
+        for pos, (_, _, iid) in enumerate(items):
+            self.tree.move(iid, "", pos)
+
+    def on_tree_select(self, _e=None):
+        sel = self.tree.selection()
+        if sel:
+            self.select(int(sel[0]))
+
+    # -- selection ---------------------------------------------------
+
+    def select(self, idx, see=False):
+        self.sel = idx
+        if see:
+            iid = str(idx)
+            if self.tree.selection() != (iid,):
+                self.tree.selection_set(iid)
+            self.tree.see(iid)
+        self.draw_highlight()
+        f = self.rec.features[idx]
+        q = f.qual
+        bits = ["%s %s" % (f.type, f.id), f.loc[:160]]
+        if q.get("gene"):
+            bits.append("gene " + q["gene"])
+        if f.ann:
+            bits.append(f.ann)
+        if q.get("translation"):
+            bits.append("%d aa" % len(q["translation"]))
+        self.status.set("  |  ".join(bits))
+
+    # -- circular map ------------------------------------------------
+
+    def on_configure(self, _e):
+        if self._redraw_id:
+            self.root.after_cancel(self._redraw_id)
+        self._redraw_id = self.root.after(40, self.draw)
+
+    def pos_xy(self, pos, r):
+        a = 2 * math.pi * pos / self.rec.length
+        cx, cy = self.geom[0], self.geom[1]
+        return cx + r * math.sin(a), cy - r * math.cos(a)
+
+    def draw(self):
+        self._redraw_id = None
+        c = self.canvas
+        c.delete("all")
+        w, h = c.winfo_width(), c.winfo_height()
+        rec = self.rec
+        if rec is None or not rec.length:
+            c.create_text(w / 2, h / 2, text="Open a GenBank file (Ctrl-O)",
+                          fill="#888888", font=("Helvetica", 14))
+            self.geom = None
+            return
+        L = rec.length
+        cx, cy = w / 2, h / 2
+        r0 = max(60, min(w, h) / 2 - 62)
+        lw = max(4, min(14, r0 * 0.05))
+        off = lw * 0.6 + 1
+        self.geom = (cx, cy, r0, lw, off)
+
+        c.create_oval(cx - r0, cy - r0, cx + r0, cy + r0,
+                      outline="#999999", width=1)
+
+        # ticks
+        raw = L / 12.0
+        mag = 10 ** math.floor(math.log10(raw))
+        step = next(m * mag for m in (1, 2, 5, 10) if m * mag >= raw)
+        pos = 0
+        while pos < L - step * 0.35:
+            x1, y1 = self.pos_xy(pos, r0 + off + lw / 2 + 2)
+            x2, y2 = self.pos_xy(pos, r0 + off + lw / 2 + 9)
+            x3, y3 = self.pos_xy(pos, r0 + off + lw / 2 + 24)
+            c.create_line(x1, y1, x2, y2, fill="#555555")
+            if pos == 0:
+                lab = "0"
+            elif step >= 1e6:
+                lab = "%g Mb" % (pos / 1e6)
+            elif step >= 1e3:
+                lab = "%g kb" % (pos / 1e3)
+            else:
+                lab = str(int(pos))
+            c.create_text(x3, y3, text=lab, fill="#555555",
+                          font=("Helvetica", 9))
+            pos += step
+
+        # features
+        k = 360.0 / L
+        for i in self.visible:
+            f = self.rec.features[i]
+            r = r0 + off if f.strand > 0 else r0 - off
+            col = feat_color(f)
+            for s, e in f.segs:
+                ext = max(MIN_DEG, min(359.9, (e - s + 1) * k))
+                c.create_arc(cx - r, cy - r, cx + r, cy + r,
+                             start=90 - (s - 1) * k, extent=-ext,
+                             style="arc", outline=col, width=lw)
+
+        # centre text
+        title = rec.organism or rec.definition or rec.name
+        c.create_text(cx, cy - 34, text=title, width=r0 * 1.3, justify="center",
+                      font=("Helvetica", 13, "bold"), fill="#222222")
+        c.create_text(cx, cy + 4, justify="center", fill="#555555",
+                      font=("Helvetica", 10),
+                      text="%s bp\n%d features shown\nouter: + strand   "
+                           "inner: - strand"
+                           % (format(L, ","), len(self.visible)))
+        self.draw_highlight()
+
+    def draw_highlight(self):
+        c = self.canvas
+        c.delete("hl")
+        if self.geom is None or self.sel is None:
+            return
+        cx, cy, r0, lw, off = self.geom
+        f = self.rec.features[self.sel]
+        k = 360.0 / self.rec.length
+        r = r0 + off if f.strand > 0 else r0 - off
+        for s, e in f.segs:
+            ext = max(MIN_DEG * 2, min(359.9, (e - s + 1) * k))
+            c.create_arc(cx - r, cy - r, cx + r, cy + r,
+                         start=90 - (s - 1) * k, extent=-ext, style="arc",
+                         outline=COL_HL, width=lw + 5, tags="hl")
+        # radial marker so even a tiny gene is easy to find
+        mid = (f.segs[0][0] + f.segs[0][1]) / 2.0
+        x1, y1 = self.pos_xy(mid, r0 - off - lw)
+        x2, y2 = self.pos_xy(mid, r0 + off + lw)
+        c.create_line(x1, y1, x2, y2, fill=COL_HL, width=1, tags="hl")
+        c.create_text(cx, cy + 62, width=r0 * 1.3, justify="center",
+                      fill=COL_HL, font=("Helvetica", 11, "bold"), tags="hl",
+                      text="%s\n%d..%d (%s)" % (f.id, f.start, f.end,
+                                                 "+" if f.strand > 0 else "-"))
+
+    def on_canvas_click(self, e):
+        if self.geom is None:
+            return
+        cx, cy, r0, lw, off = self.geom
+        dx, dy = e.x - cx, e.y - cy
+        d = math.hypot(dx, dy)
+        if abs(d - r0) > off + lw + 3:
+            return
+        L = self.rec.length
+        pos = (math.atan2(dx, -dy) % (2 * math.pi)) / (2 * math.pi) * L
+        tol = 2.5 * L / (2 * math.pi * r0)      # ~2.5 px in bp
+        strand = 1 if d >= r0 else -1
+        best, best_d = None, None
+        for i in self.visible:
+            f = self.rec.features[i]
+            if f.strand != strand:
+                continue
+            for s, en in f.segs:
+                if s - 1 - tol <= pos <= en + tol:
+                    dist = abs(pos - (s + en) / 2.0)
+                    if best is None or dist < best_d:
+                        best, best_d = i, dist
+        if best is not None:
+            self.select(best, see=True)
+
+
+def main():
+    root = tk.Tk()
+    App(root, sys.argv[1] if len(sys.argv) > 1 else None)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
