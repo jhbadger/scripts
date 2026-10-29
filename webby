@@ -984,7 +984,10 @@ ABOUT_HOME = """<html><head><title>webby</title></head><body>
 <li><a href="https://news.ycombinator.com/">Hacker News</a></li>
 <li><a href="https://text.npr.org/">NPR (text edition)</a></li>
 <li><a href="https://lite.cnn.com/">CNN Lite</a></li>
-<li><a href="https://example.com/">example.com</a></li>
+<li><a href="https://arstechnica.com/">Ars Technica</a></li>
+<li><a href="https://nature.com/">nature.com</a></li>
+<li><a href="https://science.org/">science.org</a></li>
+<li><a href="https://pubmed.ncbi.nlm.nih.gov/">PubMed</a></li>
 </ul>
 <p>Press <b>g</b> to enter a URL (or search words), <b>?</b> for help, <b>q</b> to quit.
 <a href="about:bookmarks">Bookmarks</a> | <a href="about:history">History</a></p>
