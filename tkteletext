@@ -1,0 +1,533 @@
+#!/usr/bin/env python3
+"""tkteletext - Viewdata/Teletext client for the CEEFAX service, in Python + Tk.
+
+Port of the Oberon ceefax example (itself modelled on MatrixBrandy's telstar
+client), standard library only.  Connects to the Matrix Network CEEFAX
+service (teletext.matrixnetwork.co.uk:48065) and draws its 40x24 Mode 7 pages
+in a window with large text, real block mosaics (contiguous and separated),
+flashing, concealed text, held graphics and double height.
+
+Usage:  tkteletext [host [port]]
+
+Keys:
+  0-9           type a page number (e.g. 101)
+  Up / Down     next / previous page (also PgUp / PgDn, + / -)
+  Enter or #    send '#' (Viewdata "send" key)
+  Ctrl-R        toggle reveal (concealed text)
+  Ctrl-L        redraw
+  Ctrl-D        disconnect      R  reconnect (when disconnected)
+  Ctrl-X, Ctrl-C, Esc   quit
+
+The window can be resized; the text scales with it.
+"""
+
+import queue
+import socket
+import sys
+import threading
+import tkinter as tk
+import tkinter.font as tkfont
+
+DEF_HOST = "teletext.matrixnetwork.co.uk"
+DEF_PORT = 48065
+W, H = 40, 24          # Mode 7 page size
+FLASH_MS = 600         # half-period of flashing text
+POLL_MS = 40
+ASPECT = 0.62          # cell width / height
+STATUS_ROWS = 2
+
+# Teletext colours: black, red, green, yellow, blue, magenta, cyan, white
+PAL = ("#000000", "#ff0000", "#00ff00", "#ffff00",
+       "#0000ff", "#ff00ff", "#00ffff", "#ffffff")
+
+MONO_FONTS = ("Menlo", "DejaVu Sans Mono", "Consolas", "Liberation Mono",
+              "Courier New", "Courier")
+TALL_FONTS = ("DIN Condensed", "Arial Narrow", "Avenir Next Condensed",
+              "PT Sans Narrow", "Liberation Sans Narrow",
+              "DejaVu Sans Condensed")
+
+# UK G0 character set (SAA5050) differences from ASCII
+G0 = {0x23: "£", 0x5B: "←", 0x5C: "½", 0x5D: "→", 0x5E: "↑", 0x5F: "#",
+      0x60: "─", 0x7B: "¼", 0x7C: "‖", 0x7D: "¾", 0x7E: "÷"}
+
+
+def sextant_of(c):
+    """Sextant pattern of a mosaic character code.
+    Bits: 0 TL, 1 TR, 2 ML, 3 MR, 4 BL, 5 BR."""
+    s = c % 32
+    if (c // 64) % 2 == 1:
+        s += 32
+    return s
+
+
+def stretch_sextant(s, bottom):
+    """Stretch one half of a mosaic to fill a double-height cell."""
+    r0, r1, r2 = s % 4, (s // 4) % 4, (s // 16) % 4
+    if bottom:
+        return r1 + r2 * 4 + r2 * 16
+    return r0 + r0 * 4 + r1 * 16
+
+
+class Page:
+    """40x24 page memory plus the Viewdata byte-stream interpreter."""
+
+    def __init__(self):
+        self.clear()
+        self.esc_pending = False
+        self.iac_skip = 0
+
+    def clear(self):
+        self.scr = [[32] * W for _ in range(H)]
+        self.cur_x = self.cur_y = 0
+
+    def put_code(self, code):
+        """Write one cell at the cursor and advance, wrapping like the BBC
+        Micro text window telstar uses."""
+        self.scr[self.cur_y][self.cur_x] = code
+        self.cur_x += 1
+        if self.cur_x >= W:
+            self.cur_x = 0
+            self.cur_y = (self.cur_y + 1) % H
+
+    def recv(self, b):
+        if self.iac_skip > 0:
+            self.iac_skip -= 1
+        elif b == 255:
+            self.iac_skip = 2                 # telnet IAC <cmd> <opt>
+        elif self.esc_pending:
+            self.esc_pending = False
+            self.put_code(b % 32)
+        elif b >= 128:
+            self.put_code(b - 128)            # 8-bit form of codes/chars
+        elif b >= 32:
+            self.put_code(b)
+        elif b == 27:
+            self.esc_pending = True
+        elif b == 8:
+            if self.cur_x > 0:
+                self.cur_x -= 1
+            else:
+                self.cur_x = W - 1
+                self.cur_y = (self.cur_y - 1) % H
+        elif b == 9:
+            self.cur_x += 1
+            if self.cur_x >= W:
+                self.cur_x = 0
+                self.cur_y = (self.cur_y + 1) % H
+        elif b == 10:
+            self.cur_y = (self.cur_y + 1) % H
+        elif b == 11:
+            self.cur_y = (self.cur_y - 1) % H
+        elif b == 12:
+            self.clear()
+        elif b == 13:
+            self.cur_x = 0
+        elif b == 30:
+            self.cur_x = self.cur_y = 0
+        # 17/20 (cursor on/off) and anything else are ignored
+
+    def current_page(self):
+        """Page number shown in the header ("  P101"), or -1."""
+        row = self.scr[0]
+        if row[2] != ord("P"):
+            return -1
+        n = 0
+        for i in range(3, 6):
+            if not ord("0") <= row[i] <= ord("9"):
+                return -1
+            n = n * 10 + row[i] - ord("0")
+        return n
+
+
+class Teletext:
+    def __init__(self, root, host, port):
+        self.root = root
+        self.host, self.port = host, port
+        self.page = Page()
+        self.reveal = False
+        self.flash_phase = True
+        self.has_flash = False
+        self.sock = None
+        self.connected = False
+        self.status = ""
+        self.inbox = queue.Queue()
+        self.conn_id = 0             # ignore data from superseded connections
+        self.dirty = True
+        self.resize_job = None
+
+        root.title("Teletext")
+        root.configure(bg="black")
+        sh = root.winfo_screenheight()
+        self.ch = max(16, min(34, (sh - 140) // (H + STATUS_ROWS)))
+        self.cw = round(self.ch * ASPECT)
+        self.canvas = tk.Canvas(root, bg="black", highlightthickness=0,
+                                width=W * self.cw,
+                                height=(H + STATUS_ROWS) * self.ch)
+        self.canvas.pack(fill="both", expand=True)
+        families = set(tkfont.families(root))
+        self.mono = next((f for f in MONO_FONTS if f in families), "Courier")
+        self.tall = next((f for f in TALL_FONTS if f in families), self.mono)
+        self.make_fonts()
+
+        root.bind("<Key>", self.on_key)
+        self.canvas.bind("<Configure>", self.on_configure)
+        root.protocol("WM_DELETE_WINDOW", self.quit)
+
+        self.connect()
+        self.root.after(POLL_MS, self.poll)
+        self.root.after(FLASH_MS, self.flash)
+
+    # ── Fonts and geometry ──
+
+    def make_fonts(self):
+        """Largest monospace font whose glyphs fit a cell, plus the largest
+        condensed font whose typical letters fit a cell, for double height
+        (Tk can't stretch glyphs, so a tall narrow face stands in)."""
+        cw, ch = self.cw, self.ch
+        size = ch
+        while size > 6:
+            f = tkfont.Font(root=self.root, family=self.mono, size=-size,
+                            weight="bold")
+            if (f.measure("M") <= cw + 1
+                    and f.metrics("linespace") <= ch * 1.15):
+                break
+            size -= 1
+        self.font = f
+        for size in range(int(ch * 2.1), ch - 1, -1):
+            t = tkfont.Font(root=self.root, family=self.tall, size=-size,
+                            weight="bold")
+            if t.measure("O") <= cw * 1.1:
+                break
+        self.tall_font = t
+
+    def on_configure(self, ev):
+        if self.resize_job:
+            self.root.after_cancel(self.resize_job)
+        self.resize_job = self.root.after(100, self.resize, ev.width,
+                                          ev.height)
+
+    def resize(self, w, h):
+        self.resize_job = None
+        ch = max(10, min(h // (H + STATUS_ROWS), int(w / W / ASPECT)))
+        if ch != self.ch:
+            self.ch, self.cw = ch, round(ch * ASPECT)
+            self.make_fonts()
+        self.redraw()
+
+    # ── Connection ──
+
+    def set_status(self, s):
+        self.status = s
+        self.dirty = True
+
+    def connect(self):
+        self.page = Page()
+        self.conn_id += 1
+        self.set_status("Connecting...")
+        self.redraw()
+        threading.Thread(target=self.reader, args=(self.conn_id,),
+                         daemon=True).start()
+
+    def reader(self, cid):
+        """Connect and pump received bytes into the inbox queue."""
+        try:
+            sock = socket.create_connection((self.host, self.port), timeout=15)
+            sock.settimeout(None)
+            # Telnet IAC DO SUPPRESS-GO-AHEAD, as telstar sends
+            sock.sendall(bytes((255, 253, 3)))
+        except OSError as e:
+            self.inbox.put((cid, "failed", str(e)))
+            return
+        self.inbox.put((cid, "connected", sock))
+        while True:
+            try:
+                data = sock.recv(4096)
+            except OSError:
+                data = b""
+            if not data:
+                self.inbox.put((cid, "closed", None))
+                return
+            self.inbox.put((cid, "data", data))
+
+    def poll(self):
+        try:
+            while True:
+                cid, kind, val = self.inbox.get_nowait()
+                if cid != self.conn_id:
+                    if kind == "connected":
+                        val.close()
+                    continue
+                if kind == "connected":
+                    self.sock, self.connected = val, True
+                    self.set_status(f"CEEFAX  {self.host}")
+                elif kind == "failed":
+                    self.set_status("Connection failed - R retry, ^X quit")
+                elif kind == "closed":
+                    self.disconnect()
+                elif kind == "data":
+                    for b in val:
+                        self.page.recv(b)
+                    self.dirty = True
+        except queue.Empty:
+            pass
+        if self.dirty:
+            self.redraw()
+        self.root.after(POLL_MS, self.poll)
+
+    def disconnect(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        self.sock, self.connected = None, False
+        self.conn_id += 1
+        self.set_status("Disconnected - R reconnect, ^X quit")
+
+    def send(self, data):
+        if not self.connected:
+            return
+        try:
+            self.sock.sendall(bytes(data))
+        except OSError:
+            self.disconnect()
+
+    def send_page(self, n):
+        if n > 899:
+            n = 100
+        elif n < 100:
+            n = 899
+        self.send(str(n).encode())
+
+    # ── Input ──
+
+    def on_key(self, ev):
+        ks, char = ev.keysym, ev.char
+        ctrl = ev.state & 0x4
+        if (ctrl and ks.lower() in ("x", "c")) or ks == "Escape":
+            self.quit()
+        elif ctrl and ks.lower() == "r":
+            self.reveal = not self.reveal
+            self.dirty = True
+        elif ctrl and ks.lower() == "l":
+            self.redraw()
+        elif ctrl and ks.lower() == "d":
+            self.disconnect()
+        elif not self.connected:
+            if ks.lower() == "r":
+                self.connect()
+            elif ks.lower() == "q":
+                self.quit()
+        elif ks in ("Up", "Prior") or char == "+":
+            n = self.page.current_page()
+            if n >= 0:
+                self.send_page(n + 1)
+        elif ks in ("Down", "Next") or char == "-":
+            n = self.page.current_page()
+            if n >= 0:
+                self.send_page(n - 1)
+        elif ks in ("Return", "KP_Enter") or char == "#":
+            self.send([0x5F])                   # Viewdata '#'
+        elif ks == "BackSpace":
+            self.send([8])
+        elif char and 32 <= ord(char) <= 126 and not ctrl:
+            self.send([ord(char)])
+        return "break"
+
+    def flash(self):
+        self.flash_phase = not self.flash_phase
+        if self.has_flash:
+            self.dirty = True
+        self.root.after(FLASH_MS, self.flash)
+
+    def quit(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        self.root.destroy()
+
+    # ── Teletext row decoder ──
+
+    def render_row(self, y, src, part, bgs, fgs):
+        """Decode page row src onto screen row y with the Level 1 serial
+        attribute rules.  part 0 is a normal row (and the top halves of
+        double-height characters); part 1 is the bottom halves of row src
+        drawn on the row below it.  Background colours go to bgs and
+        glyphs/mosaics to fgs.  Returns True if src uses double height."""
+        row = self.page.scr[src]
+        fg, bg, held = 7, 0, 32
+        gfx = flash = conceal = dbl = hold = has_dbl = sep = False
+        last_row = y == H - 1
+        for x in range(W):
+            c = row[x]
+            # "Set-at" attributes take effect on the control cell itself
+            if c < 32:
+                if c == 0x09:
+                    flash = False
+                elif c == 0x0C:
+                    if dbl:
+                        held = 32
+                    dbl = False
+                elif c == 0x18:
+                    conceal = True
+                elif c == 0x19:
+                    sep = False
+                elif c == 0x1A:
+                    sep = True
+                elif c == 0x1C:
+                    bg = 0
+                elif c == 0x1D:
+                    bg = fg
+                elif c == 0x1E:
+                    hold = True
+            if flash:
+                self.has_flash = True
+            hide = (flash and not self.flash_phase) or (conceal
+                                                        and not self.reveal)
+            bgs.append((x, y, bg))
+
+            if part == 1 and not dbl:
+                pass
+            elif c < 32:
+                # Control cells show as space, or the held mosaic
+                if hold and gfx and held != 32 and not hide:
+                    s = sextant_of(held)
+                    if dbl:
+                        s = stretch_sextant(s, part == 1)
+                    fgs.append(("mosaic", x, y, s, fg, sep))
+            elif gfx and (c // 32) % 2 == 1:
+                held = c
+                if not hide:
+                    s = sextant_of(c)
+                    if dbl:
+                        s = stretch_sextant(s, part == 1)
+                    fgs.append(("mosaic", x, y, s, fg, sep))
+            elif not hide and part == 0:
+                fgs.append(("text", x, y, c, fg, dbl and not last_row))
+
+            # "Set-after" attributes take effect from the next cell
+            if c < 32:
+                if 0x01 <= c <= 0x07:
+                    fg, conceal = c, False
+                    if gfx:
+                        held = 32
+                    gfx = False
+                elif 0x11 <= c <= 0x17:
+                    fg, conceal = c - 0x10, False
+                    if not gfx:
+                        held = 32
+                    gfx = True
+                elif c == 0x08:
+                    flash = True
+                elif c == 0x0D:
+                    if not dbl:
+                        held = 32
+                    dbl = has_dbl = True
+                elif c == 0x1F:
+                    hold = False
+        return has_dbl
+
+    # ── Drawing ──
+
+    def draw_mosaic(self, x, y, s, color, separated):
+        cw, ch = self.cw, self.ch
+        x0, y0 = x * cw, y * ch
+        xs = (x0, x0 + cw // 2, x0 + cw)
+        # Mosaic rows split the cell 3:4:3, as on the SAA5050
+        ys = (y0, y0 + round(ch * 0.3), y0 + round(ch * 0.7), y0 + ch)
+        gap = max(1, round(cw / 6)) if separated else 0
+        rect = self.canvas.create_rectangle
+        for bit in range(6):
+            if s & (1 << bit):
+                col, r = bit % 2, bit // 2
+                rect(xs[col] + gap, ys[r], xs[col + 1], ys[r + 1] - gap,
+                     fill=color, outline="")
+
+    def draw_text(self, x, y, c, color, tall):
+        cw, ch = self.cw, self.ch
+        x0, y0 = x * cw, y * ch
+        if c == 0x7F:                  # solid block
+            self.canvas.create_rectangle(x0, y0, x0 + cw,
+                                         y0 + (2 * ch if tall else ch),
+                                         fill=color, outline="")
+            return
+        char = G0.get(c, chr(c))
+        if char == " ":
+            return
+        if tall:
+            self.canvas.create_text(x0 + cw / 2, y0 + ch, text=char,
+                                    fill=color,
+                                    font=self.tall_font)
+        else:
+            self.canvas.create_text(x0 + cw / 2, y0 + ch / 2, text=char,
+                                    fill=color, font=self.font)
+
+    def redraw(self):
+        c = self.canvas
+        c.delete("all")
+        self.has_flash = False
+        bgs, fgs = [], []
+        r = 0
+        while r < H:
+            if self.render_row(r, r, 0, bgs, fgs) and r < H - 1:
+                self.render_row(r + 1, r, 1, bgs, fgs)
+                r += 2
+            else:
+                r += 1
+        cw, ch = self.cw, self.ch
+        c.create_rectangle(0, 0, W * cw, H * ch, fill=PAL[0], outline="")
+        # Backgrounds first, merged into runs, so double-height glyphs
+        # drawn from the upper row aren't covered by the lower row's cells
+        i = 0
+        while i < len(bgs):
+            x, y, bg = bgs[i]
+            j = i + 1
+            while j < len(bgs) and bgs[j][1] == y and bgs[j][2] == bg:
+                j += 1
+            if bg:
+                c.create_rectangle(x * cw, y * ch, (x + j - i) * cw,
+                                   (y + 1) * ch, fill=PAL[bg], outline="")
+            i = j
+        for op in fgs:
+            if op[0] == "mosaic":
+                _, x, y, s, fg, sep = op
+                self.draw_mosaic(x, y, s, PAL[fg], sep)
+            else:
+                _, x, y, code, fg, tall = op
+                self.draw_text(x, y, code, PAL[fg], tall)
+        self.draw_status()
+        self.dirty = False
+
+    def draw_status(self):
+        c, cw, ch = self.canvas, self.cw, self.ch
+        y = H * ch
+        bg = PAL[4] if self.connected else PAL[1]
+        c.create_rectangle(0, y, W * cw, y + ch, fill=bg, outline="")
+        c.create_text(cw, y + ch / 2, text=self.status, anchor="w",
+                      fill=PAL[7], font=self.font)
+        if self.reveal:
+            c.create_text((W - 1) * cw, y + ch / 2, text="REVEAL",
+                          anchor="e", fill=PAL[3], font=self.font)
+        c.create_text(W * cw / 2, y + ch * 1.5,
+                      text="Up/Dn page  ^R reveal  ^X quit",
+                      fill=PAL[6], font=self.font)
+
+
+def main(argv):
+    host, port = DEF_HOST, DEF_PORT
+    if len(argv) >= 2:
+        host = argv[1]
+    if len(argv) >= 3:
+        try:
+            port = int(argv[2])
+        except ValueError:
+            pass
+    root = tk.Tk()
+    Teletext(root, host, port)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main(sys.argv)
