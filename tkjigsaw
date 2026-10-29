@@ -6,8 +6,11 @@ Python + Tk port of the Oberon/Raylib jigsaw; standard library only.
 Usage: tkjigsaw <image.png|image.gif|image.ppm|image.jpg|image.pdf> [approx-pieces]
        tkjigsaw <savefile.sav>
 
-Drag pieces into the outlined grid; release near the correct slot to snap it.
-  R  reshuffle all pieces
+Pieces start out on a separate pieces page.  Drag a piece to the left or right
+edge of the window and hold it there to carry it over to the puzzle page (and
+back); release near the correct slot to snap it into the outlined grid.
+  Tab  switch between the puzzle and pieces pages (or click the top button)
+  R  reshuffle all unplaced pieces back onto the pieces page
   H  toggle the faint hint image
   S  save progress (to <image>.sav)
   Q / Escape  quit
@@ -19,6 +22,7 @@ magick/convert (ImageMagick).
 
 import base64
 import json
+import math
 import os
 import random
 import re
@@ -42,6 +46,13 @@ YELLOW = "#fdf900"
 BG_RGB = (130, 130, 130)
 GHOST_ALPHA = 0.18
 SHADOW_ALPHA = 80
+EDGE_ZONE = 40         # width of the page-flip strips at the window edges
+EDGE_FILL = "#959595"
+FLIP_DELAY = 350       # ms a dragged piece must rest in an edge strip
+BUTTON = "#5a5a5a"
+TOP_MARGIN = 40        # keeps the pieces page clear of the HUD
+
+PUZZLE, PIECES = 0, 1  # pages
 
 
 # ── Image loading ────────────────────────────────────────────────────────────
@@ -172,6 +183,9 @@ class Jigsaw:
         self.drag_off = (0.0, 0.0)
         self.save_msg_job = None
         self.resize_job = None
+        self.view = PIECES    # page currently shown
+        self.flip_job = None  # pending page flip while dragging in an edge
+        self.flip_zone = None # edge strip the dragged piece is resting in
 
         if state:
             self.restore(state)
@@ -197,6 +211,9 @@ class Jigsaw:
             root.bind(f"<KeyPress-{key}>", fn)
             root.bind(f"<KeyPress-{key.upper()}>", fn)
         root.bind("<Escape>", self.quit)
+        root.bind("<Tab>", self.toggle_view)
+        root.bind("<Shift-Tab>", self.toggle_view)
+        root.bind("<ISO_Left_Tab>", self.toggle_view)
 
     # ── Helpers ──
 
@@ -389,14 +406,39 @@ class Jigsaw:
     # ── Piece state ──
 
     def scatter(self, redraw=True):
+        """Reset the puzzle: every piece goes onto the pieces page, laid out
+        on a jittered grid (overlapping evenly when there isn't room)."""
         n = self.n_pieces
         self.draw_ord = list(range(n))
         random.shuffle(self.draw_ord)
         self.placed = [False] * n
-        self.piece_x = [float(random.randrange(max(1, self.scr_w - self.dpw)))
-                        for _ in range(n)]
-        self.piece_y = [float(random.randrange(max(1, self.scr_h - self.dph)))
-                        for _ in range(n)]
+        self.page = [PIECES] * n
+        self.piece_x = [0.0] * n
+        self.piece_y = [0.0] * n
+        pad = self.knob_pad
+        cell_w, cell_h = self.dpw + 2 * pad, self.dph + 2 * pad
+        ax0, ay0 = EDGE_ZONE + 8, TOP_MARGIN
+        aw = max(cell_w, self.scr_w - 2 * EDGE_ZONE - 16)
+        ah = max(cell_h, self.scr_h - TOP_MARGIN - 8)
+        max_cols, max_rows = max(1, aw // cell_w), max(1, ah // cell_h)
+        cols = min(max_cols, max(1, math.ceil(math.sqrt(n * aw / ah))))
+        rows = math.ceil(n / cols)
+        if rows > max_rows:   # won't fit: share the overlap out evenly
+            cols = max(1, math.ceil(math.sqrt(n * aw / ah)))
+            rows = math.ceil(n / cols)
+        sx, sy = aw / cols, ah / rows
+        jx = max(sx - cell_w, sx * 0.15) * 0.4
+        jy = max(sy - cell_h, sy * 0.15) * 0.4
+        cells = random.sample(range(cols * rows), n)
+        for p, cell in enumerate(cells):
+            cx = ax0 + (cell % cols + 0.5) * sx + random.uniform(-jx, jx)
+            cy = ay0 + (cell // cols + 0.5) * sy + random.uniform(-jy, jy)
+            # keep the whole piece, knobs included, inside the area
+            cx = min(max(cx, ax0 + cell_w / 2), ax0 + aw - cell_w / 2)
+            cy = min(max(cy, ay0 + cell_h / 2), ay0 + ah - cell_h / 2)
+            self.piece_x[p] = cx - self.dpw / 2
+            self.piece_y[p] = cy - self.dph / 2
+        self.view = PIECES
         self.dragging = None
         self.solved_count = 0
         self.won = False
@@ -423,9 +465,14 @@ class Jigsaw:
         c.coords(f"s{p}", x + off, y + off)
         c.coords(f"i{p}", x, y)
 
+    def visible(self, p):
+        if self.placed[p]:
+            return self.view == PUZZLE
+        return self.page[p] == self.view
+
     def restack(self):
         """Bottom to top: ghost, grid, placed pieces (natural order so knobs
-        overlap correctly), then free pieces back to front."""
+        overlap correctly), free pieces back to front, edge strips, HUD."""
         c = self.canvas
         for p in range(self.n_pieces):
             if self.placed[p]:
@@ -433,35 +480,61 @@ class Jigsaw:
         for p in self.draw_ord:
             if not self.placed[p]:
                 c.tag_raise(self.piece_tag(p))
+        c.tag_raise("edge")
+        if self.dragging is not None:
+            c.tag_raise(self.piece_tag(self.dragging))
         c.tag_raise("hud")
 
     def redraw(self):
         c = self.canvas
         c.delete("all")
-        dx, dy, dw, dh = self.disp_x, self.disp_y, self.disp_w, self.disp_h
-        if self.show_ghost:
-            if self.ghost_photo is None:
-                self.gen_ghost()
-            c.create_image(dx, dy, image=self.ghost_photo, anchor="nw",
-                           tags="ghost")
-        for i in range(self.n_cols + 1):
-            x = dx + i * self.dpw
-            c.create_line(x, dy, x, dy + dh, fill=GRID, tags="grid")
-        for i in range(self.n_rows + 1):
-            y = dy + i * self.dph
-            c.create_line(dx, y, dx + dw, y, fill=GRID, tags="grid")
-        c.create_rectangle(dx - 2, dy - 2, dx + dw + 2, dy + dh + 2,
-                           outline=FRAME, tags="grid")
+        if self.view == PUZZLE:
+            dx, dy, dw, dh = self.disp_x, self.disp_y, self.disp_w, self.disp_h
+            if self.show_ghost:
+                if self.ghost_photo is None:
+                    self.gen_ghost()
+                c.create_image(dx, dy, image=self.ghost_photo, anchor="nw",
+                               tags="ghost")
+            for i in range(self.n_cols + 1):
+                x = dx + i * self.dpw
+                c.create_line(x, dy, x, dy + dh, fill=GRID, tags="grid")
+            for i in range(self.n_rows + 1):
+                y = dy + i * self.dph
+                c.create_line(dx, y, dx + dw, y, fill=GRID, tags="grid")
+            c.create_rectangle(dx - 2, dy - 2, dx + dw + 2, dy + dh + 2,
+                               outline=FRAME, tags="grid")
+        elif not any(self.visible(p) for p in range(self.n_pieces)):
+            c.create_text(self.scr_w // 2, self.scr_h // 2, fill="#e6e6e6",
+                          font=("Helvetica", 20),
+                          text="No pieces left here — press Tab "
+                               "to go to the puzzle")
         for p in range(self.n_pieces):
+            if not self.visible(p):
+                continue
             img, shadow = self.photos[p]
             tag = self.piece_tag(p)
             if not self.placed[p]:
                 c.create_image(0, 0, image=shadow, anchor="nw",
                                tags=(tag, f"s{p}"))
             c.create_image(0, 0, image=img, anchor="nw", tags=(tag, f"i{p}"))
-            self.place_items(p)
+            self.place_items(p, lifted=p == self.dragging)
+        if self.dragging is not None:
+            self.draw_edges()
         self.draw_hud()
         self.restack()
+
+    def draw_edges(self):
+        """Page-flip strips shown down both sides while dragging."""
+        c = self.canvas
+        c.delete("edge")
+        label = ("to pieces" if self.view == PUZZLE else "to puzzle")
+        for zone, x0 in (("left", 0), ("right", self.scr_w - EDGE_ZONE)):
+            fill = "#b4b4b4" if zone == self.flip_zone else EDGE_FILL
+            c.create_rectangle(x0, 0, x0 + EDGE_ZONE, self.scr_h, fill=fill,
+                               outline="", tags=("edge", f"edge_{zone}"))
+            c.create_text(x0 + EDGE_ZONE / 2, self.scr_h / 2, text=label,
+                          angle=90 if zone == "left" else 270, fill="white",
+                          font=("Helvetica", 14, "bold"), tags="edge")
 
     def draw_hud(self):
         c = self.canvas
@@ -471,7 +544,21 @@ class Jigsaw:
                       text=f"Pieces: {self.solved_count} / {self.n_pieces}")
         c.create_text(self.scr_w - 10, 10, anchor="ne", fill="#e6e6e6",
                       font=("Helvetica", 14), tags="hud",
-                      text="R = reshuffle   H = hint   S = save")
+                      text="Tab = page   R = reshuffle   H = hint   S = save")
+        # Page switch button
+        if self.view == PUZZLE:
+            waiting = sum(1 for p in range(self.n_pieces)
+                          if not self.placed[p] and self.page[p] == PIECES)
+            label = f"Show pieces ({waiting})  [Tab]"
+        else:
+            label = "Show puzzle  [Tab]"
+        t = c.create_text(self.scr_w // 2, 18, text=label, fill="white",
+                          font=("Helvetica", 14, "bold"),
+                          tags=("hud", "pagebtn"))
+        x0, y0, x1, y1 = c.bbox(t)
+        b = c.create_rectangle(x0 - 12, y0 - 5, x1 + 12, y1 + 5, fill=BUTTON,
+                               outline=FRAME, tags=("hud", "pagebtn"))
+        c.tag_lower(b, t)
         if self.save_msg_job:
             c.create_text(self.scr_w // 2, self.scr_h - 26, fill=GREEN,
                           font=("Helvetica", 18, "bold"),
@@ -490,21 +577,35 @@ class Jigsaw:
     # ── Events ──
 
     def on_press(self, ev):
-        if self.won or self.dragging is not None:
+        if self.dragging is not None:
+            return
+        hits = self.canvas.find_overlapping(ev.x, ev.y, ev.x, ev.y)
+        if any("pagebtn" in self.canvas.gettags(i) for i in hits):
+            self.toggle_view()
+            return
+        if self.won:
             return
         for k in range(self.n_pieces - 1, -1, -1):
             p = self.draw_ord[k]
-            if self.placed[p]:
+            if self.placed[p] or self.page[p] != self.view:
                 continue
             px, py = self.piece_x[p], self.piece_y[p]
             if self.is_inside(p, ev.x - px, ev.y - py):
                 self.draw_ord.append(self.draw_ord.pop(k))
                 self.dragging = p
                 self.drag_off = (ev.x - px, ev.y - py)
-                self.canvas.tag_raise(self.piece_tag(p))
-                self.canvas.tag_raise("hud")
+                self.flip_zone = self.edge_zone(ev.x)
                 self.place_items(p, lifted=True)
+                self.draw_edges()
+                self.restack()
                 return
+
+    def edge_zone(self, x):
+        if x < EDGE_ZONE:
+            return "left"
+        if x >= self.scr_w - EDGE_ZONE:
+            return "right"
+        return None
 
     def on_motion(self, ev):
         p = self.dragging
@@ -513,14 +614,42 @@ class Jigsaw:
         self.piece_x[p] = ev.x - self.drag_off[0]
         self.piece_y[p] = ev.y - self.drag_off[1]
         self.place_items(p, lifted=True)
+        # Resting in an edge strip carries the piece to the other page.  The
+        # strip it arrived in has to be left before it can flip back again.
+        zone = self.edge_zone(ev.x)
+        if zone != self.flip_zone:
+            self.cancel_flip()
+            self.flip_zone = zone
+            if zone:
+                self.flip_job = self.root.after(FLIP_DELAY, self.flip_page)
+            self.draw_edges()
+            self.restack()
+
+    def cancel_flip(self):
+        if self.flip_job:
+            self.root.after_cancel(self.flip_job)
+            self.flip_job = None
+
+    def flip_page(self):
+        self.flip_job = None
+        p = self.dragging
+        if p is None:
+            return
+        self.view = PIECES if self.view == PUZZLE else PUZZLE
+        self.page[p] = self.view
+        self.redraw()
 
     def on_release(self, ev):
         p = self.dragging
         if p is None:
             return
         self.dragging = None
+        self.cancel_flip()
+        self.flip_zone = None
+        self.canvas.delete("edge")
         tx, ty = self.target(p)
-        if (abs(self.piece_x[p] - tx) < self.dpw // 3
+        if (self.view == PUZZLE
+                and abs(self.piece_x[p] - tx) < self.dpw // 3
                 and abs(self.piece_y[p] - ty) < self.dph // 3):
             self.piece_x[p], self.piece_y[p] = tx, ty
             self.placed[p] = True
@@ -532,6 +661,8 @@ class Jigsaw:
             self.restack()
         else:
             self.place_items(p)
+            self.draw_hud()   # page button shows how many pieces wait
+            self.restack()
 
     def on_configure(self, ev):
         if (ev.width, ev.height) == (self.scr_w, self.scr_h):
@@ -560,6 +691,12 @@ class Jigsaw:
             self.show_ghost = not self.show_ghost
             self.redraw()
 
+    def toggle_view(self, _ev=None):
+        if self.dragging is None:
+            self.view = PIECES if self.view == PUZZLE else PUZZLE
+            self.redraw()
+        return "break"   # keep Tab from moving keyboard focus
+
     def quit(self, _ev=None):
         self.root.destroy()
 
@@ -577,6 +714,7 @@ class Jigsaw:
             "piece_x": [int(v) for v in self.piece_x],
             "piece_y": [int(v) for v in self.piece_y],
             "placed": self.placed, "draw_ord": self.draw_ord,
+            "page": self.page, "view": self.view,
             "edge_top": self.edge_top, "edge_right": self.edge_right,
             "edge_bot": self.edge_bot, "edge_left": self.edge_left,
             "show_ghost": self.show_ghost,
@@ -607,6 +745,9 @@ class Jigsaw:
         self.draw_ord = s["draw_ord"]
         self.piece_x = [float(v) for v in s["piece_x"]]
         self.piece_y = [float(v) for v in s["piece_y"]]
+        # Saves from before the pieces page had every piece on the puzzle
+        self.page = s.get("page", [PUZZLE] * self.n_pieces)
+        self.view = s.get("view", PUZZLE)
         self.show_ghost = s["show_ghost"]
         self.solved_count = sum(self.placed)
         self.won = self.solved_count == self.n_pieces
