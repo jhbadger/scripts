@@ -261,6 +261,11 @@ def save_document(filepath, lines, eol='\n', trailing=True):
 # --------------------------------------------------------------------------- #
 
 @lru_cache(maxsize=4096)
+
+def line_stats(line):
+    """Return (word_count, char_count) for a single line (cached)."""
+    return len(line.split()), len(line)
+
 def cell_width(ch):
     """Number of terminal columns a single character occupies when displayed."""
     if ch == '\t':
@@ -692,12 +697,15 @@ class TextEditor:
         self.clamp_cursor()
         self.ensure_visible()
 
+        total_lines, total_words, total_chars = self.doc_stats()
+
         # 1. Title bar
         mod_str = " [Modified]" if self.dirty else ""
         src = f" (from {self.converted_from})" if self.converted_from else ""
         eol = " | CRLF" if self.eol == '\r\n' else ""
         title = (f" txtedit | {os.path.basename(self.filepath)}{src}{mod_str}"
-                 f" | Ln {self.cur_line + 1}/{len(self.lines)}, Col {self.cur_col + 1}"
+                 f" | Ln {self.cur_line + 1}/{total_lines}, Col {self.cur_col + 1}"
+                 f" | {total_words} words, {total_chars} chars"
                  f" | Wrap {'on' if self.wrap else 'off'}{eol} ")
         try:
             self.stdscr.addstr(0, 0, title[:max_x - 1].ljust(max_x - 1), self.attr_bar | curses.A_BOLD)
@@ -717,9 +725,13 @@ class TextEditor:
                 cursor_y = y
             pos = self.next_visual(pos)
 
-        # 3. Status line
+        # 3. Status line (with right-aligned permanent L / W / C badge)
+        counter_badge = f" [Ln {total_lines} | Wd {total_words} | Ch {total_chars}] "
+        avail_msg_w = max(1, (max_x - 1) - len(counter_badge))
+        left_status = f" {self.status_msg}"[:avail_msg_w].ljust(avail_msg_w)
+        status_line = (left_status + counter_badge)[:max_x - 1]
         try:
-            self.stdscr.addstr(max_y - 2, 0, f" {self.status_msg}"[:max_x - 1].ljust(max_x - 1), self.attr_bar)
+            self.stdscr.addstr(max_y - 2, 0, status_line.ljust(max_x - 1), self.attr_bar)
         except curses.error:
             pass
 
@@ -1242,6 +1254,18 @@ class TextEditor:
         nonblank = sum(1 for l in self.lines if l.strip())
         self.status_msg = (f"{words} words | {chars} characters | {len(self.lines)} lines "
                            f"({nonblank} non-blank)")
+
+    def doc_stats(self):
+        """Return (lines, words, chars) using cached per-line stats."""
+        words = 0
+        chars = 0
+        for l in self.lines:
+            w, c = line_stats(l)
+            words += w
+            chars += c
+        total_lines = len(self.lines)
+        chars += max(0, total_lines - 1)  # include newline characters
+        return total_lines, words, chars
 
     def toggle_wrap(self):
         self.wrap = not self.wrap
