@@ -14,6 +14,8 @@ and shows linked views of the genome:
     selected feature(s).
 
 Usage:  tkgenome [file.gb | file.gbk.gz]
+        tkgenome --build-app [DIR]    build a macOS tkgenome.app (with icon)
+        tkgenome --icon-png SIZE [OUT.png]
 
 Mouse (circular map)
   click            select a feature (Ctrl/Cmd-click adds to the selection)
@@ -40,10 +42,15 @@ Filter box syntax (terms are ANDed, "!" negates):
 
 import gzip
 import math
+import os
+import plistlib
 import re
 import shlex
+import shutil
+import struct
 import sys
 import textwrap
+import zlib
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from xml.sax.saxutils import escape as xml_escape
@@ -2027,7 +2034,154 @@ class App:
         self.write(path, "\n".join(rows) + "\n")
 
 
+# --------------------------------------------------- icon / app bundle
+
+ICON_BG = (27, 42, 65)
+ICON_BACKBONE = (150, 160, 175)
+ICON_PLUS = (47, 111, 208)
+ICON_MINUS = (232, 137, 43)
+ICON_GREEN = (46, 158, 72)
+ICON_RED = (255, 31, 31)
+ICON_WHITE = (240, 240, 240)
+
+ICON_PLUS_ARCS = [(8, 30), (34, 38), (66, 100), (106, 140), (150, 200),
+             (206, 214), (250, 300), (310, 350)]
+ICON_MINUS_ARCS = [(0, 22), (28, 70), (80, 120), (128, 134), (160, 220),
+              (228, 262), (270, 330), (338, 356)]
+ICON_TRNA_ARCS = [(100, 104), (224, 227)]
+ICON_HL_ARC = (40, 62)
+
+
+def _arc_in(theta, arcs):
+    return any(a <= theta < b for a, b in arcs)
+
+
+def icon_sample(x, y):
+    """RGBA of the icon at (x, y) in the unit square, or None (transparent)."""
+    # rounded-square tile
+    cx = min(max(x, 0.2), 0.8)
+    cy = min(max(y, 0.2), 0.8)
+    if math.hypot(x - cx, y - cy) > 0.2 or not (0 <= x <= 1 and 0 <= y <= 1):
+        return None
+    dx, dy = x - 0.5, y - 0.5
+    r = math.hypot(dx, dy)
+    th = math.degrees(math.atan2(dx, -dy)) % 360.0
+    if 0.325 <= r <= 0.415 and _arc_in(th, [ICON_HL_ARC]):
+        return ICON_RED
+    if 0.34 <= r <= 0.40 and _arc_in(th, ICON_PLUS_ARCS):
+        return ICON_PLUS
+    if 0.20 <= r <= 0.26 and _arc_in(th, ICON_MINUS_ARCS):
+        return ICON_MINUS
+    if 0.34 <= r <= 0.40 and _arc_in(th, ICON_TRNA_ARCS):
+        return ICON_GREEN
+    if 0.20 <= r <= 0.26 and _arc_in(th, [(100, 104)]):
+        return ICON_GREEN
+    if abs(r - 0.30) <= 0.006:
+        return ICON_BACKBONE
+    if 0.425 <= r <= 0.46 and (th < 1.5 or th > 358.5):
+        return ICON_WHITE
+    return ICON_BG
+
+
+def render_png(size):
+    n = 4 if size <= 256 else 2
+    rows = []
+    for py in range(size):
+        row = bytearray([0])                     # PNG filter type 0
+        for px in range(size):
+            ra = ga = ba = aa = 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = icon_sample((px + (sx + 0.5) / n) / size,
+                               (py + (sy + 0.5) / n) / size)
+                    if c:
+                        ra += c[0]
+                        ga += c[1]
+                        ba += c[2]
+                        aa += 1
+            if aa:
+                row += bytes((ra // aa, ga // aa, ba // aa,
+                              255 * aa // (n * n)))
+            else:
+                row += b"\0\0\0\0"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) +
+            chunk(b"IEND", b""))
+
+
+# ICNS entry types holding PNG data, with the pixel size of each
+ICNS_TYPES = [(b"icp4", 16), (b"icp5", 32), (b"ic11", 32), (b"ic12", 64),
+              (b"ic07", 128), (b"ic13", 256), (b"ic08", 256), (b"ic14", 512),
+              (b"ic09", 512)]
+
+
+def make_icns():
+    """An .icns file written directly (no iconutil needed)."""
+    pngs = {}
+    body = b""
+    for tag, size in ICNS_TYPES:
+        if size not in pngs:
+            pngs[size] = render_png(size)
+        body += tag + struct.pack(">I", len(pngs[size]) + 8) + pngs[size]
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
+def build_app(dest):
+    app = os.path.join(dest, "tkgenome.app")
+    if os.path.exists(app):
+        shutil.rmtree(app)
+    macos = os.path.join(app, "Contents", "MacOS")
+    res = os.path.join(app, "Contents", "Resources")
+    os.makedirs(macos)
+    os.makedirs(res)
+    shutil.copy(os.path.abspath(__file__),
+                os.path.join(res, "tkgenome.py"))
+
+    launcher = os.path.join(macos, "tkgenome")
+    with open(launcher, "w") as fh:
+        fh.write('#!/bin/sh\nexec "%s" "$(dirname "$0")/../Resources/'
+                 'tkgenome.py" "$@"\n' % sys.executable)
+    os.chmod(launcher, 0o755)
+
+    with open(os.path.join(res, "tkgenome.icns"), "wb") as fh:
+        fh.write(make_icns())
+
+    exts = ["gb", "gbk", "gbff", "genbank"]
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as fh:
+        plistlib.dump({
+            "CFBundleName": "tkgenome",
+            "CFBundleDisplayName": "tkgenome",
+            "CFBundleIdentifier": "org.badgerjh.tkgenome",
+            "CFBundleExecutable": "tkgenome",
+            "CFBundleIconFile": "tkgenome",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": "1.0",
+            "NSHighResolutionCapable": True,
+            "CFBundleDocumentTypes": [{
+                "CFBundleTypeName": "GenBank file",
+                "CFBundleTypeRole": "Viewer",
+                "CFBundleTypeExtensions": exts,
+            }],
+        }, fh)
+    return app
+
+
 def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--build-app"]:
+        print(build_app(args[1] if len(args) > 1 else
+                        os.path.dirname(os.path.abspath(__file__))))
+        return
+    if args[:1] == ["--icon-png"] and len(args) >= 2:
+        with open(args[2] if len(args) > 2 else "tkgenome.png", "wb") as fh:
+            fh.write(render_png(int(args[1])))
+        return
     root = tk.Tk()
     App(root, sys.argv[1] if len(sys.argv) > 1 else None)
     root.mainloop()
