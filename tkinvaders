@@ -12,6 +12,9 @@ Controls:
 
 Sound effects are synthesized at startup (same waveforms as the Raylib
 version) and played with afplay (macOS), paplay or aplay if one is available.
+
+App bundle (macOS):  tkinvaders --build-app [DIR]   builds tkinvaders.app with an icon
+                     tkinvaders --icon-png SIZE [OUT.png]
 """
 
 import array
@@ -24,6 +27,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import plistlib
+import struct
+import zlib
 import tkinter as tk
 import wave
 
@@ -453,8 +459,179 @@ class Invaders:
         self.root.after(max(1, FRAME_MS - spent), self.tick)
 
 
+# ------------------------------------------------ icon / macOS app bundle
+
+ICON_NAME = "tkinvaders"
+ICON_DOC_EXTS = []
+
+
+def icon_rr(x, y, x0, y0, x1, y1, r):
+    """True inside the rounded rectangle (x0,y0)-(x1,y1) with corner radius r."""
+    cx = min(max(x, x0 + r), x1 - r)
+    cy = min(max(y, y0 + r), y1 - r)
+    return math.hypot(x - cx, y - cy) <= r
+
+
+ICON_BG = (12, 12, 32)
+ICON_INVADER = ["..#.....#..", "...#...#...", "..#######..", ".##.###.##.",
+                "###########", "#.#######.#", "#.#.....#.#", "...##.##..."]
+ICON_SHIP = ["....#....", "...###...", ".#######.", "#########"]
+
+
+def icon_art(x, y):
+    u, v = (x - 0.17) / 0.06, (y - 0.12) / 0.06
+    if 0 <= u < 11 and 0 <= v < 8 and ICON_INVADER[int(v)][int(u)] == "#":
+        return (90, 255, 130)
+    u, v = (x - 0.365) / 0.03, (y - 0.76) / 0.03
+    if 0 <= u < 9 and 0 <= v < 4 and ICON_SHIP[int(v)][int(u)] == "#":
+        return (120, 200, 255)
+    if abs(x - 0.5) < 0.008 and 0.64 <= y <= 0.72:
+        return (255, 255, 255)
+    return ICON_BG
+
+
+def icon_sample(x, y):
+    """RGB of the icon at (x, y) in the unit square, or None (transparent)."""
+    if not icon_rr(x, y, 0.0, 0.0, 1.0, 1.0, 0.2):
+        return None
+    return icon_art(x, y)
+
+
+def icon_render_png(size):
+    n = 4 if size <= 256 else 2
+    rows = []
+    for py in range(size):
+        row = bytearray([0])                     # PNG filter type 0
+        for px in range(size):
+            ra = ga = ba = aa = 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = icon_sample((px + (sx + 0.5) / n) / size,
+                                    (py + (sy + 0.5) / n) / size)
+                    if c:
+                        ra += c[0]
+                        ga += c[1]
+                        ba += c[2]
+                        aa += 1
+            if aa:
+                row += bytes((ra // aa, ga // aa, ba // aa,
+                              255 * aa // (n * n)))
+            else:
+                row += b"\0\0\0\0"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) +
+            chunk(b"IEND", b""))
+
+
+# ICNS entry types holding PNG data, with the pixel size of each
+ICON_ICNS_TYPES = [(b"icp4", 16), (b"icp5", 32), (b"ic11", 32), (b"ic12", 64),
+                   (b"ic07", 128), (b"ic13", 256), (b"ic08", 256),
+                   (b"ic14", 512), (b"ic09", 512)]
+
+
+def icon_make_icns():
+    """An .icns file written directly (no iconutil needed)."""
+    pngs = {}
+    body = b""
+    for tag, size in ICON_ICNS_TYPES:
+        if size not in pngs:
+            pngs[size] = icon_render_png(size)
+        body += tag + struct.pack(">I", len(pngs[size]) + 8) + pngs[size]
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
+def icon_build_app(dest):
+    """Build a macOS <name>.app bundle (with icon) in dest."""
+    app = os.path.join(dest, ICON_NAME + ".app")
+    if os.path.exists(app):
+        shutil.rmtree(app)
+    macos = os.path.join(app, "Contents", "MacOS")
+    res = os.path.join(app, "Contents", "Resources")
+    os.makedirs(macos)
+    os.makedirs(res)
+    shutil.copy(os.path.abspath(__file__), os.path.join(res, ICON_NAME + ".py"))
+    launcher = os.path.join(macos, ICON_NAME)
+    with open(launcher, "w") as fh:
+        fh.write('#!/bin/sh\nexec "%s" "$(dirname "$0")/../Resources/%s.py" '
+                 '"$@"\n' % (sys.executable, ICON_NAME))
+    os.chmod(launcher, 0o755)
+    with open(os.path.join(res, ICON_NAME + ".icns"), "wb") as fh:
+        fh.write(icon_make_icns())
+    info = {
+        "CFBundleName": ICON_NAME,
+        "CFBundleDisplayName": ICON_NAME,
+        "CFBundleIdentifier": "org.badgerjh." + ICON_NAME,
+        "CFBundleExecutable": ICON_NAME,
+        "CFBundleIconFile": ICON_NAME,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.0",
+        "NSHighResolutionCapable": True,
+    }
+    if ICON_DOC_EXTS:
+        info["CFBundleDocumentTypes"] = [{
+            "CFBundleTypeName": ICON_NAME + " file",
+            "CFBundleTypeRole": "Viewer",
+            "CFBundleTypeExtensions": ICON_DOC_EXTS}]
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as fh:
+        plistlib.dump(info, fh)
+    return app
+
+
+def icon_args(args):
+    """Handle --build-app [DIR] and --icon-png SIZE [OUT]; True if handled."""
+    if args[:1] == ["--build-app"]:
+        print(icon_build_app(args[1] if len(args) > 1 else
+                             os.path.dirname(os.path.abspath(__file__))))
+        return True
+    if args[:1] == ["--icon-png"] and len(args) >= 2:
+        with open(args[2] if len(args) > 2 else ICON_NAME + ".png", "wb") as fh:
+            fh.write(icon_render_png(int(args[1])))
+        return True
+    return False
+
+
+def set_window_icon(root):
+    try:
+        root._icon = tk.PhotoImage(data=ICON_PNG)
+        root.iconphoto(True, root._icon)
+    except tk.TclError:
+        pass
+
+
+ICON_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAD2UlEQVR42u3cPYvUQBzH8XkBBwEb"
+    "wSbXWamghYpCwEJWm2i1IByptVfsgoK1jY21pUVeQsBG38X6DvYlxPyPnOzdbmY2l2QyD9+BXyO3"
+    "yezMJ5mHxFVqwnJycpq1KdtUbeo2DZkkddem0raZcqm0FSq6ytFRdiNtXizV6UmncUNHLJ5N1xeJ"
+    "zSt+S8M7l+2sd4T24CnjujfzhXTqzs+56r27G+RT3vJpVD9TjO38kkb0PiVXPimuM+bTcGElHzLb"
+    "Z8IX5sQwPQYAS72Al4iM+6TQbe9y649jKEhY8rE03APgzIOd57/e9ubht7WzDSt109XdpQdITo/9"
+    "b5rPvXGsIffg6uru7FzAtef5ALDzPsEugAYA0QFodl/jAkCEAM5fL3Nx9g8Ai6sBF9/nA4DFeYCL"
+    "W78AsLg17NsmRrp6pG3kB19ez3ZuObbu3FI339oTAAAAAAAAAAAAAAAAAAAAABzp5L7c/fBS2wlP"
+    "f5xpPz8mcmzduaVuus8DYIKNIJ8DAAAAAAAAAAAAAAAAAAAAAJECkDWxbKr0RdeIr/6+137W9Ex+"
+    "TOTYunNL3UybVH1Zap9gEQCmTh7zQsiYY5ti2mUcg2/OHUwAAAAAAAAAAAAAAAAAAAAAmBmA6aUN"
+    "Mjxz7RMAAAAAAAAAAAAAAAAAAAAAgAUA8thU92taoXai7jubHiUHBcC06RHjCyFL/acTAAAAAAAA"
+    "AAAAAAAAAAAAAHAcgOm18CVjWssDYAIAof5OIAAAAAAAAAAAAAAAAAAAAAB4DGDJ3wkc82LFnMfm"
+    "dwIBAAAAAAAAAAAAAAAAAAAA4Fq59fi+9vVqU+TzSxwbAAQABAAEAAQABAAu5KIAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAg5q9X6PAAgACAAIAAgAIgkZ99/XwoAIsvHP82lAAAAAAAAAIIe8692"
+    "el9imhMAAAAAAAAAogZQh/BFnr37enQHj42cKxAAtQCoABAtgEoAlACIFkApADIfK3/j5p3m9pP1"
+    "/+SffloDIOfaPbfUxVMAmZLiY+Wl4W11uClSFy8ngBfFx3kAACYY/3cAFACIDkChdkv7DxufvsDp"
+    "vRd7j3SXitTFs87fqKsllNUAOXL2fwBA0mZL4wQf6eNEHSo+zgXIyLH/AIKaRgo2tTKV9o9ShoJg"
+    "b/2pOqa0f5jTYMElV0MK84GIxn0NApaGIS75uBNw5Q9FkDMx9G7Cl6spS7c6YInowVLv6Nn+iCGB"
+    "u4GbV32hbJRu27j07QFSoNl0fZGoJUp3R6joCPvP861d8QMwZJ3GivnC5ON61bVtNmWf/QPNVC3c"
+    "CdgErQAAAABJRU5ErkJggg=="
+)
+
+
 def main():
+    if icon_args(sys.argv[1:]):
+        return
     root = tk.Tk()
+    set_window_icon(root)
     Invaders(root)
     root.mainloop()
 

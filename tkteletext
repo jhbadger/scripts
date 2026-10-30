@@ -19,12 +19,21 @@ Keys:
   Ctrl-X, Ctrl-C, Esc   quit
 
 The window can be resized; the text scales with it.
+
+App bundle (macOS):  tkteletext --build-app [DIR]   builds tkteletext.app with an icon
+                     tkteletext --icon-png SIZE [OUT.png]
 """
 
 import queue
 import socket
 import sys
 import threading
+import math
+import os
+import plistlib
+import shutil
+import struct
+import zlib
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -515,7 +524,179 @@ class Teletext:
                       fill=PAL[6], font=self.font)
 
 
+# ------------------------------------------------ icon / macOS app bundle
+
+ICON_NAME = "tkteletext"
+ICON_DOC_EXTS = []
+
+
+def icon_rr(x, y, x0, y0, x1, y1, r):
+    """True inside the rounded rectangle (x0,y0)-(x1,y1) with corner radius r."""
+    cx = min(max(x, x0 + r), x1 - r)
+    cy = min(max(y, y0 + r), y1 - r)
+    return math.hypot(x - cx, y - cy) <= r
+
+
+ICON_BG = (0, 0, 0)
+ICON_COLS = [(255, 0, 0), (0, 255, 0), (255, 255, 0), (0, 80, 255),
+             (255, 0, 255), (0, 255, 255), (255, 255, 255)]
+
+
+def icon_art(x, y):
+    if not (0.12 <= x < 0.88 and 0.14 <= y < 0.86):
+        return ICON_BG
+    u, v = (x - 0.12) / 0.76 * 8, (y - 0.14) / 0.72 * 9
+    i, j = int(u), int(v)
+    fu, fv = u - i, v - j
+    if fu < 0.08 or fu > 0.92 or fv < 0.08 or fv > 0.92:
+        return ICON_BG                      # separated-mosaic gaps
+    h = (i * 7 + j * 13 + i * j * 3) % 11
+    return ICON_COLS[h] if h < 7 else ICON_BG
+
+
+def icon_sample(x, y):
+    """RGB of the icon at (x, y) in the unit square, or None (transparent)."""
+    if not icon_rr(x, y, 0.0, 0.0, 1.0, 1.0, 0.2):
+        return None
+    return icon_art(x, y)
+
+
+def icon_render_png(size):
+    n = 4 if size <= 256 else 2
+    rows = []
+    for py in range(size):
+        row = bytearray([0])                     # PNG filter type 0
+        for px in range(size):
+            ra = ga = ba = aa = 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = icon_sample((px + (sx + 0.5) / n) / size,
+                                    (py + (sy + 0.5) / n) / size)
+                    if c:
+                        ra += c[0]
+                        ga += c[1]
+                        ba += c[2]
+                        aa += 1
+            if aa:
+                row += bytes((ra // aa, ga // aa, ba // aa,
+                              255 * aa // (n * n)))
+            else:
+                row += b"\0\0\0\0"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) +
+            chunk(b"IEND", b""))
+
+
+# ICNS entry types holding PNG data, with the pixel size of each
+ICON_ICNS_TYPES = [(b"icp4", 16), (b"icp5", 32), (b"ic11", 32), (b"ic12", 64),
+                   (b"ic07", 128), (b"ic13", 256), (b"ic08", 256),
+                   (b"ic14", 512), (b"ic09", 512)]
+
+
+def icon_make_icns():
+    """An .icns file written directly (no iconutil needed)."""
+    pngs = {}
+    body = b""
+    for tag, size in ICON_ICNS_TYPES:
+        if size not in pngs:
+            pngs[size] = icon_render_png(size)
+        body += tag + struct.pack(">I", len(pngs[size]) + 8) + pngs[size]
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
+def icon_build_app(dest):
+    """Build a macOS <name>.app bundle (with icon) in dest."""
+    app = os.path.join(dest, ICON_NAME + ".app")
+    if os.path.exists(app):
+        shutil.rmtree(app)
+    macos = os.path.join(app, "Contents", "MacOS")
+    res = os.path.join(app, "Contents", "Resources")
+    os.makedirs(macos)
+    os.makedirs(res)
+    shutil.copy(os.path.abspath(__file__), os.path.join(res, ICON_NAME + ".py"))
+    launcher = os.path.join(macos, ICON_NAME)
+    with open(launcher, "w") as fh:
+        fh.write('#!/bin/sh\nexec "%s" "$(dirname "$0")/../Resources/%s.py" '
+                 '"$@"\n' % (sys.executable, ICON_NAME))
+    os.chmod(launcher, 0o755)
+    with open(os.path.join(res, ICON_NAME + ".icns"), "wb") as fh:
+        fh.write(icon_make_icns())
+    info = {
+        "CFBundleName": ICON_NAME,
+        "CFBundleDisplayName": ICON_NAME,
+        "CFBundleIdentifier": "org.badgerjh." + ICON_NAME,
+        "CFBundleExecutable": ICON_NAME,
+        "CFBundleIconFile": ICON_NAME,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.0",
+        "NSHighResolutionCapable": True,
+    }
+    if ICON_DOC_EXTS:
+        info["CFBundleDocumentTypes"] = [{
+            "CFBundleTypeName": ICON_NAME + " file",
+            "CFBundleTypeRole": "Viewer",
+            "CFBundleTypeExtensions": ICON_DOC_EXTS}]
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as fh:
+        plistlib.dump(info, fh)
+    return app
+
+
+def icon_args(args):
+    """Handle --build-app [DIR] and --icon-png SIZE [OUT]; True if handled."""
+    if args[:1] == ["--build-app"]:
+        print(icon_build_app(args[1] if len(args) > 1 else
+                             os.path.dirname(os.path.abspath(__file__))))
+        return True
+    if args[:1] == ["--icon-png"] and len(args) >= 2:
+        with open(args[2] if len(args) > 2 else ICON_NAME + ".png", "wb") as fh:
+            fh.write(icon_render_png(int(args[1])))
+        return True
+    return False
+
+
+def set_window_icon(root):
+    try:
+        root._icon = tk.PhotoImage(data=ICON_PNG)
+        root.iconphoto(True, root._icon)
+    except tk.TclError:
+        pass
+
+
+ICON_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAEq0lEQVR42u2dwXXcIBCGueSSCxef"
+    "w9WXPDXg91TCpgNKoQSVohIoZUvYEhTwIiXPscMIabWS+Gbff7NXK/hgYAaNlFrX2iAX1Af5oAGt"
+    "Ip/a1KU23pXZ9OPoqG3Vp7Z/iulE45WOeLquqS/0liP+RsPvTrdHzwgGv36Y9YJZu/MvjPrDzQaX"
+    "Nad8GvWYWuwSHI14eDlGPrIlPp+GO5cuc1b7LPjOuTAU7Q7Y6p17i4jfZz3wdXiXqb8OV6DZ8rE1"
+    "/MdI7NSVQML3sxb4Y+Tz6zxPMFnxFzVBrUCm9Brf9KBe2rx0U3wPbduKpLW+33MT/ycvrQvv2ZhB"
+    "hetl1TRLIZiOcRV/SdhYDoNArvQasXN/DXm9+eJ7kFqE4P2effyfvCIERb/JuUF0Be+XAtAuXv0D"
+    "wKEBcIv9PwAcGoB+cegXAA4NgFdLV5MAcGgABgAAAAAAAAAAAAJBVQaClgOADq+FLkA4HTo3Tm9B"
+    "ko9Po1PoYvyJOsUFFyAxv4s1AAAAAAAAAAAAAAAAAAAAAAAAAADUBIC1987NaQqLtgmCnOz9700K"
+    "I+dkTwRAjDpGCHKy1hIJRE8GoFNdmH59VlbZNGPY96krp67rtmsEL1ST/v5nd08+5TTmJ+K9xOk6"
+    "p3VG9NbZQC9ZAoRp2j3Dv8kk/YxuLHauJEP50ibAvCy75xwAAAAAAAAAAAAAAAAAAAAAAABxAOIA"
+    "uwYAVR4JjCNaErcej1S3c2P78YRsnBpzWjB6onuSyChTdo0f4be9urxGl3GsQ6Fe5NNd8m9ubnYv"
+    "gvPgM/KyCwwB3sIOkq4ZXh0AAAAAAAAAAAAAAAAAAAAAAAAAAACRQHQiAGY++x6fsZc8i980291D"
+    "o5r32SAnre71BN5zCK1ApgYAZla/iJ0rmZ+93+4epBnQyWV4YbbRAQAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAEAgiEEQoGAEAAgAEAAgAEAAgAEAAgAAAAQACAPREADphcYVU+jUWipAUlIiFJzZL7niZpnyD"
+    "tOBD4UudbDoWn1O3CwBmZrric/aSTFqEYCsApA8GTPWOpSVf2rLnCGY/OwEAAAAAAAAAAAAAAAAA"
+    "AAAAAEAcgDgAkUC0CQAPLoIYizNKijiOpWiLj6pLZMw0QiXFLk1hMc25L9Z6LgAPrn4Rj1c/fM0g"
+    "XQWkDvJCH90WVlGZ+2o9AAAAAAAAAAAAAAAAAAAAAAAAAAAAIoFoGwBivFvyvH+Koqnv5h4VzGl8"
+    "4ZIWPlu/ZX2AcM8xapeT1npWPYHxlTTGbFoTYWk2cOYr0aIrkLiMN/8nLLrddChMHsmm9HZyGXNf"
+    "rbdpVRQAAAAAAAAAqBcADwDVAhD7XvUAUC0Ase+VA4BqAYh9H5oYAGoFIPa9UgSCqg0ETdYTEq1O"
+    "/d8AWBqkOln1wa40SjW6qk/M0TDVyH0GgA660Tin1y319afGWqBC3//RPI10WnklMIMrOO3Ub5TQ"
+    "LjTY6XRRM431QEV+/ytja3jSLR8zASN/ll1YGB5uwXdRK5thi3iYrZ5RDzTLbLDbUW/VRqbT4oIE"
+    "0j4SO+5/4d1Hm+U8wdPy+VbtzNpEY896YXW/3qe2bdfssN+7fqfD7/exhAAAAABJRU5ErkJggg=="
+)
+
+
 def main(argv):
+    if icon_args(argv[1:]):
+        return
     host, port = DEF_HOST, DEF_PORT
     if len(argv) >= 2:
         host = argv[1]
@@ -525,6 +706,7 @@ def main(argv):
         except ValueError:
             pass
     root = tk.Tk()
+    set_window_icon(root)
     Teletext(root, host, port)
     root.mainloop()
 
