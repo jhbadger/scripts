@@ -1,0 +1,2840 @@
+#!/usr/bin/env python3
+"""tkreader - EPUB reader in Python + Tk, standard library only.
+
+Opens an EPUB and shows one chapter at a time in a scrolling text view with
+real fonts: headings, bold/italic, lists, quotations, code, tables, footnote
+superscripts, working internal and external links, and images shown in place
+(PNG and GIF natively; JPEG and other formats are converted with `sips` on
+macOS or ImageMagick when one is installed).  MathML equations are typeset on
+small canvases - stacked fractions, roots, stretchy brackets, matrices, limits,
+accents and sub/superscripts - and inline math is set in the text itself.
+
+Usage:  tkreader [book.epub]
+        tkreader --build-app [DIR]    build a macOS tkreader.app (with icon)
+        tkreader --icon-png SIZE [OUT.png]
+
+Reading
+  Space / PgDn       page down (at the end, on to the next chapter)
+  Shift-Space / PgUp page up (at the top, back to the previous chapter)
+  Up / Down, j / k   scroll a line        Home / End, g / G   top / bottom
+  Right / n          next chapter         Left / p            previous chapter
+  Alt-Left / Cmd-[   back (after following a link or choosing a contents entry)
+  click a link       follow it (internal links jump; web links ask first)
+View
+  Ctrl/Cmd-B         show or hide the contents sidebar
+  Ctrl/Cmd-+ / - / 0 larger / smaller / default text
+  View menu          theme (light, sepia, dark), font, line length
+Selecting
+  drag, double-click (word) or triple-click (paragraph) to select; Ctrl/Cmd-C
+  or the right-click menu copies (equations as TeX, images as their alt text);
+  Ctrl/Cmd-A selects the whole chapter.
+Search
+  Ctrl/Cmd-F or /    find in the whole book; Enter / Shift-Enter next /
+                     previous match (carries on into other chapters)
+Other
+  Ctrl/Cmd-O open a file, Ctrl/Cmd-Q quit.
+
+The reading position of every book, and your font / theme / window choices, are
+saved in ~/.tkreader.json when you quit; the last book is reopened next time.
+"""
+
+import argparse
+import base64
+import json
+import math
+import os
+import plistlib
+import posixpath
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+import webbrowser
+import xml.etree.ElementTree as ET
+import zipfile
+import zlib
+import tkinter as tk
+import tkinter.font as tkfont
+from html.parser import HTMLParser
+from tkinter import filedialog, messagebox, ttk
+from urllib.parse import unquote
+
+SAVE_FILE = os.path.expanduser("~/.tkreader.json")
+PNG_SIG = b'\x89PNG\r\n\x1a\n'
+DEBUG = bool(os.environ.get("TKREADER_DEBUG"))
+
+
+def dbg(*args):
+    if DEBUG:
+        print("tkreader:", *args, file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- EPUB access
+
+def local(tag):
+    return tag.rsplit('}', 1)[-1] if isinstance(tag, str) else ''
+
+
+def decode(data):
+    if data.startswith(b'\xef\xbb\xbf'):
+        data = data[3:]
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        return data.decode('cp1252', 'replace')
+
+
+class NavParser(HTMLParser):
+    """Extracts (depth, text, href) from an EPUB3 <nav epub:type="toc">."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.in_toc = False
+        self.depth = 0
+        self.entries = []
+        self.href = None
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == 'nav' and 'toc' in (a.get('epub:type') or a.get('type') or ''):
+            self.in_toc = True
+        elif self.in_toc and tag == 'ol':
+            self.depth += 1
+        elif self.in_toc and tag == 'a' and a.get('href') is not None:
+            self.href, self.text = a['href'], []
+
+    def handle_endtag(self, tag):
+        if tag == 'nav':
+            self.in_toc = False
+        elif self.in_toc and tag == 'ol':
+            self.depth -= 1
+        elif self.in_toc and tag == 'a' and self.href is not None:
+            title = ' '.join(''.join(self.text).split())
+            self.entries.append((max(0, self.depth - 1), title, self.href))
+            self.href = None
+
+    def handle_data(self, data):
+        if self.href is not None:
+            self.text.append(data)
+
+
+class Book:
+    def __init__(self, path):
+        self.path = path
+        self.z = zipfile.ZipFile(path)
+        self.names = {n.lower(): n for n in self.z.namelist()}
+        container = ET.fromstring(self.read('META-INF/container.xml'))
+        opf_path = next(e.get('full-path') for e in container.iter()
+                        if local(e.tag) == 'rootfile')
+        self.opf_dir = posixpath.dirname(opf_path)
+        opf = ET.fromstring(self.read(opf_path))
+        self.title = os.path.basename(path)
+        manifest, spine, toc_id = {}, [], None
+        for e in opf.iter():
+            t = local(e.tag)
+            if t == 'title' and self.title == os.path.basename(path) and e.text:
+                self.title = e.text.strip()
+            elif t == 'item':
+                manifest[e.get('id')] = (self.resolve(self.opf_dir, e.get('href', '')),
+                                         e.get('media-type', ''), e.get('properties', ''))
+            elif t == 'itemref':
+                spine.append(e.get('idref'))
+            elif t == 'spine':
+                toc_id = e.get('toc')
+        self.chapters = [manifest[i][0] for i in spine if i in manifest]
+        self.index = {p: i for i, p in enumerate(self.chapters)}
+        self.toc = self._load_toc(manifest, toc_id)
+        self.chapter_title = {}
+        for _, title, path, _frag in self.toc:
+            self.chapter_title.setdefault(path, title)
+
+    @staticmethod
+    def resolve(base_dir, href):
+        href = unquote(href.split('#', 1)[0].split('?', 1)[0])
+        return posixpath.normpath(posixpath.join(base_dir, href)) if href else ''
+
+    def read(self, path):
+        name = path if path in self.z.namelist() else self.names.get(path.lower())
+        return self.z.read(name) if name else None
+
+    def _load_toc(self, manifest, toc_id):
+        raw = []  # (depth, title, path, frag)
+        nav = next((v for v in manifest.values() if 'nav' in v[2].split()), None)
+        ncx = manifest.get(toc_id) or next(
+            (v for v in manifest.values() if v[1] == 'application/x-dtbncx+xml'), None)
+        try:
+            if nav and self.read(nav[0]):
+                p = NavParser()
+                p.feed(decode(self.read(nav[0])))
+                base = posixpath.dirname(nav[0])
+                for depth, title, href in p.entries:
+                    raw.append((depth, title, self.resolve(base, href or nav[0]),
+                                href.partition('#')[2] if href else ''))
+            if not raw and ncx and self.read(ncx[0]):
+                base = posixpath.dirname(ncx[0])
+
+                def walk(el, depth):
+                    for c in el:
+                        if local(c.tag) != 'navPoint':
+                            continue
+                        title = src = None
+                        for d in c:
+                            if local(d.tag) == 'navLabel':
+                                title = ' '.join(''.join(d.itertext()).split())
+                            elif local(d.tag) == 'content':
+                                src = d.get('src', '')
+                        if src is not None:
+                            raw.append((depth, title or '', self.resolve(base, src),
+                                        unquote(src.partition('#')[2])))
+                        walk(c, depth + 1)
+                root = ET.fromstring(self.read(ncx[0]))
+                for m in root.iter():
+                    if local(m.tag) == 'navMap':
+                        walk(m, 0)
+        except Exception:
+            raw = []
+        toc = [e for e in raw if e[2] in self.index]
+        if not toc:
+            toc = [(0, 'Section %d' % (i + 1), p, '') for i, p in enumerate(self.chapters)]
+        return toc
+
+
+
+# ------------------------------------------------- MathML -> Unicode text boxes
+# A Box is a block of equal-width text lines with a baseline row, so fractions,
+# matrices and scripts can be laid out in 2-D (display math) or flattened to a
+# single line (inline math). Italic/bold use the \x01-\x04 style markers.
+
+class N:
+    __slots__ = ('tag', 'attrs', 'kids')
+
+    def __init__(self, tag, attrs):
+        self.tag, self.attrs, self.kids = tag, attrs, []
+
+
+def elems(n):
+    return [k for k in n.kids if isinstance(k, N)]
+
+
+def ntext(n):
+    return ''.join(k if isinstance(k, str) else ntext(k) for k in n.kids)
+
+
+_INVIS = dict.fromkeys(map(ord, '\u2061\u2062\u2063\u2064'))
+_MARK = re.compile(r'[\x01-\x04]')
+
+
+def clean(s):
+    return ' '.join(s.translate(_INVIS).replace('\xa0', ' ').split())
+
+
+def unmark(s):
+    return _MARK.sub('', s)
+
+
+class Ctx:
+    def __init__(self, linear=False, tight=False, upright=False):
+        self.linear, self.tight, self.upright = linear, tight, upright
+
+    def sub(self, **kw):
+        c = Ctx(self.linear, self.tight, self.upright)
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+
+class Box:
+    def __init__(self, lines, base=0):
+        lines = lines or ['']
+        self.w = max(vlen(l) for l in lines)
+        self.lines = [l + ' ' * (self.w - vlen(l)) for l in lines]
+        self.base, self.h = base, len(lines)
+
+    def is_space(self):
+        return self.h == 1 and self.w > 0 and not unmark(self.lines[0]).strip()
+
+
+def tbox(t):
+    return Box([t])
+
+
+def hcat(boxes):
+    boxes = [b for b in boxes if b.w or b.h > 1]
+    if not boxes:
+        return tbox('')
+    asc = max(b.base for b in boxes)
+    desc = max(b.h - 1 - b.base for b in boxes)
+    lines = []
+    for r in range(asc + desc + 1):
+        row = []
+        for b in boxes:
+            i = r - (asc - b.base)
+            row.append(b.lines[i] if 0 <= i < b.h else ' ' * b.w)
+        lines.append(''.join(row))
+    return Box(lines, asc)
+
+
+def centered(b, w, align='center'):
+    left = {'left': 0, 'right': w - b.w}.get(align, (w - b.w) // 2)
+    return Box([' ' * left + l + ' ' * (w - b.w - left) for l in b.lines], b.base)
+
+
+def _pairs(src, dst):
+    assert len(src) == len(dst)
+    return dict(zip(src, dst))
+
+
+SUPM = _pairs('0123456789+-=()abcdefghijklmnoprstuvwxyzABDEGHIJKLMNOPRTUWβγδθφχ',
+              '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻᴬᴮᴰᴱᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾᴿᵀᵁᵂᵝᵞᵟᶿᵠᵡ')
+SUPM.update({'⊤': 'ᵀ', '*': '*', '∗': '*', '′': '′'})
+SUBM = _pairs('0123456789+-=()aehijklmnoprstuvxβγρφχ',
+              '₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓᵦᵧᵨᵩᵪ')
+COMB = {'¯': '\u0305', '‾': '\u0305', '―': '\u0305', '^': '\u0302', 'ˆ': '\u0302',
+        '~': '\u0303', '˜': '\u0303', '→': '\u20d7', '˙': '\u0307', '¨': '\u0308',
+        'ˇ': '\u030c', '´': '\u0301', '`': '\u0300'}
+FENCE = {'(': '⎛⎜⎝', ')': '⎞⎟⎠', '[': '⎡⎢⎣', ']': '⎤⎥⎦', '{': '⎧⎪⎩', '}': '⎫⎪⎭',
+         '|': '│││', '‖': '║║║'}
+REL = set('=≠≈≡<>≤≥≪≫∈∉∋⊂⊃⊆⊇⊄→←↔⇒⇐⇔⟹⟸⟶↦∝∼≃≅≜≔:∣∥⊥⊨⊢≲≳≺≻') | {
+    ':=', '<=', '>=', '!=', '->', '=>'}
+BIN = set('+-−±∓×÷⋅·∗∘⊙⊕⊗⊖∪∩∧∨⊎∖*')
+CLOSE = set(')]}⟩⌉⌋|‖')
+BIGOPS = set('∑∏∐∫∬∭∮⋃⋂⋁⋀⨁⨂')
+
+
+def mapped(b, table):
+    if b is None:
+        return ''
+    if b.h != 1:
+        return None
+    t = unmark(b.lines[0]).rstrip().replace('−', '-')
+    return ''.join(table[c] for c in t) if all(c in table for c in t) else None
+
+
+def balanced(s):
+    if not (s.startswith('(') and s.endswith(')')):
+        return False
+    depth = 0
+    for i, ch in enumerate(s):
+        depth += (ch == '(') - (ch == ')')
+        if depth == 0 and i < len(s) - 1:
+            return False
+    return True
+
+
+def atom(b):
+    s = b.lines[0] if b.h == 1 else ' '.join(l.strip() for l in b.lines)
+    p = unmark(s).strip()
+    return s if (len(p) == 1 or re.fullmatch(r"[\w.′']+", p) or balanced(p)) else '(' + s + ')'
+
+
+def r_tok(n, c):
+    return tbox(clean(ntext(n)))
+
+
+def r_mi(n, c):
+    s = clean(ntext(n))
+    upright = c.upright or n.attrs.get('mathvariant') == 'normal'
+    if len(s) == 1 and s.isalpha() and ord(s) < 0x10000 and not upright:
+        s = '\x03' + s + '\x04'
+    return tbox(s)
+
+
+def r_mtext(n, c):
+    return tbox(' '.join(ntext(n).replace('\xa0', ' ').translate(_INVIS).split()).join(
+        [' ' if ntext(n)[:1].isspace() else '', ' ' if ntext(n)[-1:].isspace() else '']))
+
+
+def r_mspace(n, c):
+    m = re.match(r'[\d.]+', n.attrs.get('width', ''))
+    return tbox(' ') if m and float(m.group(0)) >= 0.15 else tbox('')
+
+
+def fence_box(ch, asc, desc):
+    h = asc + desc + 1
+    if h == 1 or ch not in FENCE:
+        return tbox(ch)
+    top, mid, bot = FENCE[ch]
+    lines = [top] + [mid] * (h - 2) + [bot]
+    if ch in '{}' and h >= 3:
+        lines[h // 2] = '⎨' if ch == '{' else '⎬'
+    return Box(lines, asc)
+
+
+def opname(k):
+    if k.tag in ('mi', 'mo'):
+        return clean(ntext(k))
+    if k.tag in ('msub', 'msup', 'msubsup', 'munder', 'mover', 'munderover'):
+        e = elems(k)
+        return opname(e[0]) if e else ''
+    return ''
+
+
+def r_row(n, c):
+    kids = elems(n)
+    if not kids:
+        return tbox('')
+    texts = [clean(ntext(k)) if k.tag == 'mo' else
+             (opname(k) if k.tag in ('mover', 'munder', 'munderover')
+              and opname(k) in REL else None) for k in kids]
+    stretch = [not c.linear and k.tag == 'mo' and k.attrs.get('stretchy') == 'true'
+               and texts[i] in FENCE for i, k in enumerate(kids)]
+    boxes = [None if stretch[i] else render(k, c) for i, k in enumerate(kids)]
+    real = [b for b in boxes if b]
+    asc = max((b.base for b in real), default=0)
+    desc = max((b.h - 1 - b.base for b in real), default=0)
+    for i, k in enumerate(kids):
+        if stretch[i]:
+            boxes[i] = fence_box(texts[i], asc, desc)
+    out = []
+
+    def push(b):
+        if b.is_space() and out and out[-1].is_space():
+            return
+        out.append(b)
+
+    last = len(kids) - 1
+    for i, (k, b) in enumerate(zip(kids, boxes)):
+        s = texts[i]
+        padl = padr = False
+        if s is not None and not c.tight:
+            if s in REL:
+                padl, padr = i > 0, i < last
+            elif s in BIN:
+                prev = kids[i - 1] if i else None
+                padl = padr = (prev is not None and i < last and not (
+                    prev.tag == 'mo' and texts[i - 1] not in CLOSE))
+            elif s in (',', ';'):
+                padr = i < last
+        if padl:
+            push(tbox(' '))
+        push(b)
+        if padr:
+            push(tbox(' '))
+        if c.linear and not c.tight and k.tag == 'mfrac' and i < last and texts[i + 1] is None:
+            push(tbox(' '))
+        if not c.tight:
+            nm = opname(k)
+            if nm and (nm in BIGOPS or (len(nm) >= 2 and nm.isalpha())):
+                j = i + 1
+                while j <= last and texts[j] == '':
+                    j += 1
+                if j <= last:
+                    first = unmark(boxes[j].lines[0])[:1]
+                    if first and first not in ' ([{⟨,;.)':
+                        push(tbox(' '))
+    return hcat(out)
+
+
+def r_first(n, c):
+    e = [k for k in elems(n) if not k.tag.startswith('annotation')]
+    return render(e[0], c) if e else tbox('')
+
+
+def r_mstyle(n, c):
+    v = n.attrs.get('mathvariant')
+    b = r_row(n, c.sub(upright=True) if v else c)
+    if v and v.startswith('bold') and b.h == 1 and re.search('[A-Za-z]', unmark(b.lines[0])):
+        b = tbox('\x01' + b.lines[0] + '\x02')
+    return b
+
+
+def r_phantom(n, c):
+    b = r_row(n, c)
+    return Box([re.sub(r'[^ ]', ' ', unmark(l)) for l in b.lines], b.base)
+
+
+def r_frac(n, c):
+    e = elems(n)
+    num, den = render(e[0], c), render(e[1], c)
+    bar = n.attrs.get('linethickness') != '0'
+    if c.linear:
+        if not bar:
+            return tbox('(%s %s)' % (num.lines[0], den.lines[0]))
+        return tbox(atom(num) + '/' + atom(den))
+    w = max(num.w, den.w) + 2
+    lines = [centered(num, w).lines, ['─' * w] if bar else [], centered(den, w).lines]
+    flat = [l for part in lines for l in part]
+    return Box(flat, num.h)
+
+
+def r_sqrt(n, c):
+    b = r_row(n, c)
+    if c.linear:
+        return tbox('√' + atom(b))
+    if b.h == 1 and b.w <= 1:
+        return tbox('√' + b.lines[0])
+    top = ' ' + '‾' * b.w
+    rad = ['√' if i == b.base else ' ' for i in range(b.h)]
+    return hcat([Box([top] + rad, b.base + 1), Box([' '] + b.lines, b.base + 1)])
+
+
+def r_root(n, c):
+    e = elems(n)
+    inner = r_sqrt(_wrap(e[0]), c)
+    idx = render(e[1], c.sub(tight=True)) if len(e) > 1 else None
+    m = mapped(idx, SUPM) if idx else ''
+    pre = tbox(m) if m is not None else tbox('(' + unmark(idx.lines[0]) + ')')
+    return hcat([pre, inner])
+
+
+def _wrap(node):
+    w = N('mrow', {})
+    w.kids = [node]
+    return w
+
+
+def attach(base, sub, sup, c):
+    ms, mp = mapped(sub, SUBM), mapped(sup, SUPM)
+    if ms is not None and mp is not None:
+        return hcat([base, tbox(ms + mp)])
+    if c.linear:
+        def part(b, m, mark):
+            if b is None:
+                return ''
+            return m if m is not None else mark + atom(b)
+        return hcat([base, tbox(part(sub, ms, '_') + part(sup, mp, '^'))])
+    bh = base.h
+    items = []
+    if sup:
+        items.append((0 if bh > 1 else -sup.h, sup))
+    if sub:
+        items.append((bh - sub.h if bh > 1 else 1, sub))
+    lo = min([0] + [s for s, _ in items])
+    hi = max([bh - 1] + [s + b.h - 1 for s, b in items])
+    w = max(b.w for _, b in items)
+    rows = [' ' * w] * (hi - lo + 1)
+    for s, b in items:
+        for i, l in enumerate(b.lines):
+            rows[s - lo + i] = l + ' ' * (w - b.w)
+    return hcat([base, Box(rows, base.base - lo)])
+
+
+def r_script(n, c):
+    e = elems(n)
+    ct = c.sub(tight=True)
+    base = render(e[0], c)
+    r = [render(k, ct) for k in e[1:]]
+    if n.tag == 'msub':
+        return attach(base, r[0], None, c)
+    if n.tag == 'msup':
+        return attach(base, None, r[0], c)
+    return attach(base, r[0], r[1], c)
+
+
+def add_accent(b, comb):
+    if b.h != 1:
+        return None
+    s, out, seen = b.lines[0], [], 0
+    vis = [i for i, ch in enumerate(s) if ch > '\x04' and not ch.isspace()]
+    targets = set(vis) if comb == '\u0305' else set(vis[-1:])
+    for i, ch in enumerate(s):
+        out.append(ch + (comb if i in targets else ''))
+    return Box([''.join(out)], 0) if vis else None
+
+
+def r_limits(n, c):
+    e = elems(n)
+    ct = c.sub(tight=True)
+    base = render(e[0], c)
+    under = over = None
+    if n.tag == 'munder':
+        under = render(e[1], ct)
+    elif n.tag == 'mover':
+        over = render(e[1], ct)
+    else:
+        under, over = render(e[1], ct), render(e[2], ct)
+    if over is not None and under is None and over.h == 1:
+        ot = clean(ntext(e[1]))
+        comb = COMB.get(ot) or (ot if len(ot) == 1 and unicodedata.combining(ot) else None)
+        acc = add_accent(base, comb) if comb else None
+        if acc:
+            return acc
+    if c.linear:
+        return attach(base, under, over, c)
+    parts = [p for p in (over, base, under) if p is not None]
+    w = max(p.w for p in parts)
+    lines = [l for p in parts for l in centered(p, w).lines]
+    return Box(lines, (over.h if over else 0) + base.base)
+
+
+def r_table(n, c):
+    rows = []
+    for tr in elems(n):
+        cells = elems(tr)
+        if tr.tag == 'mlabeledtr':
+            cells = cells[1:]
+        rows.append(cells)
+    if not rows:
+        return tbox('')
+    tab_align = (n.attrs.get('columnalign') or 'center').split()
+    if c.linear:
+        return tbox('; '.join(' '.join(render(td, c).lines[0] for td in r) for r in rows))
+    grid = [[render(td, c) for td in r] for r in rows]
+    ncol = max(len(r) for r in grid)
+    widths = [max((r[j].w for r in grid if j < len(r)), default=0) for j in range(ncol)]
+    gap = 1 if len(set(tab_align)) > 1 or 'right' in tab_align else 2
+    rowboxes = []
+    for r, cells in zip(grid, rows):
+        parts = []
+        for j in range(ncol):
+            if j >= len(r):
+                parts.append(tbox(' ' * widths[j]))
+                continue
+            al = cells[j].attrs.get('columnalign') or tab_align[min(j, len(tab_align) - 1)]
+            parts.append(centered(r[j], widths[j], al))
+            if j < ncol - 1:
+                parts.append(tbox(' ' * gap))
+        rowboxes.append(hcat(parts))
+    spaced = any(b.h > 1 for b in rowboxes)
+    lines = []
+    for i, b in enumerate(rowboxes):
+        if i and spaced:
+            lines.append(' ' * b.w)
+        lines.extend(b.lines)
+    w = max(b.w for b in rowboxes)
+    return Box([l + ' ' * (w - vlen(l)) for l in lines], (len(lines) - 1) // 2)
+
+
+def r_fenced(n, c):
+    op, cl = n.attrs.get('open', '('), n.attrs.get('close', ')')
+    seps = n.attrs.get('separators', ',').split() or [',']
+    kids = elems(n)
+
+    def mo(s, stretchy=False):
+        m = N('mo', {'stretchy': 'true'} if stretchy else {})
+        m.kids = [s]
+        return m
+    row = N('mrow', {})
+    row.kids = [mo(op, True)]
+    for i, k in enumerate(kids):
+        if i:
+            row.kids.append(mo(seps[min(i - 1, len(seps) - 1)]))
+        row.kids.append(k)
+    row.kids.append(mo(cl, True))
+    return r_row(row, c)
+
+
+RENDER = {
+    'mi': r_mi, 'mn': r_tok, 'mo': r_tok, 'ms': r_tok, 'mtext': r_mtext, 'mspace': r_mspace,
+    'mrow': r_row, 'math': r_first, 'semantics': r_first, 'mstyle': r_mstyle,
+    'mphantom': r_phantom, 'mfrac': r_frac, 'msqrt': r_sqrt, 'mroot': r_root,
+    'msub': r_script, 'msup': r_script, 'msubsup': r_script,
+    'munder': r_limits, 'mover': r_limits, 'munderover': r_limits,
+    'mtable': r_table, 'mfenced': r_fenced,
+}
+
+
+def render(n, c):
+    return RENDER.get(n.tag, r_row)(n, c)
+
+
+def trim_lines(lines):
+    lines = [l.rstrip() for l in lines]
+    while lines and not unmark(lines[0]).strip():
+        lines.pop(0)
+    while lines and not unmark(lines[-1]).strip():
+        lines.pop()
+    lead = min((vlen(l) - vlen(l.lstrip()) for l in lines if unmark(l).strip()), default=0)
+    return [l[lead:] for l in lines]
+
+
+def tex_fallback(root):
+    def find(n):
+        for k in elems(n):
+            if k.tag == 'annotation' and 'tex' in k.attrs.get('encoding', ''):
+                return ntext(k)
+            r = find(k)
+            if r:
+                return r
+    return ' '.join((find(root) or ntext(root)).split())
+
+
+
+# ------------------------------------------------------- XHTML -> text blocks
+
+BLOCK = {'p', 'div', 'section', 'article', 'aside', 'header', 'footer', 'main', 'nav',
+         'figure', 'figcaption', 'blockquote', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'table',
+         'tr', 'pre', 'body', 'address', 'details', 'summary', 'caption', 'tbody', 'thead',
+         'tfoot', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
+HEADINGS = {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
+SKIP = {'script', 'style', 'head', 'title'}
+BOLD = HEADINGS | {'b', 'strong', 'th', 'dt'}
+ITAL = {'i', 'em', 'cite', 'var', 'dfn'}
+# inline style markers inside text: \x01/\x02 bold on/off, \x03/\x04 italic on/off,
+# \x05 non-breaking space
+
+
+class Extractor(HTMLParser):
+    """Produces blocks: ('p'|'li'|'row', text, indent, prefix, pre, align),
+    ('img', src, alt), ('hr',), ('anchor', id)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks, self.buf, self.anchors = [], [], []
+        self.mstack = []
+        self.links, self.cur_link, self.heading = [], None, 0
+        self.skip = self.pre = self.bq = self.bold = self.ital = self.cell = 0
+        self.lists = []
+        self.prefix = self.align = None
+        self.kind = 'p'
+
+    def flush(self):
+        text = ''.join(self.buf)
+        self.buf = []
+        if self.bold:
+            self.buf.append('\x01')
+        if self.ital:
+            self.buf.append('\x03')
+        if self.cur_link is not None:
+            self.buf.append('\x06%d\x07' % self.cur_link)
+        if not re.sub(r'\x06\d+\x07|[\x01-\x05\x08\x10-\x13\s]', '', text):
+            return
+        indent = self.bq * 4 + len(self.lists) * 3
+        if self.prefix:
+            indent = max(indent, 3)
+        self.emit_anchors()
+        self.blocks.append(('li' if self.prefix else self.kind, text, indent, self.prefix,
+                            bool(self.pre), self.align, self.heading))
+        self.prefix = self.align = None
+        self.heading = 0
+        self.kind = 'p'
+
+    def finish_math(self):
+        root, self.mstack = self.mstack[0], []
+        block = root.attrs.get('display') == 'block'
+        try:
+            lines = trim_lines(render(root, Ctx(linear=not block, upright=bool(self.ital))).lines)
+        except Exception:
+            lines = [tex_fallback(root)]
+        if block:
+            self.flush()
+            self.emit_anchors()
+            self.blocks.append(('math', root))
+        else:
+            self.buf.append(' '.join(lines).replace(' ', '\x05'))
+
+    def emit_anchors(self):
+        self.blocks.extend(('anchor', i) for i in self.anchors)
+        self.anchors = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag in SKIP:
+            self.skip += 1
+            return
+        if self.skip:
+            return
+        if self.mstack:
+            node = N(tag, a)
+            self.mstack[-1].kids.append(node)
+            self.mstack.append(node)
+            return
+        if tag == 'math':
+            self.mstack = [N('math', a)]
+            return
+        if tag in BLOCK:
+            self.flush()
+        if a.get('id'):
+            self.anchors.append(a['id'])
+        if tag == 'br':
+            self.buf.append('\n')
+        elif tag in ('img', 'image'):
+            src = a.get('src') or a.get('xlink:href') or a.get('href')
+            if src:
+                self.flush()
+                self.emit_anchors()
+                self.blocks.append(('img', src, a.get('alt', '')))
+        elif tag == 'hr':
+            self.emit_anchors()
+            self.blocks.append(('hr',))
+        elif tag in ('ul', 'ol'):
+            try:
+                start = int(a.get('start', 1)) - 1
+            except ValueError:
+                start = 0
+            self.lists.append([tag, start])
+        elif tag == 'li':
+            if self.lists and self.lists[-1][0] == 'ol':
+                self.lists[-1][1] += 1
+                self.prefix = '%d.' % self.lists[-1][1]
+            else:
+                self.prefix = '•'
+        elif tag == 'blockquote':
+            self.bq += 1
+        elif tag == 'pre':
+            self.pre += 1
+        elif tag == 'tr':
+            self.kind, self.cell = 'row', 0
+        elif tag in ('td', 'th'):
+            if self.cell:
+                self.buf.append(' │ ')
+            self.cell += 1
+        elif tag in HEADINGS:
+            self.heading = int(tag[1])
+            self.align = 'center' if tag in ('h1', 'h2') else None
+        elif tag == 'a' and a.get('href') is not None:
+            self.cur_link = len(self.links)
+            self.links.append(a['href'])
+            self.buf.append('\x06%d\x07' % self.cur_link)
+        elif tag == 'sup':
+            self.buf.append('\x10')
+        elif tag == 'sub':
+            self.buf.append('\x12')
+        if tag in BOLD:
+            self.bold += 1
+            if self.bold == 1:
+                self.buf.append('\x01')
+        if tag in ITAL:
+            self.ital += 1
+            if self.ital == 1:
+                self.buf.append('\x03')
+
+    def handle_endtag(self, tag):
+        if tag in SKIP:
+            self.skip = max(0, self.skip - 1)
+            return
+        if self.skip:
+            return
+        if self.mstack:
+            if tag == 'math':
+                self.finish_math()
+            else:
+                for i in range(len(self.mstack) - 1, 0, -1):
+                    if self.mstack[i].tag == tag:
+                        del self.mstack[i:]
+                        break
+            return
+        if tag in BOLD and self.bold:
+            self.bold -= 1
+            if not self.bold:
+                self.buf.append('\x02')
+        if tag in ITAL and self.ital:
+            self.ital -= 1
+            if not self.ital:
+                self.buf.append('\x04')
+        if tag == 'a' and self.cur_link is not None:
+            self.buf.append('\x08')
+            self.cur_link = None
+        elif tag == 'sup':
+            self.buf.append('\x11')
+        elif tag == 'sub':
+            self.buf.append('\x13')
+        if tag in BLOCK:
+            self.flush()
+        if tag in ('li', 'tr') or tag in HEADINGS:
+            self.heading = 0
+            self.prefix = self.align = None
+            self.kind = 'p'
+        if tag == 'blockquote':
+            self.bq = max(0, self.bq - 1)
+        elif tag == 'pre':
+            self.pre = max(0, self.pre - 1)
+        elif tag in ('ul', 'ol') and self.lists:
+            self.lists.pop()
+
+    def handle_data(self, data):
+        if self.skip:
+            return
+        if self.mstack:
+            self.mstack[-1].kids.append(data)
+            return
+        data = data.replace('\xa0', '\x05')
+        if not self.pre:
+            data = re.sub(r'[ \t\r\n\f\v]+', ' ', data)
+        self.buf.append(data)
+
+
+
+def vlen(s):
+    n = 0
+    for c in s:
+        if c == '\x05':
+            n += 1
+        elif c < '\x05':
+            continue
+        elif unicodedata.category(c) in ('Mn', 'Me', 'Cf'):
+            continue
+        else:
+            n += 2 if unicodedata.east_asian_width(c) in 'WF' else 1
+    return n
+
+
+
+# ------------------------------------------------------------- image helpers
+
+def image_size(d):
+    try:
+        if d.startswith(PNG_SIG):
+            return struct.unpack('>II', d[16:24])
+        if d[:3] == b'GIF':
+            return struct.unpack('<HH', d[6:10])
+        if d[:2] == b'\xff\xd8':
+            i = 2
+            while i + 9 < len(d):
+                if d[i] != 0xFF:
+                    i += 1
+                    continue
+                m = d[i + 1]
+                if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7:
+                    i += 2
+                    continue
+                if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+                    h, w = struct.unpack('>HH', d[i + 5:i + 9])
+                    return w, h
+                i += 2 + struct.unpack('>H', d[i + 2:i + 4])[0]
+        if d[:4] == b'RIFF' and d[8:12] == b'WEBP':
+            if d[12:16] == b'VP8X':
+                return (int.from_bytes(d[24:27], 'little') + 1,
+                        int.from_bytes(d[27:30], 'little') + 1)
+            if d[12:16] == b'VP8 ':
+                w, h = struct.unpack('<HH', d[26:30])
+                return w & 0x3FFF, h & 0x3FFF
+            if d[12:16] == b'VP8L':
+                bits = int.from_bytes(d[21:25], 'little')
+                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    except Exception:
+        pass
+    return None
+
+
+def to_png(data):
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, 'in'), os.path.join(d, 'out.png')
+        with open(src, 'wb') as f:
+            f.write(data)
+        for cmd in (['sips', '-s', 'format', 'png', src, '--out', dst],
+                    ['magick', src, dst], ['convert', src, dst]):
+            if shutil.which(cmd[0]):
+                try:
+                    subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+                    with open(dst, 'rb') as f:
+                        return f.read()
+                except Exception:
+                    continue
+    return None
+
+
+
+
+
+# ------------------------------------------------ MathML -> Tk canvas typesetting
+# Display equations are laid out as boxes (width, ascent, descent, draw callback)
+# and drawn on a small Canvas embedded in the text.  Fonts, colours and sizes come
+# from the reader, so equations follow the theme and the text size.
+
+class MathFonts:
+    def __init__(self, family):
+        self.family = family
+        self._cache = {}
+
+    def font(self, px, bold, ital):
+        key = (px, bold, ital)
+        if key not in self._cache:
+            self._cache[key] = tkfont.Font(
+                family=self.family, size=-px, weight='bold' if bold else 'normal',
+                slant='italic' if ital else 'roman')
+        return self._cache[key]
+
+    def measure(self, px, bold, ital, s):
+        return self.font(px, bold, ital).measure(s)
+
+    def metrics(self, px, bold, ital):
+        f = self.font(px, bold, ital)
+        return f.metrics('ascent'), f.metrics('descent')
+
+
+class MCtx:
+    def __init__(self, fonts, px, fg, display=True, tight=False, upright=False,
+                 bold=False, depth=0):
+        self.fonts, self.px, self.fg = fonts, px, fg
+        self.display, self.tight, self.upright = display, tight, upright
+        self.bold, self.depth = bold, depth
+
+    def sub(self, **kw):
+        c = MCtx(self.fonts, self.px, self.fg, self.display, self.tight,
+                 self.upright, self.bold, self.depth)
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+    def script(self):
+        return self.sub(px=max(6, round(self.px * (0.72 if self.depth == 0 else 0.6))),
+                        tight=True, display=False, depth=self.depth + 1)
+
+    @property
+    def axis(self):
+        return self.px * 0.27
+
+
+class MBox:
+    __slots__ = ('w', 'asc', 'desc', 'draw', 'txt', 'space')
+
+    def __init__(self, w=0, asc=0, desc=0, draw=None, txt='', space=False):
+        self.w, self.asc, self.desc, self.txt, self.space = w, asc, desc, txt, space
+        self.draw = draw or (lambda c, x, y: None)
+
+
+def demath(ch):
+    """Mathematical alphanumeric -> (plain character, bold, italic)."""
+    if ch == 'ℎ':
+        return 'h', False, True
+    if not 0x1D400 <= ord(ch) <= 0x1D7FF:
+        return ch, False, False
+    words = unicodedata.name(ch, '').split()
+    if any(w in ('SCRIPT', 'FRAKTUR', 'DOUBLE-STRUCK', 'MONOSPACE') for w in words):
+        return ch, False, False
+    bold, ital = 'BOLD' in words, 'ITALIC' in words
+    rest = [w for w in words[1:] if w not in ('BOLD', 'ITALIC', 'SANS-SERIF')]
+    names = []
+    if rest and rest[0] in ('CAPITAL', 'SMALL'):
+        letter = ' '.join(rest[1:])
+        names = ['LATIN %s LETTER %s' % (rest[0], letter),
+                 'GREEK %s LETTER %s' % (rest[0], letter)]
+    elif rest and rest[0] == 'DIGIT':
+        names = ['DIGIT ' + ' '.join(rest[1:])]
+    else:
+        names = [' '.join(rest), 'GREEK ' + ' '.join(rest)]
+    for name in names:
+        try:
+            return unicodedata.lookup(name), bold, ital
+        except KeyError:
+            continue
+    return ch, bold, ital
+
+
+def m_tok(ctx, s, bold, ital, scale=1.0):
+    px = max(5, round(ctx.px * scale))
+    f = ctx.fonts
+    w = f.measure(px, bold, ital, s)
+    ra, rd = f.metrics(px, bold, ital)
+    fnt, fg = f.font(px, bold, ital), ctx.fg
+
+    def draw(c, x, y):
+        c.create_text(x, y - ra, text=s, anchor='nw', font=fnt, fill=fg)
+    return MBox(w + (px * 0.05 if ital else 0), ra * 0.9, rd * 0.9, draw, s)
+
+
+def m_hcat(boxes):
+    boxes = [b for b in boxes if b.w or b.asc or b.desc]
+    if not boxes:
+        return MBox()
+
+    def draw(c, x, y):
+        for b in boxes:
+            b.draw(c, x, y)
+            x += b.w
+    return MBox(sum(b.w for b in boxes), max(b.asc for b in boxes),
+                max(b.desc for b in boxes), draw, ''.join(b.txt for b in boxes))
+
+
+def m_space(w):
+    return MBox(w, 0, 0, None, '', True)
+
+
+def m_text(ctx, s, bold=False, ital=False, scale=1.0):
+    if not s:
+        return MBox()
+    runs = []
+    for ch in s:
+        base, b, i = demath(ch)
+        st = (bold or b, ital or i)
+        if runs and runs[-1][1] == st:
+            runs[-1][0] += base
+        else:
+            runs.append([base, st])
+    return m_hcat([m_tok(ctx, t, st[0], st[1], scale) for t, st in runs])
+
+
+def m_shift(b, dy, asc=None, desc=None):
+    """Same box drawn dy lower (positive = down); asc/desc override the extents."""
+    return MBox(b.w, b.asc if asc is None else asc, b.desc if desc is None else desc,
+                lambda c, x, y: b.draw(c, x, y + dy), b.txt, b.space)
+
+
+def mr_tok(n, c):
+    return m_text(c, clean(ntext(n)), bold=c.bold)
+
+
+def mr_mi(n, c):
+    s = clean(ntext(n))
+    ital = (len(s) == 1 and s.isalpha() and ord(s) < 0x10000 and not c.upright
+            and n.attrs.get('mathvariant') != 'normal')
+    return m_text(c, s, bold=c.bold, ital=ital)
+
+
+def mr_mo(n, c):
+    s = clean(ntext(n))
+    if s in BIGOPS and c.display and not c.tight:
+        b = m_text(c, s, bold=c.bold, scale=1.7 if s in '∫∬∭∮' else 1.35)
+        h = b.asc + b.desc
+        return m_shift(b, (b.asc - b.desc) / 2 - c.axis, c.axis + h / 2, h / 2 - c.axis)
+    return m_text(c, s, bold=c.bold)
+
+
+def mr_mtext(n, c):
+    return m_text(c, ntext(n).replace('\xa0', ' ').translate(_INVIS), bold=c.bold)
+
+
+def mr_mspace(n, c):
+    m = re.match(r'(-?[\d.]+)\s*(em|ex|px)?', n.attrs.get('width', ''))
+    if not m:
+        return MBox()
+    v = float(m.group(1)) * {'em': c.px, 'ex': c.px * 0.5, 'px': 1}.get(m.group(2) or 'em')
+    return m_space(max(0, v))
+
+
+FENCE_DRAW = set('()[]{}|‖')
+
+
+def m_fence(c, ch, asc, desc):
+    h, px = asc + desc, c.px
+    if h < 1.3 * px or ch not in FENCE_DRAW:
+        return m_text(c, ch, bold=c.bold)
+    w = {'(': .34, ')': .34, '[': .3, ']': .3, '{': .42, '}': .42, '|': .2, '‖': .32}[ch] * px
+    fg, th = c.fg, max(1.2, px * 0.07)
+
+    def draw(cv, x, y):
+        top, bot = y - asc, y + desc
+        mid = (top + bot) / 2
+        right = ch in ')]}'
+
+        def fx(u):                      # u in 0..1 from the outer edge
+            return x + (w * (1 - u) if right else w * u)
+        kw = dict(fill=fg, width=th, capstyle='round', joinstyle='round')
+        if ch in '()':
+            cv.create_line(fx(.85), top, fx(.2), top + h * .28, fx(.2), bot - h * .28,
+                           fx(.85), bot, smooth=True, splinesteps=24, **kw)
+        elif ch in '[]':
+            cv.create_line(fx(.85), top, fx(.2), top, fx(.2), bot, fx(.85), bot, **kw)
+        elif ch in '{}':
+            cv.create_line(fx(.85), top, fx(.55), top + h * .1, fx(.5), top + h * .38,
+                           fx(.1), mid, fx(.5), bot - h * .38, fx(.55), bot - h * .1,
+                           fx(.85), bot, smooth=True, splinesteps=24, **kw)
+        elif ch == '|':
+            cv.create_line(x + w / 2, top, x + w / 2, bot, **kw)
+        else:
+            cv.create_line(x + w * .3, top, x + w * .3, bot, **kw)
+            cv.create_line(x + w * .7, top, x + w * .7, bot, **kw)
+    return MBox(w, asc, desc, draw, ch)
+
+
+def mr_row(n, c):
+    kids = elems(n)
+    if not kids:
+        return MBox()
+    texts = [clean(ntext(k)) if k.tag == 'mo' else
+             (opname(k) if k.tag in ('mover', 'munder', 'munderover')
+              and opname(k) in REL else None) for k in kids]
+    stretch = [k.tag == 'mo' and k.attrs.get('stretchy') == 'true' and texts[i] in FENCE
+               for i, k in enumerate(kids)]
+    boxes = [None if stretch[i] else mr(k, c) for i, k in enumerate(kids)]
+    real = [b for b in boxes if b is not None]
+    asc = max([b.asc for b in real] + [c.px * .75])
+    desc = max([b.desc for b in real] + [c.px * .22])
+    for i in range(len(kids)):
+        if stretch[i]:
+            boxes[i] = m_fence(c, texts[i], asc, desc)
+    out, em, last = [], c.px, len(kids) - 1
+
+    def space(w):
+        if out and out[-1].space:
+            if out[-1].w < w:
+                out[-1] = m_space(w)
+        else:
+            out.append(m_space(w))
+    for i, (k, b) in enumerate(zip(kids, boxes)):
+        s = texts[i]
+        padl = padr = 0
+        if s is not None and not c.tight:
+            if s in REL:
+                padl, padr = (.28 * em if i > 0 else 0), (.28 * em if i < last else 0)
+            elif s in BIN:
+                prev = kids[i - 1] if i else None
+                if (prev is not None and i < last and
+                        not (prev.tag == 'mo' and texts[i - 1] not in CLOSE)):
+                    padl = padr = .22 * em
+            elif s in (',', ';') and i < last:
+                padr = .17 * em
+        if padl:
+            space(padl)
+        if b.space:
+            space(b.w)
+        else:
+            out.append(b)
+        if padr:
+            space(padr)
+        if not c.tight:
+            if k.tag == 'mfrac' and i < last and texts[i + 1] is None:
+                space(.12 * em)
+            nm = opname(k)
+            if nm and (nm in BIGOPS or (len(nm) >= 2 and nm.isalpha())):
+                j = i + 1
+                while j <= last and texts[j] == '':
+                    j += 1
+                if j <= last:
+                    first = boxes[j].txt[:1]
+                    if first not in ('(', '[', '{', '⟨', ',', ';', '.', ')'):
+                        space(.17 * em)
+    return m_hcat(out)
+
+
+def mr_first(n, c):
+    e = [k for k in elems(n) if not k.tag.startswith('annotation')]
+    return mr(e[0], c) if e else MBox()
+
+
+def mr_mstyle(n, c):
+    v = n.attrs.get('mathvariant')
+    if v:
+        c = c.sub(upright=True, bold=c.bold or v.startswith('bold'))
+    if n.attrs.get('displaystyle') == 'false':
+        c = c.sub(display=False)
+    return mr_row(n, c)
+
+
+def mr_phantom(n, c):
+    b = mr_row(n, c)
+    return MBox(b.w, b.asc, b.desc, None, '', True)
+
+
+def mr_frac(n, c):
+    e = elems(n)
+    cc = c.sub(px=round(c.px * (1 if c.depth == 0 else .78)), depth=c.depth + 1,
+               display=False)
+    num, den = mr(e[0], cc), mr(e[1], cc)
+    bar = n.attrs.get('linethickness') not in ('0', '0px')
+    ax, th, gap, pad = c.axis, max(1.0, c.px * .06), c.px * .16, c.px * .12
+    w = max(num.w, den.w) + 2 * pad
+    asc = ax + th / 2 + gap + num.asc + num.desc
+    desc = den.asc + den.desc + gap + th / 2 - ax
+    fg = c.fg
+
+    def draw(cv, x, y):
+        yb = y - ax
+        num.draw(cv, x + (w - num.w) / 2, yb - th / 2 - gap - num.desc)
+        den.draw(cv, x + (w - den.w) / 2, yb + th / 2 + gap + den.asc)
+        if bar:
+            cv.create_line(x + pad / 2, yb, x + w - pad / 2, yb, fill=fg, width=th)
+    return MBox(w, asc, desc, draw)
+
+
+def mr_sqrt(n, c, index=None):
+    b = mr_row(n, c)
+    px, fg = c.px, c.fg
+    th, gap = max(1.0, px * .06), px * .12
+    asc, desc = b.asc + gap + th * 1.5, b.desc
+    h = asc + desc
+    rw = max(px * .55, h * .3)
+    ix = index.w - rw * .55 if index is not None and index.w > rw * .55 else 0
+    w = ix + rw + b.w + px * .12
+
+    def draw(cv, x, y):
+        top, bot = y - asc + th, y + desc
+        x0 = x + ix
+        cv.create_line(x0, bot - h * .42, x0 + rw * .22, bot - h * .5, x0 + rw * .5, bot,
+                       x0 + rw, top, x0 + rw + b.w + px * .1, top, fill=fg, width=th * 1.2,
+                       joinstyle='miter')
+        b.draw(cv, x0 + rw + px * .04, y)
+        if index is not None:
+            index.draw(cv, x, y - h * .45)
+    return MBox(w, asc, desc, draw)
+
+
+def mr_root(n, c):
+    e = elems(n)
+    wrapper = N('mrow', {})
+    wrapper.kids = [e[0]]
+    idx = mr(e[1], c.script()) if len(e) > 1 else None
+    return mr_sqrt(wrapper, c, idx)
+
+
+def m_attach(c, base, sub, sup):
+    px = c.px
+    ex = px * .05
+    raise_ = max(px * .4, base.asc * .72) if sup else 0
+    drop = max(px * .22, base.desc * .9 + (sub.asc * .25 if sub else 0)) if sub else 0
+    if sub and sup and raise_ + drop < sup.desc + sub.asc + px * .15:
+        drop = sup.desc + sub.asc + px * .15 - raise_
+    w = base.w + ex + max(sup.w if sup else 0, sub.w if sub else 0)
+    asc = max(base.asc, raise_ + (sup.asc if sup else 0))
+    desc = max(base.desc, drop + (sub.desc if sub else 0))
+
+    def draw(cv, x, y):
+        base.draw(cv, x, y)
+        if sup:
+            sup.draw(cv, x + base.w + ex, y - raise_)
+        if sub:
+            sub.draw(cv, x + base.w + ex, y + drop)
+    return MBox(w, asc, desc, draw, base.txt)
+
+
+def mr_script(n, c):
+    e = elems(n)
+    base = mr(e[0], c)
+    sc = c.script()
+    r = [mr(k, sc) for k in e[1:]]
+    if n.tag == 'msub':
+        return m_attach(c, base, r[0], None)
+    if n.tag == 'msup':
+        return m_attach(c, base, None, r[0])
+    return m_attach(c, base, r[0], r[1])
+
+
+def m_accent(c, kind, base):
+    px, fg = c.px, c.fg
+    ah = px * .16
+    w = base.w
+
+    def draw(cv, x, y):
+        top = y - base.asc - px * .05
+        base.draw(cv, x, y)
+        mx = x + w / 2
+        kw = dict(fill=fg, width=max(1.0, px * .06), capstyle='round', joinstyle='round')
+        if kind == 'bar':
+            cv.create_line(x + px * .05, top - ah / 2, x + w - px * .05, top - ah / 2, **kw)
+        elif kind == 'hat':
+            cv.create_line(mx - px * .17, top - ah * .1, mx, top - ah, mx + px * .17,
+                           top - ah * .1, **kw)
+        elif kind == 'tilde':
+            cv.create_line(mx - px * .18, top - ah * .3, mx - px * .08, top - ah * .9,
+                           mx + px * .08, top - ah * .3, mx + px * .18, top - ah * .9,
+                           smooth=True, **kw)
+        elif kind == 'vec':
+            cv.create_line(mx - px * .2, top - ah / 2, mx + px * .2, top - ah / 2, **kw)
+            cv.create_line(mx + px * .1, top - ah, mx + px * .2, top - ah / 2, mx + px * .1,
+                           top, **kw)
+        elif kind == 'dot':
+            r = px * .035
+            cv.create_oval(mx - r, top - ah / 2 - r, mx + r, top - ah / 2 + r, fill=fg,
+                           outline=fg)
+        else:
+            for dx in (-px * .08, px * .08):
+                r = px * .035
+                cv.create_oval(mx + dx - r, top - ah / 2 - r, mx + dx + r, top - ah / 2 + r,
+                               fill=fg, outline=fg)
+    return MBox(w, base.asc + px * .05 + ah, base.desc, draw, base.txt)
+
+
+ACCENT_KIND = {'¯': 'bar', '‾': 'bar', '―': 'bar', '\u0305': 'bar', '\u0304': 'bar',
+               '^': 'hat', 'ˆ': 'hat', '\u0302': 'hat', '~': 'tilde', '˜': 'tilde',
+               '\u0303': 'tilde', '→': 'vec', '\u20d7': 'vec', '˙': 'dot', '\u0307': 'dot',
+               '¨': 'ddot', '\u0308': 'ddot'}
+
+
+def mr_limits(n, c):
+    e = elems(n)
+    base = mr(e[0], c)
+    sc = c.script()
+    under = over = None
+    if n.tag == 'munder':
+        under = mr(e[1], sc)
+    elif n.tag == 'mover':
+        over = mr(e[1], sc)
+    else:
+        under, over = mr(e[1], sc), mr(e[2], sc)
+    if over is not None and under is None:
+        kind = ACCENT_KIND.get(clean(ntext(e[1])))
+        if kind:
+            return m_accent(c, kind, base)
+    if not c.display and not c.tight:
+        return m_attach(c, base, under, over)
+    gap = c.px * .12
+    w = max(b.w for b in (base, under, over) if b is not None)
+    asc = base.asc + (over.asc + over.desc + gap if over else 0)
+    desc = base.desc + (under.asc + under.desc + gap if under else 0)
+
+    def draw(cv, x, y):
+        base.draw(cv, x + (w - base.w) / 2, y)
+        if over:
+            over.draw(cv, x + (w - over.w) / 2, y - base.asc - gap - over.desc)
+        if under:
+            under.draw(cv, x + (w - under.w) / 2, y + base.desc + gap + under.asc)
+    return MBox(w, asc, desc, draw, base.txt)
+
+
+def mr_table(n, c):
+    rows = []
+    for tr in elems(n):
+        cells = elems(tr)
+        rows.append(cells[1:] if tr.tag == 'mlabeledtr' else cells)
+    if not rows:
+        return MBox()
+    tab_align = (n.attrs.get('columnalign') or 'center').split()
+    cc = c.sub(display=False)
+    grid = [[mr(td, cc) for td in r] for r in rows]
+    ncol = max(len(r) for r in grid)
+    widths = [max((r[j].w for r in grid if j < len(r)), default=0) for j in range(ncol)]
+    aligned = len(set(tab_align)) > 1 or 'right' in tab_align
+    cgap = c.px * (.4 if aligned else 1.1)
+    rgap = c.px * .45
+    rasc = [max([b.asc for b in r] + [c.px * .6]) for r in grid]
+    rdesc = [max([b.desc for b in r] + [c.px * .2]) for r in grid]
+    total = sum(rasc) + sum(rdesc) + rgap * (len(grid) - 1)
+    w = sum(widths) + cgap * (ncol - 1)
+    asc, desc = total / 2 + c.axis, total / 2 - c.axis
+
+    def draw(cv, x, y):
+        yy = y - asc
+        for r, cells, ra, rd in zip(grid, rows, rasc, rdesc):
+            xx = x
+            for j in range(ncol):
+                if j < len(r):
+                    al = cells[j].attrs.get('columnalign') or tab_align[min(j, len(tab_align) - 1)]
+                    off = {'left': 0, 'right': widths[j] - r[j].w}.get(al, (widths[j] - r[j].w) / 2)
+                    r[j].draw(cv, xx + off, yy + ra)
+                xx += widths[j] + cgap
+            yy += ra + rd + rgap
+    return MBox(w, asc, desc, draw)
+
+
+def mr_fenced(n, c):
+    op, cl = n.attrs.get('open', '('), n.attrs.get('close', ')')
+    seps = n.attrs.get('separators', ',').split() or [',']
+
+    def mo(s, stretchy=False):
+        m = N('mo', {'stretchy': 'true'} if stretchy else {})
+        m.kids = [s]
+        return m
+    row = N('mrow', {})
+    row.kids = [mo(op, True)]
+    for i, k in enumerate(elems(n)):
+        if i:
+            row.kids.append(mo(seps[min(i - 1, len(seps) - 1)]))
+        row.kids.append(k)
+    row.kids.append(mo(cl, True))
+    return mr_row(row, c)
+
+
+MRENDER = {
+    'mi': mr_mi, 'mn': mr_tok, 'mo': mr_mo, 'ms': mr_tok, 'mtext': mr_mtext,
+    'mspace': mr_mspace, 'mrow': mr_row, 'math': mr_first, 'semantics': mr_first,
+    'mstyle': mr_mstyle, 'mphantom': mr_phantom, 'mfrac': mr_frac, 'msqrt': mr_sqrt,
+    'mroot': mr_root, 'msub': mr_script, 'msup': mr_script, 'msubsup': mr_script,
+    'munder': mr_limits, 'mover': mr_limits, 'munderover': mr_limits,
+    'mtable': mr_table, 'mfenced': mr_fenced,
+}
+
+
+def mr(n, c):
+    return MRENDER.get(n.tag, mr_row)(n, c)
+
+
+def build_math(root, fonts, px, fg, maxw):
+    """Typeset a <math> tree, shrinking it until it fits maxw (if it can)."""
+    box = None
+    for scale in (1.0, .88, .77, .67, .58):
+        box = mr(root, MCtx(fonts, max(6, round(px * scale)), fg))
+        if box.w <= maxw:
+            break
+    return box
+
+
+def sips_scale(data, width):
+    """PNG of data resized to the given width with macOS `sips`, or None."""
+    if not shutil.which("sips"):
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, "in"), os.path.join(d, "out.png")
+        with open(src, "wb") as fh:
+            fh.write(data)
+        try:
+            subprocess.run(["sips", "--resampleWidth", str(int(width)), "-s", "format", "png",
+                            src, "--out", dst], capture_output=True, timeout=60, check=True)
+            with open(dst, "rb") as fh:
+                return fh.read()
+        except Exception:
+            return None
+
+
+# ------------------------------------------------------------------- settings
+
+THEMES = {
+    "Light": dict(bg="#fbfbf9", fg="#1c1c1c", dim="#7a7a7a", link="#0a58ca",
+                  code="#eeeeea", hit="#ffe58a", cur="#ffad33", sel="#6fa3e8",
+                  rule="#c8c8c0"),
+    "Sepia": dict(bg="#f3ead3", fg="#43382a", dim="#8a7b66", link="#8b3a0f",
+                  code="#e9dfc4", hit="#f3d77a", cur="#e8a33c", sel="#c9a45c",
+                  rule="#cdbf9d"),
+    "Dark": dict(bg="#1d1f23", fg="#d6d6d6", dim="#8a8f98", link="#7db4ff",
+                 code="#2a2d33", hit="#6b5b1a", cur="#a6741a", sel="#4f7cc0",
+                 rule="#3c4048"),
+}
+SERIF = ("Iowan Old Style", "Charter", "Georgia", "Palatino", "Palatino Linotype",
+         "Book Antiqua", "Cambria", "Times New Roman", "DejaVu Serif",
+         "Liberation Serif", "Times")
+SANS = ("Helvetica Neue", "Helvetica", "Arial", "Segoe UI", "DejaVu Sans")
+MONO = ("Menlo", "SF Mono", "Consolas", "DejaVu Sans Mono", "Liberation Mono",
+        "Courier New", "Courier")
+MATH = ("STIX Two Math", "Cambria Math", "Latin Modern Math", "STIXGeneral",
+        "XITS Math")
+HSCALE = {1: 1.7, 2: 1.4, 3: 1.2, 4: 1.1, 5: 1.0, 6: 0.95}
+MEASURES = {"Narrow": 56, "Medium": 70, "Wide": 88}
+MARK_RE = re.compile(r'(\x06\d+\x07|[\x01-\x05\x08\x10-\x13])')
+STRIP_RE = re.compile(r'\x06\d+\x07|[\x01-\x05\x08\x10-\x13]')
+DEFAULT_PREFS = {"theme": "Light", "family": "", "size": 15, "sidebar": True,
+                 "measure": "Medium", "geometry": "1100x800", "recent": [], "last": ""}
+
+
+def load_state():
+    try:
+        with open(SAVE_FILE) as fh:
+            st = json.load(fh)
+        if isinstance(st, dict):
+            st.setdefault("prefs", {})
+            st.setdefault("books", {})
+            return st
+    except (OSError, ValueError):
+        pass
+    return {"prefs": {}, "books": {}}
+
+
+def save_state(st):
+    try:
+        tmp = SAVE_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(st, fh, indent=1)
+        os.replace(tmp, SAVE_FILE)
+    except OSError:
+        pass
+
+
+def pick_family(candidates, available, fallback):
+    for name in candidates:
+        if name in available:
+            return name
+    return fallback
+
+
+def scale_ratio(f):
+    """Best (zoom, subsample) integer pair for shrinking an image by factor f < 1."""
+    best, err = (1, max(1, math.ceil(1 / f))), abs(1 / max(1, math.ceil(1 / f)) - f)
+    for z in (2, 3):
+        for s in range(z + 1, 13):
+            e = abs(z / s - f)
+            if e < err - 1e-9:
+                best, err = (z, s), e
+    return best
+
+
+# ------------------------------------------------------------------------ app
+
+class App:
+    def __init__(self, root, path=None):
+        self.root = root
+        root.title("tkreader")
+        set_window_icon(root)
+        try:        # macOS: files opened via the app bundle / Finder
+            root.createcommand("::tk::mac::OpenDocument",
+                               lambda *files: self.load(files[0]))
+        except tk.TclError:
+            pass
+        try:
+            root.createcommand("::tk::mac::Quit", self.quit)
+        except tk.TclError:
+            pass
+        self.state = load_state()
+        self.default_size = 16 if root.tk.call("tk", "windowingsystem") == "aqua" else 12
+        self.prefs = dict(DEFAULT_PREFS, size=self.default_size)
+        self.prefs.update(self.state["prefs"])
+        avail = set(tkfont.families())
+        self.avail = avail
+        if self.prefs["family"] not in avail:
+            self.prefs["family"] = pick_family(SERIF, avail, "TkTextFont")
+        self.mono_family = pick_family(MONO, avail, "TkFixedFont")
+        self.math_family = pick_family(MATH, avail, self.prefs["family"])
+        self.ui_family = pick_family(SANS, avail, "TkDefaultFont")
+        root.geometry(self.prefs["geometry"])
+        self.book = None
+        self.ci = 0
+        self.cur_links = []
+        self.history = []
+        self.cache = {}                 # chapter index -> (blocks, links)
+        self.plain = {}                 # chapter index -> searchable text
+        self.photos = []
+        self.photo_cache = {}
+        self.img_queue, self.img_job, self.render_keys = [], None, []
+        self.widgets = []
+        self.win_math, self.img_alts = {}, {}
+        self.fonts = {}
+        self.ftags = set()
+        self.mathfonts = None
+        self.nhits = 0
+        self._resize_job = None
+        self._find_job = None
+        self._layout_key = None
+        self.theme = THEMES.get(self.prefs["theme"], THEMES["Light"])
+
+        self.var_theme = tk.StringVar(value=self.prefs["theme"])
+        self.var_family = tk.StringVar(value=self.prefs["family"])
+        self.var_measure = tk.StringVar(value=self.prefs["measure"])
+        self.var_sidebar = tk.BooleanVar(value=self.prefs["sidebar"])
+        self.var_find = tk.StringVar()
+        self.var_case = tk.BooleanVar(value=False)
+        self.status = tk.StringVar(value="Open an EPUB (Ctrl-O).")
+        self.var_title = tk.StringVar(value="")
+
+        self.build_menu()
+        self.build_toolbar()
+        ttk.Label(root, textvariable=self.status, anchor="w", padding=(6, 3),
+                  relief="sunken").pack(side="bottom", fill="x")
+        self.build_find()
+        self.main = tk.PanedWindow(root, orient="horizontal", sashrelief="raised",
+                                   sashwidth=6)
+        self.main.pack(fill="both", expand=True)
+        self.build_sidebar()
+        self.build_text()
+        self.apply_theme(rerender=False)
+        self.set_sidebar(self.prefs["sidebar"])
+        root.protocol("WM_DELETE_WINDOW", self.quit)
+        self.text.bind("<Configure>", self.on_configure)
+        self.text.focus_set()
+        self.show_welcome()
+        root.after(20000, self.autosave)
+        target = path or (self.prefs["last"] if os.path.exists(self.prefs["last"] or "") else None)
+        if target:
+            root.after(80, lambda: self.load(target))
+
+    # ---- fonts ------------------------------------------------------------
+
+    @property
+    def px(self):
+        """Body text size in pixels."""
+        return max(8, round(self.prefs["size"] * self.root.winfo_fpixels("1p")))
+
+    def font(self, scale=1.0, bold=False, ital=False, mono=False):
+        key = (round(scale, 3), bold, ital, mono, self.prefs["family"], self.prefs["size"])
+        f = self.fonts.get(key)
+        if f is None:
+            f = tkfont.Font(
+                family=self.mono_family if mono else self.prefs["family"],
+                size=-max(5, round(self.px * scale * (0.9 if mono else 1))),
+                weight="bold" if bold else "normal", slant="italic" if ital else "roman")
+            self.fonts[key] = f
+        return f
+
+    def ftag(self, scale, bold, ital, mono, script=0):
+        name = "f:%.2f:%d%d%d:%d" % (scale, bold, ital, mono, script)
+        if name not in self.ftags:
+            opts = {"font": self.font(scale * (0.72 if script else 1), bold, ital, mono)}
+            if script:
+                opts["offset"] = round(self.px * scale * (0.38 if script > 0 else -0.18))
+            self.text.tag_configure(name, **opts)
+            self.ftags.add(name)
+        return name
+
+    def ptag(self, lm1=0, lm2=0, justify="left", sp1=0, sp3=0, tabs=None, bg=None):
+        name = "p:%d:%d:%s:%d:%d:%s:%s" % (lm1, lm2, justify, sp1, sp3, tabs, bg)
+        if name not in self.ftags:
+            opts = dict(lmargin1=lm1, lmargin2=lm2, justify=justify, spacing1=sp1,
+                        spacing3=sp3)
+            if tabs:
+                opts["tabs"] = (tabs,)
+            if bg:
+                opts["background"] = bg
+            self.text.tag_configure(name, **opts)
+            self.ftags.add(name)
+        return name
+
+    # ---- widgets ----------------------------------------------------------
+
+    def bind_keys(self, widget, seqs, fn):
+        def handler(e, fn=fn):
+            if e.state & 0xC:           # Control / Command / Alt: leave to the menus
+                return None
+            fn()
+            return "break"
+        for seq in seqs:
+            widget.bind(seq, handler)
+
+    def build_menu(self):
+        root = self.root
+        mb = tk.Menu(root)
+        fm = tk.Menu(mb, tearoff=0)
+        fm.add_command(label="Open...", accelerator="Ctrl-O", command=self.open_dialog)
+        self.recent_menu = tk.Menu(fm, tearoff=0)
+        fm.add_cascade(label="Open Recent", menu=self.recent_menu)
+        fm.add_separator()
+        fm.add_command(label="Quit", accelerator="Ctrl-Q", command=self.quit)
+        mb.add_cascade(label="File", menu=fm)
+
+        em = tk.Menu(mb, tearoff=0)
+        em.add_command(label="Copy", accelerator="Ctrl-C", command=self.copy)
+        em.add_command(label="Select All", accelerator="Ctrl-A", command=self.select_all)
+        mb.add_cascade(label="Edit", menu=em)
+
+        vm = tk.Menu(mb, tearoff=0)
+        vm.add_checkbutton(label="Contents sidebar", accelerator="Ctrl-B",
+                           variable=self.var_sidebar,
+                           command=lambda: self.set_sidebar(self.var_sidebar.get()))
+        vm.add_separator()
+        vm.add_command(label="Larger text", accelerator="Ctrl-+",
+                       command=lambda: self.zoom(+1))
+        vm.add_command(label="Smaller text", accelerator="Ctrl--",
+                       command=lambda: self.zoom(-1))
+        vm.add_command(label="Default text size", accelerator="Ctrl-0",
+                       command=lambda: self.zoom(0))
+        vm.add_separator()
+        tm = tk.Menu(vm, tearoff=0)
+        for name in THEMES:
+            tm.add_radiobutton(label=name, variable=self.var_theme, value=name,
+                               command=self.change_theme)
+        vm.add_cascade(label="Theme", menu=tm)
+        fam = tk.Menu(vm, tearoff=0)
+        shown = [f for f in SERIF + SANS if f in self.avail]
+        for name in shown:
+            fam.add_radiobutton(label=name, variable=self.var_family, value=name,
+                                command=self.change_family)
+        fam.add_separator()
+        fam.add_command(label="Other font...", command=self.choose_font)
+        vm.add_cascade(label="Font", menu=fam)
+        mm = tk.Menu(vm, tearoff=0)
+        for name, chars in MEASURES.items():
+            mm.add_radiobutton(label="%s (%d characters)" % (name, chars),
+                               variable=self.var_measure, value=name,
+                               command=self.change_measure)
+        vm.add_cascade(label="Line length", menu=mm)
+        mb.add_cascade(label="View", menu=vm)
+
+        gm = tk.Menu(mb, tearoff=0)
+        gm.add_command(label="Next chapter", accelerator="Right", command=lambda: self.step(1))
+        gm.add_command(label="Previous chapter", accelerator="Left",
+                       command=lambda: self.step(-1))
+        gm.add_command(label="Back", accelerator="Alt-Left", command=self.back)
+        gm.add_separator()
+        gm.add_command(label="Find...", accelerator="Ctrl-F", command=self.show_find)
+        gm.add_command(label="Find next", accelerator="Ctrl-G",
+                       command=lambda: self.find_next(True))
+        gm.add_command(label="Find previous", accelerator="Ctrl-Shift-G",
+                       command=lambda: self.find_next(False))
+        mb.add_cascade(label="Go", menu=gm)
+
+        hm = tk.Menu(mb, tearoff=0)
+        hm.add_command(label="Keyboard shortcuts", command=self.show_help)
+        mb.add_cascade(label="Help", menu=hm)
+        root.config(menu=mb)
+        self.update_recent_menu()
+        for seq in ("<Control-o>", "<Command-o>"):
+            root.bind(seq, lambda e: self.open_dialog())
+        for seq in ("<Control-q>", "<Command-q>"):
+            root.bind(seq, lambda e: self.quit())
+        for seq in ("<Control-b>", "<Command-b>"):
+            root.bind(seq, lambda e: self.toggle_sidebar())
+        for seq in ("<Control-c>", "<Command-c>"):
+            root.bind(seq, self.on_copy_key)
+        for seq in ("<Control-a>", "<Command-a>"):
+            root.bind(seq, self.on_select_all_key)
+        for seq in ("<Control-f>", "<Command-f>"):
+            root.bind(seq, lambda e: self.show_find())
+        for seq in ("<Control-g>", "<Command-g>"):
+            root.bind(seq, lambda e: self.find_next(True))
+        for seq in ("<Control-G>", "<Command-G>"):
+            root.bind(seq, lambda e: self.find_next(False))
+        for seq in ("<Control-plus>", "<Control-equal>", "<Command-plus>", "<Command-equal>"):
+            root.bind(seq, lambda e: self.zoom(+1))
+        for seq in ("<Control-minus>", "<Command-minus>"):
+            root.bind(seq, lambda e: self.zoom(-1))
+        for seq in ("<Control-0>", "<Command-0>"):
+            root.bind(seq, lambda e: self.zoom(0))
+        for seq in ("<Alt-Left>", "<Command-bracketleft>"):
+            root.bind(seq, lambda e: self.back())
+
+    def build_toolbar(self):
+        bar = ttk.Frame(self.root, padding=(4, 4))
+        bar.pack(side="top", fill="x")
+        ttk.Button(bar, text="Open...", command=self.open_dialog).pack(side="left")
+        ttk.Button(bar, text="Contents", command=self.toggle_sidebar).pack(
+            side="left", padx=(6, 0))
+        ttk.Button(bar, text="\u25c0", width=3, command=lambda: self.step(-1)).pack(
+            side="left", padx=(12, 0))
+        ttk.Button(bar, text="\u25b6", width=3, command=lambda: self.step(1)).pack(
+            side="left")
+        ttk.Label(bar, textvariable=self.var_title, anchor="w").pack(
+            side="left", padx=10, fill="x", expand=True)
+        ttk.Button(bar, text="Find", command=self.show_find).pack(side="right")
+        ttk.Button(bar, text="A+", width=3, command=lambda: self.zoom(+1)).pack(
+            side="right", padx=(0, 6))
+        ttk.Button(bar, text="A-", width=3, command=lambda: self.zoom(-1)).pack(
+            side="right")
+
+    def build_find(self):
+        f = ttk.Frame(self.root, padding=(6, 3))
+        self.find_frame = f
+        ttk.Label(f, text="Find:").pack(side="left")
+        self.find_entry = ttk.Entry(f, textvariable=self.var_find, width=34)
+        self.find_entry.pack(side="left", padx=4)
+        ttk.Button(f, text="Previous", command=lambda: self.find_next(False)).pack(side="left")
+        ttk.Button(f, text="Next", command=lambda: self.find_next(True)).pack(
+            side="left", padx=4)
+        ttk.Checkbutton(f, text="Match case", variable=self.var_case,
+                        command=self.find_changed).pack(side="left", padx=6)
+        self.find_count = ttk.Label(f, text="")
+        self.find_count.pack(side="left", padx=6)
+        ttk.Button(f, text="Close", command=self.hide_find).pack(side="right")
+        self.find_entry.bind("<Return>", lambda e: self.find_next(True))
+        self.find_entry.bind("<Shift-Return>", lambda e: self.find_next(False))
+        self.find_entry.bind("<Escape>", lambda e: self.hide_find())
+        self.var_find.trace_add("write", lambda *a: self.schedule_find())
+
+    def build_sidebar(self):
+        fr = ttk.Frame(self.main)
+        self.side = fr
+        self.tree = ttk.Treeview(fr, show="tree", selectmode="browse")
+        sb = ttk.Scrollbar(fr, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.bind("<ButtonRelease-1>", self.on_toc_click)
+        self.tree.bind("<Return>", self.on_toc_click)
+        self.toc_items = {}
+
+    def build_text(self):
+        fr = ttk.Frame(self.main)
+        self.text_frame = fr
+        self.text = tk.Text(fr, wrap="word", width=1, height=1, padx=40, pady=18, relief="flat",
+                            borderwidth=0, highlightthickness=0, cursor="arrow",
+                            insertwidth=0, undo=False, state="disabled", takefocus=True)
+        self.vsb = ttk.Scrollbar(fr, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=self.on_yscroll)
+        self.vsb.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        self.main.add(fr, minsize=300, stretch="always")
+        t = self.text
+        t.tag_configure("link", underline=True)
+        t.tag_configure("dim")
+        t.tag_configure("hit")
+        t.tag_configure("cur")
+        t.tag_bind("link", "<Enter>", lambda e: t.configure(cursor="hand2"))
+        t.tag_bind("link", "<Leave>", lambda e: t.configure(cursor="arrow"))
+        t.bind("<Button-1>", lambda e: t.focus_set(), add="+")
+        self.popup = tk.Menu(t, tearoff=0)
+        self.popup.add_command(label="Copy", command=self.copy)
+        self.popup.add_command(label="Select All", command=self.select_all)
+        for seq in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):
+            t.bind(seq, self.show_popup)
+        k = self.bind_keys
+        k(t, ["<space>", "<Next>"], self.page_down)
+        k(t, ["<Shift-space>", "<Prior>", "<BackSpace>"], self.page_up)
+        k(t, ["<Down>", "<j>"], lambda: self.scroll(1))
+        k(t, ["<Up>", "<k>"], lambda: self.scroll(-1))
+        k(t, ["<Home>", "<g>"], lambda: t.yview_moveto(0))
+        k(t, ["<End>", "<G>"], lambda: t.yview_moveto(1))
+        k(t, ["<Right>", "<n>"], lambda: self.step(1))
+        k(t, ["<Left>", "<p>"], lambda: self.step(-1))
+        k(t, ["<slash>"], self.show_find)
+        k(t, ["<t>"], self.toggle_sidebar)
+        k(t, ["<Escape>"], self.hide_find)
+
+    def show_popup(self, e):
+        self.text.focus_set()
+        self.popup.entryconfigure(0, state="normal" if self.text.tag_ranges("sel") else "disabled")
+        self.popup.tk_popup(e.x_root, e.y_root)
+        return "break"
+
+    def on_copy_key(self, e):
+        if self.root.focus_get() in (self.text, None):
+            self.copy()
+            return "break"
+        return None
+
+    def on_select_all_key(self, e):
+        if self.root.focus_get() in (self.text, None):
+            self.select_all()
+            return "break"
+        return None
+
+    def select_all(self):
+        self.text.tag_add("sel", "1.0", "end-1c")
+
+    def selection_text(self):
+        """The selected text; equations come out as their TeX source, images as
+        their alt text."""
+        t = self.text
+        try:
+            first, last = t.index("sel.first"), t.index("sel.last")
+        except tk.TclError:
+            return ""
+        out = []
+        for kind, val, _ in t.dump(first, last, text=True, window=True, image=True):
+            if kind == "text":
+                out.append(val)
+            elif kind == "window" and val in self.win_math:
+                out.append("\n" + tex_fallback(self.win_math[val]) + "\n")
+            elif kind == "image":
+                out.append("[Image: %s]" % self.img_alts.get(val, ""))
+        return "".join(out).replace("\xa0", " ")
+
+    def copy(self):
+        text = self.selection_text()
+        if not text:
+            self.status.set("Nothing selected to copy.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status.set("Copied %d characters." % len(text))
+
+    def scroll(self, n):
+        self.text.yview_scroll(n * 2, "units")
+
+    def page_down(self):
+        if self.text.yview()[1] >= 0.9999:
+            self.step(1)
+        else:
+            self.text.yview_scroll(1, "pages")
+
+    def page_up(self):
+        if self.text.yview()[0] <= 0.0001:
+            if self.ci > 0:
+                self.goto(self.ci - 1, end=True)
+        else:
+            self.text.yview_scroll(-1, "pages")
+
+    def on_yscroll(self, first, last):
+        self.vsb.set(first, last)
+        if self.book:
+            pct = round(float(last) * 100)
+            self.status.set("Chapter %d of %d  \u00b7  %d%%" % (
+                self.ci + 1, len(self.book.chapters), pct))
+
+    def set_sidebar(self, show):
+        self.prefs["sidebar"] = bool(show)
+        self.var_sidebar.set(bool(show))
+        shown = str(self.side) in [str(p) for p in self.main.panes()]
+        if show and not shown:
+            self.main.add(self.side, before=self.text_frame, minsize=160, width=260,
+                          stretch="never")
+        elif not show and shown:
+            self.main.forget(self.side)
+
+    def toggle_sidebar(self):
+        self.set_sidebar(not self.prefs["sidebar"])
+
+    # ---- appearance -------------------------------------------------------
+
+    def apply_theme(self, rerender=True):
+        th = self.theme = THEMES.get(self.prefs["theme"], THEMES["Light"])
+        t = self.text
+        t.configure(bg=th["bg"], fg=th["fg"], selectbackground=th["sel"],
+                    selectforeground=th["fg"], inactiveselectbackground=th["sel"],
+                    spacing2=round(self.px * 0.22))
+        t.tag_configure("link", foreground=th["link"])
+        t.tag_configure("dim", foreground=th["dim"])
+        t.tag_configure("hit", background=th["hit"])
+        t.tag_configure("cur", background=th["cur"])
+        try:
+            st = ttk.Style()
+            st.configure("Treeview", background=th["bg"], fieldbackground=th["bg"],
+                         foreground=th["fg"], font=(self.ui_family, 12))
+            st.map("Treeview", background=[("selected", th["sel"])],
+                   foreground=[("selected", th["fg"])])
+        except tk.TclError:
+            pass
+        if rerender and self.book:
+            self.rerender()
+
+    def change_theme(self):
+        self.prefs["theme"] = self.var_theme.get()
+        self.apply_theme()
+
+    def change_family(self):
+        self.prefs["family"] = self.var_family.get()
+        self.math_family = pick_family(MATH, self.avail, self.prefs["family"])
+        self.apply_theme()
+
+    def change_measure(self):
+        self.prefs["measure"] = self.var_measure.get()
+        self.rerender()
+
+    def zoom(self, d):
+        size = self.default_size if d == 0 else self.prefs["size"] + d
+        self.prefs["size"] = max(8, min(40, size))
+        self.apply_theme()
+
+    def choose_font(self):
+        top = tk.Toplevel(self.root)
+        top.title("Choose font")
+        top.transient(self.root)
+        var = tk.StringVar()
+        ttk.Entry(top, textvariable=var).pack(fill="x", padx=8, pady=(8, 4))
+        lb = tk.Listbox(top, height=18, width=40, exportselection=False)
+        lb.pack(fill="both", expand=True, padx=8)
+        names = sorted(f for f in self.avail if not f.startswith("@"))
+
+        def fill(*a):
+            lb.delete(0, "end")
+            q = var.get().lower()
+            for n in names:
+                if q in n.lower():
+                    lb.insert("end", n)
+        var.trace_add("write", fill)
+        fill()
+
+        def ok(*a):
+            sel = lb.curselection()
+            if sel:
+                self.var_family.set(lb.get(sel[0]))
+                self.change_family()
+            top.destroy()
+        lb.bind("<Double-Button-1>", ok)
+        row = ttk.Frame(top)
+        row.pack(fill="x", padx=8, pady=8)
+        ttk.Button(row, text="Cancel", command=top.destroy).pack(side="right")
+        ttk.Button(row, text="Use font", command=ok).pack(side="right", padx=6)
+
+    def show_help(self):
+        doc = __doc__
+        messagebox.showinfo("tkreader", doc[doc.index("Reading"):doc.index("The reading")].rstrip())
+
+    # ---- files ------------------------------------------------------------
+
+    def open_dialog(self):
+        init = os.path.dirname(self.book.path) if self.book else os.path.expanduser("~")
+        path = filedialog.askopenfilename(
+            parent=self.root, initialdir=init,
+            filetypes=[("EPUB books", "*.epub"), ("All files", "*")])
+        if path:
+            self.load(path)
+
+    def update_recent_menu(self):
+        m = self.recent_menu
+        m.delete(0, "end")
+        recent = [p for p in self.prefs["recent"] if os.path.exists(p)]
+        for p in recent:
+            m.add_command(label=os.path.basename(p), command=lambda p=p: self.load(p))
+        if not recent:
+            m.add_command(label="(none)", state="disabled")
+
+    def load(self, path):
+        path = os.path.abspath(path)
+        try:
+            book = Book(path)
+            if not book.chapters:
+                raise ValueError("no readable chapters")
+        except Exception as e:
+            messagebox.showerror("tkreader", "Cannot open %s:\n%s" % (path, e))
+            return
+        self.remember_position()
+        self.book, self.cache, self.plain = book, {}, {}
+        self.history = []
+        self.photo_cache = {}
+        self.prefs["last"] = path
+        self.prefs["recent"] = ([path] + [p for p in self.prefs["recent"] if p != path])[:10]
+        self.update_recent_menu()
+        self.root.title("tkreader - " + book.title)
+        self.fill_toc()
+        saved = self.state["books"].get(os.path.realpath(path), {})
+        ci = saved.get("chapter", 0)
+        ci = ci if isinstance(ci, int) and 0 <= ci < len(book.chapters) else 0
+        pos = saved.get("pos") if isinstance(saved.get("pos"), str) else None
+        self.render(ci, pos=pos, remember=False)
+
+    def fill_toc(self):
+        self.tree.delete(*self.tree.get_children())
+        self.toc_items = {}
+        parents = {}
+        for i, (depth, title, path, frag) in enumerate(self.book.toc):
+            parent = parents.get(depth - 1, "") if depth else ""
+            iid = self.tree.insert(parent, "end", text=title or "(untitled)", open=depth < 1)
+            parents[depth] = iid
+            self.toc_items[iid] = (self.book.index[path], frag)
+
+    def on_toc_click(self, e):
+        """Open the contents entry that was clicked (or chosen with Return).
+
+        Only real user actions navigate: selecting an entry from code (sync_toc)
+        never does, so rendering cannot trigger itself through the tree."""
+        if e.type == tk.EventType.ButtonRelease:
+            if "indicator" in self.tree.identify_element(e.x, e.y):
+                return
+            iid = self.tree.identify_row(e.y)
+            if iid:
+                self.tree.selection_set(iid)
+        else:
+            sel = self.tree.selection()
+            iid = sel[0] if sel else ""
+        if iid in self.toc_items:
+            ci, frag = self.toc_items[iid]
+            self.goto(ci, frag, push=True)
+            self.text.focus_set()
+
+    def sync_toc(self):
+        """Highlight the contents entry for the current chapter."""
+        sel = self.tree.selection()
+        if sel and self.toc_items.get(sel[0], (None,))[0] == self.ci:
+            return
+        for iid, (ci, frag) in self.toc_items.items():
+            if ci == self.ci:
+                self.tree.selection_set(iid)
+                self.tree.see(iid)
+                return
+
+    def remember_position(self):
+        if not self.book:
+            return
+        key = os.path.realpath(self.book.path)
+        self.state["books"][key] = {"chapter": self.ci, "pos": self.text.index("@0,0")}
+
+    def autosave(self):
+        self.save()
+        self.root.after(20000, self.autosave)
+
+    def save(self):
+        self.remember_position()
+        if self.root.winfo_ismapped() and self.root.winfo_width() > 200:
+            self.prefs["geometry"] = self.root.geometry().split("+")[0]
+        self.state["prefs"] = self.prefs
+        save_state(self.state)
+
+    def quit(self):
+        self.save()
+        self.root.destroy()
+
+    # ---- navigation -------------------------------------------------------
+
+    def step(self, d):
+        if self.book and 0 <= self.ci + d < len(self.book.chapters):
+            self.goto(self.ci + d)
+
+    def goto(self, ci, frag=None, push=False, end=False, pos=None):
+        if not self.book:
+            return
+        if push:
+            self.history.append((self.ci, self.text.index("@0,0")))
+            del self.history[:-50]
+        self.render(ci, frag=frag, pos=pos, end=end)
+
+    def back(self):
+        if self.history:
+            ci, pos = self.history.pop()
+            self.render(ci, pos=pos)
+
+    def follow(self, idx):
+        href = self.cur_links[idx] if idx < len(self.cur_links) else ""
+        if not href:
+            return
+        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", href):
+            if messagebox.askyesno("Open link", "Open this address in your browser?\n\n" + href,
+                                   parent=self.root):
+                webbrowser.open(href)
+            return
+        path, _, frag = href.partition("#")
+        if path:
+            target = Book.resolve(posixpath.dirname(self.book.chapters[self.ci]), path)
+        else:
+            target = self.book.chapters[self.ci]
+        if target in self.book.index:
+            self.goto(self.book.index[target], unquote(frag), push=True)
+        else:
+            self.status.set("Link target not found in this book: " + href)
+
+    # ---- rendering --------------------------------------------------------
+
+    def chapter(self, ci):
+        if ci not in self.cache:
+            data = self.book.read(self.book.chapters[ci])
+            p = Extractor()
+            if data is not None:
+                p.feed(decode(data))
+                p.flush()
+            self.cache[ci] = (p.blocks, p.links)
+        return self.cache[ci]
+
+    def geometry(self):
+        """Column width and the pixel padding that centres it."""
+        t = self.text
+        width = max(t.winfo_width(), 700)
+        colw = min(width - 48, self.font().measure("n" * MEASURES.get(
+            self.prefs["measure"], 70)))
+        pad = max(24, (width - colw) // 2)
+        return colw, pad, max(t.winfo_height(), 500)
+
+    def rerender(self):
+        if self.book:
+            self.render(self.ci, pos=self.text.index("@0,0"), remember=False)
+
+    def on_configure(self, e):
+        if self._resize_job:
+            self.root.after_cancel(self._resize_job)
+        self._resize_job = self.root.after(250, self.resized)
+
+    def resized(self):
+        self._resize_job = None
+        if not self.book:
+            return
+        colw, pad, height = self.geometry()
+        if self._layout_key != (colw, pad, height // 80):
+            self.rerender()
+
+    def clear(self):
+        t = self.text
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        for w in self.widgets:
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+        self.widgets, self.photos = [], []
+        self.win_math, self.img_alts = {}, {}
+        for name in list(self.ftags):
+            t.tag_delete(name)
+        self.ftags = set()
+        for tag in t.tag_names():
+            if tag.startswith("l:"):
+                t.tag_delete(tag)
+        for m in t.mark_names():
+            if m.startswith("a:"):
+                t.mark_unset(m)
+        self.mathfonts = MathFonts(self.math_family)
+
+    def show_welcome(self):
+        t = self.text
+        self.clear()
+        t.tag_configure("welcome", justify="center", font=self.font(1.4),
+                        spacing1=120, foreground=self.theme["dim"])
+        t.insert("end", "tkreader\n", "welcome")
+        t.tag_configure("welcome2", justify="center", font=self.font(1.0),
+                        spacing1=14, foreground=self.theme["dim"])
+        t.insert("end", "File \u2192 Open... (Ctrl-O) to choose an EPUB", "welcome2")
+        t.configure(state="disabled")
+
+    def render(self, ci, frag=None, pos=None, end=False, remember=True):
+        if remember and self.book and self.ci != ci:
+            self.remember_position()
+        started = time.time()
+        self.ci = ci
+        self.render_keys = []
+        blocks, links = self.chapter(ci)
+        self.cur_links = links
+        t = self.text
+        self.clear()
+        colw, pad, height = self.geometry()
+        self._layout_key = (colw, pad, height // 80)
+        t.configure(padx=pad)
+        px = self.px
+        normal_gap, tight_gap = round(px * 0.75), round(px * 0.15)
+        ch = self.font().measure("n")
+        prev = None
+        for b in blocks:
+            k = b[0]
+            if k == "anchor":
+                name = "a:" + b[1]
+                t.mark_set(name, "end-1c")
+                t.mark_gravity(name, "left")
+                continue
+            gap = 0 if prev is None else (
+                tight_gap if (k == prev and k in ("li", "row")) else normal_gap)
+            if k == "hr":
+                self.put_rule(colw, gap)
+            elif k == "img":
+                self.put_image(b[1], b[2], colw, height, gap)
+            elif k == "math":
+                self.put_math(b[1], colw, gap)
+            else:
+                self.put_block(b, gap, ch)
+            prev = k
+        t.tag_raise("hit")
+        t.tag_raise("cur")
+        t.tag_raise("link")
+        t.tag_raise("sel")
+        t.configure(state="disabled")
+        title = self.book.chapter_title.get(self.book.chapters[ci], "")
+        self.var_title.set("%s   \u2014   %s" % (self.book.title, title) if title
+                           else self.book.title)
+        self.sync_toc()
+        self.root.update_idletasks()
+        if end:
+            t.yview_moveto(1.0)
+        elif frag and "a:" + frag in t.mark_names():
+            t.yview("a:" + frag)
+        elif pos:
+            try:
+                t.yview(pos)
+            except tk.TclError:
+                t.yview_moveto(0)
+        else:
+            t.yview_moveto(0)
+        self.on_yscroll(*t.yview())
+        self.queue_images()
+        dbg("render chapter %d: %d blocks, %.2fs" % (ci, len(blocks), time.time() - started))
+        if self.find_frame.winfo_ismapped() and self.var_find.get():
+            self.highlight()
+        t.focus_set()
+
+    def runs(self, text, scale, bold_base, mono):
+        """Yield (string, tags) for text carrying style/link markers."""
+        bold = ital = sup = sub = 0
+        link = None
+        for tok in MARK_RE.split(text):
+            if not tok:
+                continue
+            c = tok[0]
+            if c == "\x06":
+                link = int(tok[1:-1])
+            elif c == "\x08":
+                link = None
+            elif c == "\x01":
+                bold += 1
+            elif c == "\x02":
+                bold = max(0, bold - 1)
+            elif c == "\x03":
+                ital += 1
+            elif c == "\x04":
+                ital = max(0, ital - 1)
+            elif c == "\x10":
+                sup += 1
+            elif c == "\x11":
+                sup = max(0, sup - 1)
+            elif c == "\x12":
+                sub += 1
+            elif c == "\x13":
+                sub = max(0, sub - 1)
+            elif c == "\x05":
+                yield "\xa0", self.run_tags(scale, bold or bold_base, ital, mono, sup, sub, link)
+            else:
+                cur = ""
+                style = (False, False)
+                for chn in tok:
+                    base, mb, mi = demath(chn)
+                    if (mb, mi) != style and cur:
+                        yield cur, self.run_tags(scale, bold or bold_base or style[0],
+                                                 ital or style[1], mono, sup, sub, link)
+                        cur = ""
+                    style = (mb, mi)
+                    cur += base
+                if cur:
+                    yield cur, self.run_tags(scale, bold or bold_base or style[0],
+                                             ital or style[1], mono, sup, sub, link)
+
+    def run_tags(self, scale, bold, ital, mono, sup, sub, link):
+        script = 1 if sup else (-1 if sub else 0)
+        tags = [self.ftag(scale, bool(bold), bool(ital), mono, script)]
+        if link is not None:
+            name = "l:%d" % link
+            if name not in self.ftags:
+                self.text.tag_configure(name)
+                self.text.tag_bind(name, "<Button-1>", lambda e, i=link: self.follow(i))
+                self.ftags.add(name)
+            tags += ["link", name]
+        return tuple(tags)
+
+    def put_block(self, b, gap, ch):
+        _, text, indent, prefix, pre, align, heading = b
+        t = self.text
+        scale = HSCALE.get(heading, 1.0) if heading else 1.0
+        sp1, sp3 = gap, 0
+        if heading:
+            sp1 = gap + round(self.px * 0.5 * scale) if gap else 0
+            sp3 = round(self.px * 0.2)
+        lm2 = round(indent * ch * 0.8)
+        lm1, tabs = lm2, None
+        if prefix:
+            lm1 = max(0, lm2 - round(self.font().measure(prefix + " ")))
+            tabs = lm2
+            text = prefix + "\t" + text
+        if pre:
+            lm1 = lm2 = lm2 + round(self.px * 0.6)
+        ptag = self.ptag(lm1, lm2, "center" if align == "center" else "left", sp1, sp3,
+                         tabs, self.theme["code"] if pre else None)
+        start = t.index("end-1c")
+        segs = text.split("\n")
+        while segs and not STRIP_RE.sub("", segs[-1]).strip():
+            segs.pop()
+        for i, seg in enumerate(segs):
+            if i:
+                t.insert("end", "\n")
+            if pre:
+                seg = seg.expandtabs(4)
+            for s, tags in self.runs(seg, scale, bool(heading), bool(pre)):
+                t.insert("end", s, tags)
+        t.insert("end", "\n")
+        t.tag_add(ptag, start, "end-1c")
+
+    def put_rule(self, colw, gap):
+        t = self.text
+        start = t.index("end-1c")
+        fr = tk.Frame(t, height=1, width=round(colw * 0.5), bg=self.theme["rule"])
+        self.widgets.append(fr)
+        t.window_create("end", window=fr)
+        t.insert("end", "\n")
+        t.tag_add(self.ptag(0, 0, "center", gap + round(self.px * 0.3), round(self.px * 0.3)),
+                  start, "end-1c")
+
+    def forward_wheel(self, w):
+        def wheel(e):
+            d = e.delta
+            n = -d if abs(d) < 120 else -d // 120
+            self.text.yview_scroll(n, "units")
+            return "break"
+        w.bind("<MouseWheel>", wheel)
+        w.bind("<Button-4>", lambda e: self.text.yview_scroll(-3, "units"))
+        w.bind("<Button-5>", lambda e: self.text.yview_scroll(3, "units"))
+        w.bind("<Button-1>", lambda e: self.text.focus_set())
+
+    def put_image(self, src, alt, colw, height, gap):
+        t = self.text
+        path = Book.resolve(posixpath.dirname(self.book.chapters[self.ci]), src)
+        entry = self.image_entry(path, colw, round(height * 0.9))
+        start = t.index("end-1c")
+        ptag = self.ptag(0, 0, "center", gap, 0)
+        if entry:
+            t.image_create("end", image=entry["img"])
+            self.img_alts[str(entry["img"])] = alt or posixpath.basename(path)
+        else:
+            label = alt or posixpath.basename(path)
+            t.insert("end", "[Image: %s]" % label, (self.ftag(0.9, False, True, False), "dim"))
+        t.insert("end", "\n")
+        t.tag_add(ptag, start, "end-1c")
+
+    def image_entry(self, path, maxw, maxh):
+        """A cache entry {img, ready, ...} for the image scaled to fit, or None.
+
+        Big images are not decoded here: a blank image of the final size is
+        shown at once and filled in later, one image per idle tick, so a
+        chapter full of large figures never freezes the window."""
+        key = (path, maxw, maxh)
+        if key in self.photo_cache:
+            e = self.photo_cache[key]
+            if e and not e["ready"]:
+                self.render_keys.append(key)
+            return e
+        e = None
+        data = self.book.read(path)
+        if data:
+            size = image_size(data)
+            if size is None or (len(data) < 120000 and size[0] * size[1] < 2_000_000):
+                img = self.make_scaled(data, maxw, maxh)
+                e = {"img": img, "ready": True} if img is not None else None
+            else:
+                w, h = size
+                f = min(1.0, maxw / max(w, 1), maxh / max(h, 1))
+                if f >= 0.995:
+                    dw, dh, s = w, h, 1
+                elif shutil.which("sips"):
+                    dw, dh, s = max(1, round(w * f)), max(1, round(h * f)), 0
+                else:
+                    s = math.ceil(1 / f)
+                    dw, dh = math.ceil(w / s), math.ceil(h / s)
+                e = {"img": tk.PhotoImage(width=dw, height=dh), "ready": False,
+                     "path": path, "w": dw, "sub": s}
+                self.render_keys.append(key)
+        self.photo_cache[key] = e
+        return e
+
+    def make_scaled(self, data, maxw, maxh):
+        """Decode and shrink a small image synchronously."""
+        img = self.make_photo(data)
+        if img is None:
+            return None
+        w, h = img.width(), img.height()
+        f = min(1.0, maxw / max(w, 1), maxh / max(h, 1))
+        if f < 0.995:
+            z, s = scale_ratio(f)
+            if z > 1 and w * z * h * z > 4_000_000:
+                z, s = 1, math.ceil(1 / f)
+            big = img.zoom(z) if z > 1 else img
+            img = big.subsample(s) if s > 1 else big
+        return img
+
+    def queue_images(self):
+        new = self.render_keys
+        self.img_queue = new + [k for k in self.img_queue if k not in new]
+        if self.img_queue and not self.img_job:
+            self.img_job = self.root.after(20, self.img_step)
+
+    def img_step(self):
+        self.img_job = None
+        while self.img_queue:
+            key = self.img_queue.pop(0)
+            e = self.photo_cache.get(key)
+            if not e or e["ready"]:
+                continue
+            started = time.time()
+            try:
+                self.fill_image(e)
+            except Exception as ex:
+                dbg("image %s failed: %r" % (e["path"], ex))
+            e["ready"] = True
+            dbg("image %s: %.2fs" % (e["path"], time.time() - started))
+            break
+        if self.img_queue:
+            self.img_job = self.root.after(15, self.img_step)
+
+    def fill_image(self, e):
+        data = self.book.read(e["path"])
+        dst, call = e["img"], self.root.tk.call
+        png = sips_scale(data, e["w"]) if e["sub"] == 0 else None
+        if png:
+            real = tk.PhotoImage(data=base64.b64encode(png))
+            call(str(dst), "copy", str(real), "-shrink")
+            return
+        full = self.make_photo(data)
+        if full is None:
+            return
+        s = e["sub"] or max(1, math.ceil(full.width() / e["w"]))
+        call(str(dst), "copy", str(full), "-subsample", s, s, "-shrink")
+
+    def make_photo(self, data):
+        try:
+            return tk.PhotoImage(data=base64.b64encode(data))
+        except tk.TclError:
+            pass
+        if b"<svg" in data[:4000]:
+            try:
+                return tk.PhotoImage(data=data.decode("utf-8", "replace"), format="svg")
+            except tk.TclError:
+                pass
+        png = to_png(data)
+        if png:
+            try:
+                return tk.PhotoImage(data=base64.b64encode(png))
+            except tk.TclError:
+                pass
+        return None
+
+    def put_math(self, root, colw, gap):
+        t = self.text
+        start = t.index("end-1c")
+        ptag = self.ptag(0, 0, "center", gap + round(self.px * 0.15), round(self.px * 0.15))
+        th = self.theme
+        try:
+            box = build_math(root, self.mathfonts, self.px, th["fg"], colw)
+            padx, pady = 6, 4
+            cv = tk.Canvas(t, width=math.ceil(box.w) + 2 * padx,
+                           height=math.ceil(box.asc + box.desc) + 2 * pady,
+                           bg=th["bg"], highlightthickness=0, borderwidth=0)
+            box.draw(cv, padx, pady + box.asc)
+            self.widgets.append(cv)
+            self.win_math[str(cv)] = root
+            self.forward_wheel(cv)
+            t.window_create("end", window=cv, align="center")
+        except Exception:
+            try:
+                lines = trim_lines(render(root, Ctx(linear=False)).lines)
+            except Exception:
+                lines = [tex_fallback(root)]
+            for i, line in enumerate(lines):
+                if i:
+                    t.insert("end", "\n")
+                for s, tags in self.runs(line, 1.0, False, True):
+                    t.insert("end", s, tags)
+        t.insert("end", "\n")
+        t.tag_add(ptag, start, "end-1c")
+
+    # ---- searching --------------------------------------------------------
+
+    def show_find(self):
+        if not self.book:
+            return
+        if not self.find_frame.winfo_ismapped():
+            self.find_frame.pack(side="bottom", fill="x", before=self.main)
+        self.find_entry.focus_set()
+        self.find_entry.selection_range(0, "end")
+        self.highlight()
+
+    def hide_find(self):
+        if self.find_frame.winfo_ismapped():
+            self.find_frame.pack_forget()
+        self.text.tag_remove("hit", "1.0", "end")
+        self.text.tag_remove("cur", "1.0", "end")
+        self.find_count.configure(text="")
+        self.text.focus_set()
+
+    def schedule_find(self):
+        if self._find_job:
+            self.root.after_cancel(self._find_job)
+        self._find_job = self.root.after(180, self.find_changed)
+
+    def find_changed(self):
+        self._find_job = None
+        self.highlight()
+        if self.nhits:
+            hit = self.search_here(self.text.index("@0,0"), True) or self.search_here("1.0", True)
+            if hit:
+                self.show_hit(*hit)
+
+    def highlight(self):
+        t = self.text
+        t.tag_remove("hit", "1.0", "end")
+        t.tag_remove("cur", "1.0", "end")
+        self.nhits = 0
+        q = self.var_find.get()
+        if not q or not self.book:
+            self.find_count.configure(text="")
+            return
+        cnt, idx = tk.IntVar(), "1.0"
+        while self.nhits < 5000:
+            idx = t.search(q, idx, "end", nocase=not self.var_case.get(), count=cnt)
+            if not idx or not cnt.get():
+                break
+            end = "%s+%dc" % (idx, cnt.get())
+            t.tag_add("hit", idx, end)
+            idx = end
+            self.nhits += 1
+        self.find_count.configure(
+            text="%s in this chapter" % (("%d match%s" % (self.nhits, "" if self.nhits == 1
+                                                          else "es")) if self.nhits else "no match"))
+
+    @staticmethod
+    def norm(s):
+        return " ".join(STRIP_RE.sub("", s).replace("\xa0", " ").lower().split())
+
+    def chapter_plain(self, ci):
+        if ci not in self.plain:
+            blocks, _ = self.chapter(ci)
+            self.plain[ci] = self.norm(" ".join(
+                b[1] for b in blocks if b[0] in ("p", "li", "row")))
+        return self.plain[ci]
+
+    def show_hit(self, idx, n):
+        t = self.text
+        t.tag_remove("cur", "1.0", "end")
+        t.tag_add("cur", idx, "%s+%dc" % (idx, n))
+        t.see(idx)
+        t.mark_set("insert", idx)
+
+    def search_here(self, start, forward):
+        cnt = tk.IntVar()
+        idx = self.text.search(self.var_find.get(), start, "end" if forward else "1.0",
+                               backwards=not forward, nocase=not self.var_case.get(),
+                               count=cnt)
+        return (idx, cnt.get()) if idx and cnt.get() else None
+
+    def find_next(self, forward=True):
+        q = self.var_find.get()
+        if not q or not self.book:
+            return
+        t = self.text
+        if t.tag_ranges("cur"):
+            start = t.index("cur.last") if forward else t.index("cur.first")
+        else:
+            start = t.index("@0,0") if forward else t.index("@0,%d" % t.winfo_height())
+        hit = self.search_here(start, forward)
+        if hit:
+            self.show_hit(*hit)
+            return
+        qn = self.norm(q)
+        n = len(self.book.chapters)
+        for step in range(1, n + 1):
+            ci = (self.ci + (step if forward else -step)) % n
+            if qn and qn not in self.chapter_plain(ci):
+                continue
+            self.render(ci)
+            self.highlight()
+            hit = self.search_here("1.0" if forward else "end", forward)
+            if hit:
+                self.show_hit(*hit)
+                return
+        self.find_count.configure(text="not found")
+
+
+# ------------------------------------------------ icon / macOS app bundle
+
+ICON_NAME = "tkreader"
+ICON_DOC_EXTS = ["epub"]
+
+
+def icon_rr(x, y, x0, y0, x1, y1, r):
+    """True inside the rounded rectangle (x0,y0)-(x1,y1) with corner radius r."""
+    cx = min(max(x, x0 + r), x1 - r)
+    cy = min(max(y, y0 + r), y1 - r)
+    return math.hypot(x - cx, y - cy) <= r
+
+
+ICON_BG = (34, 72, 128)
+
+
+def icon_art(x, y):
+    if icon_rr(x, y, 0.12, 0.24, 0.88, 0.80, 0.05):          # cover
+        if not icon_rr(x, y, 0.135, 0.255, 0.865, 0.785, 0.04):
+            return (14, 36, 72)
+        if abs(x - 0.5) < 0.006:                               # spine
+            return (190, 190, 180)
+        if 0.64 < x < 0.70 and 0.255 < y < 0.43:
+            return (200, 40, 50)                               # bookmark ribbon
+        for top in (0.36, 0.44, 0.52, 0.60, 0.68):
+            for x0, x1 in ((0.19, 0.46), (0.54, 0.81)):
+                if top < y < top + 0.016 and x0 < x < x1 - (0.08 if top == 0.36 else 0):
+                    return (150, 160, 178)
+        return (250, 248, 240)
+    return ICON_BG
+
+
+def icon_sample(x, y):
+    """RGB of the icon at (x, y) in the unit square, or None (transparent)."""
+    if not icon_rr(x, y, 0.0, 0.0, 1.0, 1.0, 0.2):
+        return None
+    return icon_art(x, y)
+
+
+def icon_render_png(size):
+    n = 4 if size <= 256 else 2
+    rows = []
+    for py in range(size):
+        row = bytearray([0])                     # PNG filter type 0
+        for px in range(size):
+            ra = ga = ba = aa = 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = icon_sample((px + (sx + 0.5) / n) / size,
+                                    (py + (sy + 0.5) / n) / size)
+                    if c:
+                        ra += c[0]
+                        ga += c[1]
+                        ba += c[2]
+                        aa += 1
+            if aa:
+                row += bytes((ra // aa, ga // aa, ba // aa, 255 * aa // (n * n)))
+            else:
+                row += b"\0\0\0\0"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) +
+            chunk(b"IEND", b""))
+
+
+# ICNS entry types holding PNG data, with the pixel size of each
+ICON_ICNS_TYPES = [(b"icp4", 16), (b"icp5", 32), (b"ic11", 32), (b"ic12", 64),
+                   (b"ic07", 128), (b"ic13", 256), (b"ic08", 256),
+                   (b"ic14", 512), (b"ic09", 512)]
+
+
+def icon_make_icns():
+    """An .icns file written directly (no iconutil needed)."""
+    pngs = {}
+    body = b""
+    for tag, size in ICON_ICNS_TYPES:
+        if size not in pngs:
+            pngs[size] = icon_render_png(size)
+        body += tag + struct.pack(">I", len(pngs[size]) + 8) + pngs[size]
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
+def icon_build_app(dest):
+    """Build a macOS <name>.app bundle (with icon) in dest."""
+    app = os.path.join(dest, ICON_NAME + ".app")
+    if os.path.exists(app):
+        shutil.rmtree(app)
+    macos = os.path.join(app, "Contents", "MacOS")
+    res = os.path.join(app, "Contents", "Resources")
+    os.makedirs(macos)
+    os.makedirs(res)
+    shutil.copy(os.path.abspath(__file__), os.path.join(res, ICON_NAME + ".py"))
+    launcher = os.path.join(macos, ICON_NAME)
+    with open(launcher, "w") as fh:
+        fh.write('#!/bin/sh\nexec "%s" "$(dirname "$0")/../Resources/%s.py" '
+                 '"$@"\n' % (sys.executable, ICON_NAME))
+    os.chmod(launcher, 0o755)
+    with open(os.path.join(res, ICON_NAME + ".icns"), "wb") as fh:
+        fh.write(icon_make_icns())
+    info = {
+        "CFBundleName": ICON_NAME,
+        "CFBundleDisplayName": ICON_NAME,
+        "CFBundleIdentifier": "org.badgerjh." + ICON_NAME,
+        "CFBundleExecutable": ICON_NAME,
+        "CFBundleIconFile": ICON_NAME,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.0",
+        "NSHighResolutionCapable": True,
+    }
+    if ICON_DOC_EXTS:
+        info["CFBundleDocumentTypes"] = [{
+            "CFBundleTypeName": "EPUB book",
+            "CFBundleTypeRole": "Viewer",
+            "CFBundleTypeExtensions": ICON_DOC_EXTS}]
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as fh:
+        plistlib.dump(info, fh)
+    return app
+
+
+def icon_args(args):
+    """Handle --build-app [DIR] and --icon-png SIZE [OUT]; True if handled."""
+    if args[:1] == ["--build-app"]:
+        print(icon_build_app(args[1] if len(args) > 1 else
+                             os.path.dirname(os.path.abspath(__file__))))
+        return True
+    if args[:1] == ["--icon-png"] and len(args) >= 2:
+        with open(args[2] if len(args) > 2 else ICON_NAME + ".png", "wb") as fh:
+            fh.write(icon_render_png(int(args[1])))
+        return True
+    return False
+
+
+def set_window_icon(root):
+    try:
+        root._icon = tk.PhotoImage(data=ICON_PNG)
+        root.iconphoto(True, root._icon)
+    except tk.TclError:
+        pass
+
+
+ICON_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAEeklEQVR42u2dv2sUQRTH9y/wFFGi"
+    "GE9EJSgWUQgS1MWIkBBwIYUQIazFYQqxOQgoCHeFKWzEWNhooY3YHVrYHiEQLJJCCGh3RpSIEmIp"
+    "Nuu+Zfe4aHLeXWZ/zM5n4NuEYzN832fnvXk7MJalcBwdrdq+Kr5qvuq+PKRE9dBT8da2sjT8Cbnh"
+    "5AhUshLP3bSCXghpbBCI1NUIY1FI8o3fwPjMaSPWFcF/eJG8rk29UFQdfIe3XrvVwFG55GOqnnJ3"
+    "GvwKJmqvCm8+cnvJ+RiXLzndVPsUfPksDIudAMBWL8dbRPI+ctu1d1n6zUgFBbZ8bA3/AYAPOwZ9"
+    "QCL3I7cVAL7nG3ieoBUADDFQrce4MMRM2VT/pu8GyP+G1wG0fg1vDWOC4YUgJgAARgAAAgAEAAgA"
+    "EADsTIcvzXj9dhnFIPE2swAcHL7l7R5wvF3HRlGMEo/F60wBsG9wqjnBQ4MT3thkWQtduHozkIpn"
+    "nT8+sq1G7OtK/od4G/ksnmcCgL6hUnNSM9U578f3r97vXz+10PLSQiAVz3o3cGZbrT6aU/I/xFvx"
+    "OPJbvE8VgOLlu83JPH76UpvA6wpAJPE68l1ikBoAB85NB5MYHp/WLvg6AyASz8V7iUFqAOw/e0Pb"
+    "t193AKJVQGKQGgB7T18LJlFfWASAhAEQz8V7iQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAmAKi9"
+    "nfeePH8Tm+T5qgHoZR7tAKiVypt/u/QeAADAEADW1r54q58/xSZ5vmoAeplHOwBWZh9s+u36+jdq"
+    "AGoAAAAAAAAAAAAAAAAAAAAAANAbgKSlDQDzi8tBsyYL6hSArMxXvKMTqFBxdgKT7nLSCexBcXYC"
+    "k+5yUgNQAwAAAAAAAAAAAAAAAAAAAAAAAGQRgJUPH4MjUFlQpwBkZb7iHZ1AOoGsAKwA1ADUAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAJwI4kQQnUA6gZwK5lQwNQA1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAJ1A"
+    "OoEAAACkAFIAAAAAAAAAAAAAAAAAAAAAAACAGgDkDnvuDk5H0d3BEoPUbw8fmywDQMISz1O/PVzu"
+    "ro/usX/x6jUAJCTxOvJdYpAaAK1XyOuYCnQEIFr6VVwdrwSAI1fueXtOTjQnderilDdTnfPuP3yW"
+    "ed2+MxtIh7mKp+Jt5LN4Lt6nDkCkvqGSVzgx3pwgikfisXitKm7KAIjUb5eDwkQmidRJPBVvVcdL"
+    "OQBILwEAAFTrGGGs6gJADSOMVU0AqGCEsaoIADZGGCvbkoERhhaA0aAOMDT/twDgYohxcq3W4f+h"
+    "gSnGqGH9PdgNGFb9bwFAwdcG5uReEuOCtdWgFjAw928BAa3hPLd+/zf8HxVJBbld+otWJ8P/oYNh"
+    "uZNjdTOoBwzK+20gYGuYxy0fKwFvfrcQOBSG2hV8jqVyhLsDtogabPU6rvZ3kBJYDbL51rtWEiNs"
+    "G1f4gJSNDzthLApWGiNcEThPkML3/MTe+C5gsEMaa9QLyvN6LfTWVhmzP5uy3Fc8tEujAAAAAElF"
+    "TkSuQmCC"
+)
+
+
+def watchdog(root):
+    """With TKREADER_DEBUG set: dump every thread's stack if the UI stalls for 4s."""
+    import faulthandler
+    import threading
+    beat = [time.time()]
+
+    def tick():
+        beat[0] = time.time()
+        root.after(500, tick)
+
+    def watch():
+        reported = False
+        while True:
+            time.sleep(1)
+            stalled = time.time() - beat[0] > 4
+            if stalled and not reported:
+                print("tkreader: UI stalled for 4s; stack follows", file=sys.stderr, flush=True)
+                faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+            reported = stalled
+    tick()
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def main():
+    if icon_args(sys.argv[1:]):
+        return
+    root = tk.Tk()
+    App(root, sys.argv[1] if len(sys.argv) > 1 else None)
+    if DEBUG:
+        watchdog(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
