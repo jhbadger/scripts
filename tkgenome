@@ -1278,10 +1278,90 @@ STRIP_H = 175
 MAX_SEQ_FEATURES = 500
 
 
+ICON_PNG = (
+    "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"
+)
+
+
 class App:
     def __init__(self, root, path=None):
         self.root = root
         root.title("tkgenome")
+        try:
+            self._icon = tk.PhotoImage(data=ICON_PNG)
+            root.iconphoto(True, self._icon)
+        except tk.TclError:
+            pass
+        try:        # macOS: files opened via the app bundle / Finder
+            root.createcommand("::tk::mac::OpenDocument",
+                               lambda *files: self.load(files[0]))
+        except tk.TclError:
+            pass
         root.geometry("1380x860")
         self.records = []
         self.scope = None
@@ -1349,7 +1429,7 @@ class App:
         fm.add_command(label="Open...", accelerator="Ctrl-O",
                        command=self.open_dialog)
         fm.add_separator()
-        fm.add_command(label="Export map as SVG...", command=self.export_svg)
+        fm.add_command(label="Export figure (SVG, vector)...", command=self.export_svg)
         fm.add_command(label="Export map as PostScript...",
                        command=self.export_ps)
         fm.add_command(label="Export table as TSV...", command=self.export_tsv)
@@ -1430,6 +1510,8 @@ class App:
             side="left", padx=(14, 3))
         ttk.Button(bar2, text="Rotate to top", command=self.rotate_to_top).pack(
             side="left", padx=3)
+        ttk.Button(bar2, text="Export SVG...", command=self.export_svg).pack(
+            side="right", padx=3)
 
     def build_table(self, parent):
         fr = ttk.Frame(parent)
@@ -1904,7 +1986,7 @@ class App:
         if self.scope is None:
             return
         path = filedialog.asksaveasfilename(
-            defaultextension=".svg", title="Export map as SVG",
+            defaultextension=".svg", title="Export figure as SVG",
             filetypes=[("SVG", "*.svg")])
         if not path:
             return
