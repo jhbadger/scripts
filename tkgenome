@@ -1017,7 +1017,7 @@ class StripView:
     def __init__(self, app, canvas):
         self.app, self.c = app, canvas
         self.w0, self.w1 = 0.0, 20000.0
-        self.ya = 84
+        self.ya = 62
         self._pending = False
         self._press = None
         self._drag = False
@@ -1199,19 +1199,17 @@ class StripView:
         pos = self.w0 + x / scale
         tol = 3 / scale
         strand = 1 if y < self.ya else -1
-        row = (int((self.ya - 4 - y) // LANE_H) if strand > 0
-               else int((y - self.ya - 4) // LANE_H))
-        row = max(0, min(2, row))
-        found = None
+        best, bkey = None, None
         for f in app.vis_feats:
             if f.strand != strand:
                 continue
             for s, e in f.gsegs:
                 if s - 1 - tol <= pos <= e + tol:
-                    if f.lane == row:
-                        return f.idx
-                    found = f.idx if found is None else found
-        return found
+                    # prefer one under the pointer, then the shortest
+                    key = (max(s - 1 - pos, pos - e, 0), e - s)
+                    if bkey is None or key < bkey:
+                        best, bkey = f.idx, key
+        return best
 
     # -- events
 
@@ -1281,7 +1279,7 @@ COLUMNS = (("id", "ID", 120, "w"), ("rec", "Record", 90, "w"),
            ("end", "End", 80, "e"), ("len", "Len", 60, "e"),
            ("strand", "Strand", 50, "center"), ("ann", "Annotation", 300, "w"))
 NUMERIC = ("start", "end", "len")
-STRIP_H = 175
+STRIP_H = 130
 MAX_SEQ_FEATURES = 500
 
 
@@ -1705,22 +1703,9 @@ class App:
         self.redraw_all()
 
     def assign_lanes(self):
-        L = self.scope.length
-        for strand in (1, -1):
-            ends = [-1e18, -1e18, -1e18]
-            fs = sorted((f for f in self.vis_feats if f.strand == strand),
-                        key=lambda f: f.gmin)
-            for f in fs:
-                if len(f.gsegs) > 1 and f.gmax - f.gmin > L / 2:
-                    f.lane = 0
-                    continue
-                lane = 2
-                for i in range(3):
-                    if ends[i] < f.gmin:
-                        lane = i
-                        break
-                ends[lane] = max(ends[lane], f.gmax)
-                f.lane = lane
+        """The strip draws one lane per strand (overlaps just overdraw)."""
+        for f in self.vis_feats:
+            f.lane = 0
 
     def sort_by(self, col, toggle=True):
         if toggle:
