@@ -1,0 +1,1434 @@
+#!/usr/bin/env python3
+"""tkmusic - search and play music from many places, in Python + Tk.
+
+Standard library only for the program itself; playback is done by mpv, and
+YouTube / YouTube Music / SoundCloud audio is fetched with yt-dlp (the newest
+yt-dlp found on the PATH or in Homebrew is used).
+
+Sources:
+  YouTube Music     song search (YouTube Music's own search API)
+  YouTube           video search via yt-dlp
+  SoundCloud        track search via yt-dlp
+  Bandcamp          artists / albums / tracks (full streams where the artist
+                    allows it)
+  Internet Archive  live recordings, netlabels, old 78s ...
+  Radio             ~50,000 internet radio stations (radio-browser.info)
+  Spotify           search only: Spotify does not allow other programs to
+                    stream its audio, so a Spotify track is played from
+                    YouTube Music (or opened in the Spotify app/web player).
+                    Needs a free API key from developer.spotify.com, set as
+                    spotify_client_id / spotify_client_secret in
+                    ~/.tkmusic.json or SPOTIFY_CLIENT_ID / _SECRET.
+  A URL typed into the search box is played directly (or opened, for
+  Bandcamp and Internet Archive pages).
+
+Usage:  tkmusic [search words]
+
+Keys:
+  Return (search box)   search            Ctrl-F or /   go to search box
+  Return / double-click play (albums, artists and archive items open)
+  BackSpace             back to the previous list
+  A                     add to queue      N   play next
+  F                     add to / remove from favourites
+  Space                 pause / resume    Ctrl-Left / Ctrl-Right  prev / next
+  Delete (queue)        remove from queue
+  Right-click           more actions (open web page, copy URL ...)
+  Ctrl-Q                quit
+"""
+
+import base64
+import html
+import json
+import os
+import queue
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+import tkinter as tk
+import urllib.parse
+import urllib.request
+import webbrowser
+from tkinter import ttk
+
+CONFIG = os.path.expanduser("~/.tkmusic.json")
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/140.0 Safari/537.36")
+POLL_MS = 50
+PLAYABLE = ("track", "station")
+KIND_NAMES = {"track": "Track", "station": "Station", "album": "Album",
+              "artist": "Artist", "item": "Recording"}
+
+
+# ---------------------------------------------------------------- helpers
+
+def http(url, data=None, headers=None, timeout=15):
+    h = {"User-Agent": UA}
+    h.update(headers or {})
+    if isinstance(data, (dict, list)):
+        data = json.dumps(data).encode()
+        h.setdefault("Content-Type", "application/json")
+    elif isinstance(data, str):
+        data = data.encode()
+    req = urllib.request.Request(url, data=data, headers=h)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def http_json(url, data=None, headers=None, timeout=15):
+    return json.loads(http(url, data, headers, timeout))
+
+
+def fmt_time(s):
+    if s is None or s < 0:
+        return ""
+    s = int(s)
+    if s >= 3600:
+        return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
+    return "%d:%02d" % (s // 60, s % 60)
+
+
+def parse_time(t):
+    """'3:59', '1:02:03' or '245.3' -> seconds (or None)."""
+    if t is None:
+        return None
+    if isinstance(t, (int, float)):
+        return float(t)
+    try:
+        secs = 0.0
+        for part in str(t).strip().split(":"):
+            secs = secs * 60 + float(part)
+        return secs
+    except ValueError:
+        return None
+
+
+def item(src, kind, title, artist="", album="", dur=None, url="", page="",
+         key="", info=""):
+    return {"src": src, "kind": kind, "title": title or "(untitled)",
+            "artist": artist or "", "album": album or "", "dur": dur,
+            "url": url, "page": page, "key": key, "info": info}
+
+
+def run_ytdlp_json(args, timeout=40):
+    out = subprocess.run([TOOLS.ytdlp, "--no-update", "--no-warnings"] + args,
+                         capture_output=True, text=True, timeout=timeout)
+    if out.returncode != 0 and not out.stdout:
+        lines = out.stderr.strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else "yt-dlp failed")
+    return json.loads(out.stdout)
+
+
+class Tools:
+    """Locates mpv and the newest yt-dlp."""
+
+    def __init__(self):
+        self.mpv = shutil.which("mpv") or next(
+            (p for p in ("/opt/homebrew/bin/mpv", "/usr/local/bin/mpv")
+             if os.path.exists(p)), None)
+        self.ytdlp = shutil.which("yt-dlp") or "yt-dlp"
+        self.ytdlp_version = ""
+
+    def find_ytdlp(self):
+        dirs = os.environ.get("PATH", "").split(os.pathsep)
+        dirs += ["/opt/homebrew/bin", "/usr/local/bin",
+                 os.path.expanduser("~/.local/bin")]
+        seen, best = set(), ("", None)
+        for d in dirs:
+            p = os.path.join(d, "yt-dlp")
+            if not os.access(p, os.X_OK):
+                continue
+            real = os.path.realpath(p)
+            if real in seen:
+                continue
+            seen.add(real)
+            try:
+                v = subprocess.run([p, "--version"], capture_output=True,
+                                   text=True, timeout=20).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if v > best[0]:
+                best = (v, p)
+        if best[1]:
+            self.ytdlp_version, self.ytdlp = best
+
+
+TOOLS = Tools()
+
+
+# ---------------------------------------------------------------- sources
+
+def search_ytm(q):
+    body = {"context": {"client": {"clientName": "WEB_REMIX",
+                                   "clientVersion": "1.20250101.01.00",
+                                   "hl": "en"}},
+            "query": q, "params": "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"}
+    d = http_json("https://music.youtube.com/youtubei/v1/search"
+                  "?prettyPrint=false", body,
+                  {"Origin": "https://music.youtube.com"})
+    out = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            if "musicResponsiveListItemRenderer" in o:
+                yield o["musicResponsiveListItemRenderer"]
+            for v in o.values():
+                yield from walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                yield from walk(v)
+
+    for r in walk(d):
+        vid = (r.get("playlistItemData") or {}).get("videoId")
+        if not vid:
+            continue
+        cols = []
+        for c in r.get("flexColumns", []):
+            runs = c.get("musicResponsiveListItemFlexColumnRenderer", {}) \
+                    .get("text", {}).get("runs", [])
+            cols.append("".join(x.get("text", "") for x in runs))
+        title = cols[0] if cols else ""
+        parts = [p.strip() for p in (cols[1] if len(cols) > 1 else "")
+                 .split(" • ")]
+        if parts and parts[0] in ("Song", "Video"):
+            parts = parts[1:]
+        dur = None
+        if parts and re.fullmatch(r"\d+(:\d+)+", parts[-1]):
+            dur = parse_time(parts.pop())
+        artist = parts[0] if parts else ""
+        album = parts[1] if len(parts) > 1 else ""
+        out.append(item("YouTube Music", "track", title, artist, album, dur,
+                        "https://music.youtube.com/watch?v=" + vid,
+                        "https://music.youtube.com/watch?v=" + vid,
+                        info=cols[2] if len(cols) > 2 else ""))
+    return out
+
+
+def _ytdlp_search(prefix, q, src, n=25):
+    d = run_ytdlp_json(["--flat-playlist", "-J", "%s%d:%s" % (prefix, n, q)])
+    out = []
+    for e in d.get("entries") or []:
+        url = e.get("webpage_url") or e.get("url")
+        if not url:
+            continue
+        artist = e.get("uploader") or e.get("channel") or ""
+        out.append(item(src, "track", e.get("title"), artist, "",
+                        e.get("duration"), url, url))
+    return out
+
+
+def search_yt(q):
+    return _ytdlp_search("ytsearch", q, "YouTube")
+
+
+def search_sc(q):
+    return _ytdlp_search("scsearch", q, "SoundCloud")
+
+
+def search_bc(q):
+    d = http_json("https://bandcamp.com/api/bcsearch_public_api/1/"
+                  "autocomplete_elastic",
+                  {"search_text": q, "search_filter": "", "full_page": False,
+                   "fan_id": None})
+    out = []
+    for r in d.get("auto", {}).get("results", []):
+        t = r.get("type")
+        if t == "b":
+            out.append(item("Bandcamp", "artist", r.get("name"),
+                            r.get("name"), "", None, "",
+                            r.get("item_url_root"),
+                            info=", ".join(r.get("tag_names") or [])))
+        elif t == "a":
+            out.append(item("Bandcamp", "album", r.get("name"),
+                            r.get("band_name"), r.get("name"), None, "",
+                            r.get("item_url_path")))
+        elif t == "t":
+            out.append(item("Bandcamp", "track", r.get("name"),
+                            r.get("band_name"), r.get("album_name"), None,
+                            "", r.get("item_url_path")))
+    return out
+
+
+def bc_tralbum(page):
+    text = http(page)
+    m = re.search(r'data-tralbum="([^"]+)"', text)
+    if not m:
+        return None, text
+    return json.loads(html.unescape(m.group(1))), text
+
+
+def bc_expand(it):
+    if it["kind"] == "artist":
+        # an artist's /music page is a grid of albums, unless the artist
+        # has a single release, in which case it is that album's page
+        page = it["page"].rstrip("/")
+        if not page.endswith("/music"):
+            page += "/music"
+        d, text = bc_tralbum(page)
+        out = bc_discography(text, it)
+        if out or d is None:
+            return out
+        return bc_tracks(d, page)
+    d, text = bc_tralbum(it["page"])
+    return bc_tracks(d, it["page"]) if d else []
+
+
+def bc_tracks(d, page):
+    root = re.match(r"https?://[^/]+", page).group(0)
+    artist = d.get("artist", "")
+    album = (d.get("current") or {}).get("title", "")
+    if d.get("item_type") == "track":
+        album = ""
+    out = []
+    for t in d.get("trackinfo", []):
+        url = (t.get("file") or {}).get("mp3-128", "")
+        link = t.get("title_link")
+        tpage = root + link if link else page
+        it = item("Bandcamp", "track", t.get("title"),
+                  t.get("artist") or artist, album, t.get("duration"),
+                  url, tpage, info="" if url else "not streamable")
+        out.append(it)
+    return out
+
+
+def bc_discography(text, it):
+    root = re.match(r"https?://[^/]+", it["page"]).group(0)
+    out, seen = [], set()
+    for m in re.finditer(r'<a href="((?:https?://[^"]+)?/(album|track)/[^"]+)"'
+                         r'.*?<p class="title">\s*(.*?)\s*(?:<br|</p>)',
+                         text, re.S):
+        href, kind, title = m.groups()
+        url = href if href.startswith("http") else root + href
+        if url in seen:
+            continue
+        seen.add(url)
+        title = html.unescape(re.sub(r"<[^>]+>", "", title)).strip()
+        out.append(item("Bandcamp", "album" if kind == "album" else "track",
+                        title, it["artist"], title if kind == "album" else "",
+                        None, "", url))
+    m = re.search(r'data-client-items="([^"]+)"', text)
+    if m:
+        for e in json.loads(html.unescape(m.group(1))):
+            url = root + e.get("page_url", "")
+            if url in seen:
+                continue
+            seen.add(url)
+            kind = "album" if e.get("type") == "album" else "track"
+            out.append(item("Bandcamp", kind, e.get("title"),
+                            e.get("artist") or it["artist"],
+                            e.get("title") if kind == "album" else "",
+                            None, "", url))
+    return out
+
+
+def search_ia(q):
+    # matches in title or creator, most downloaded first; failing that,
+    # anywhere in the description, most relevant first
+    docs = []
+    for query, sort in (("(title:(%s) OR creator:(%s))" % (q, q),
+                         [("sort[]", "downloads desc")]),
+                        ("(%s)" % q, [])):
+        params = urllib.parse.urlencode([
+            ("q", query + " AND mediatype:(audio OR etree)"),
+            ("fl[]", "identifier"), ("fl[]", "title"), ("fl[]", "creator"),
+            ("fl[]", "date"), ("rows", "40"), ("output", "json")] + sort)
+        d = http_json("https://archive.org/advancedsearch.php?" + params)
+        docs = d.get("response", {}).get("docs", [])
+        if docs:
+            break
+    out = []
+    for r in docs:
+        creator = r.get("creator", "")
+        if isinstance(creator, list):
+            creator = ", ".join(creator)
+        ident = r["identifier"]
+        out.append(item("Internet Archive", "item", r.get("title", ident),
+                        creator, "", None, "",
+                        "https://archive.org/details/" + ident, ident,
+                        info=(r.get("date") or "")[:10]))
+    return out
+
+
+IA_FORMATS = ("VBR MP3", "MP3", "128Kbps MP3", "64Kbps MP3", "Ogg Vorbis",
+              "Flac", "Apple Lossless Audio", "WAVE")
+
+
+def ia_expand(it):
+    ident = it["key"]
+    d = http_json("https://archive.org/metadata/" + urllib.parse.quote(ident))
+    md = d.get("metadata", {})
+    creator = md.get("creator", it["artist"])
+    if isinstance(creator, list):
+        creator = ", ".join(creator)
+    files = d.get("files", [])
+    present = {f.get("format") for f in files}
+    fmt = next((f for f in IA_FORMATS if f in present), None)
+    if fmt is None:
+        return []
+
+    def order(f):
+        tr = re.match(r"\d+", str(f.get("track", "")))
+        return (int(tr.group(0)) if tr else 9999, f["name"])
+
+    out = []
+    for f in sorted((f for f in files if f.get("format") == fmt), key=order):
+        title = f.get("title") or os.path.splitext(
+            os.path.basename(f["name"]))[0]
+        url = "https://archive.org/download/%s/%s" % (
+            urllib.parse.quote(ident), urllib.parse.quote(f["name"]))
+        out.append(item("Internet Archive", "track", title,
+                        f.get("creator") or creator,
+                        md.get("title", it["title"]),
+                        parse_time(f.get("length")), url, it["page"]))
+    return out
+
+
+RADIO_API = "https://all.api.radio-browser.info/json/stations/search?"
+
+
+def search_radio(q):
+    seen, out = set(), []
+    for field in ("name", "tag"):
+        params = urllib.parse.urlencode({
+            field: q, "limit": 60, "hidebroken": "true",
+            "order": "clickcount", "reverse": "true"})
+        try:
+            rows = http_json(RADIO_API + params, headers={"User-Agent":
+                                                          "tkmusic/1.0"})
+        except Exception:
+            if out:
+                break
+            raise
+        for r in rows:
+            if r["stationuuid"] in seen:
+                continue
+            seen.add(r["stationuuid"])
+            info = " ".join(x for x in (
+                "%dk" % r["bitrate"] if r.get("bitrate") else "",
+                r.get("codec", "")) if x)
+            tags = ", ".join(r.get("tags", "").split(",")[:4])
+            out.append(item("Radio", "station", r["name"].strip(), tags,
+                            r.get("country", ""), None,
+                            r.get("url_resolved") or r["url"],
+                            r.get("homepage", ""), r["stationuuid"], info))
+    return out
+
+
+class Spotify:
+    token = None
+    expires = 0
+
+    @staticmethod
+    def creds(cfg):
+        cid = os.environ.get("SPOTIFY_CLIENT_ID") or cfg.get(
+            "spotify_client_id")
+        sec = os.environ.get("SPOTIFY_CLIENT_SECRET") or cfg.get(
+            "spotify_client_secret")
+        return (cid, sec) if cid and sec else None
+
+    @classmethod
+    def get(cls, cfg, path):
+        if cls.token is None or time.time() > cls.expires - 60:
+            cr = cls.creds(cfg)
+            if not cr:
+                raise RuntimeError(
+                    "Spotify needs an API key: create an app at "
+                    "developer.spotify.com and put spotify_client_id and "
+                    "spotify_client_secret in ~/.tkmusic.json")
+            auth = base64.b64encode(("%s:%s" % cr).encode()).decode()
+            d = http_json("https://accounts.spotify.com/api/token",
+                          "grant_type=client_credentials",
+                          {"Authorization": "Basic " + auth,
+                           "Content-Type":
+                           "application/x-www-form-urlencoded"})
+            cls.token = d["access_token"]
+            cls.expires = time.time() + d.get("expires_in", 3600)
+        return http_json("https://api.spotify.com/v1/" + path,
+                         headers={"Authorization": "Bearer " + cls.token})
+
+
+def sp_track(t, album=None):
+    album = album or t.get("album", {}).get("name", "")
+    return item("Spotify", "track", t["name"],
+                ", ".join(a["name"] for a in t.get("artists", [])), album,
+                t.get("duration_ms", 0) / 1000 or None, "",
+                t.get("external_urls", {}).get("spotify", ""), t["uri"])
+
+
+def search_spotify(q, cfg):
+    d = Spotify.get(cfg, "search?" + urllib.parse.urlencode(
+        {"q": q, "type": "track,album", "limit": 20}))
+    out = [sp_track(t) for t in d.get("tracks", {}).get("items", []) if t]
+    for a in d.get("albums", {}).get("items", []):
+        if a:
+            out.append(item("Spotify", "album", a["name"],
+                            ", ".join(x["name"] for x in a["artists"]),
+                            a["name"], None, "",
+                            a.get("external_urls", {}).get("spotify", ""),
+                            a["id"], info=(a.get("release_date") or "")[:4]))
+    return out
+
+
+def sp_expand(it, cfg):
+    d = Spotify.get(cfg, "albums/%s/tracks?limit=50" % it["key"])
+    return [sp_track(t, it["title"]) for t in d.get("items", []) if t]
+
+
+def url_items(q):
+    """Something typed into the search box that looks like a URL."""
+    if "bandcamp.com" in q:
+        kind = "album" if "/album/" in q else (
+            "track" if "/track/" in q else "artist")
+        return bc_expand(item("Bandcamp", kind, q, "", "", None, "", q))
+    m = re.match(r"https?://archive\.org/details/([^/?#]+)", q)
+    if m:
+        return ia_expand(item("Internet Archive", "item", m.group(1), "", "",
+                              None, "", q, m.group(1)))
+    return [item("URL", "track", q, "", "", None, q, q)]
+
+
+def needs_ytdlp(url):
+    host = urllib.parse.urlparse(url).netloc.lower()
+    return any(h in host for h in ("youtube.com", "youtu.be", "soundcloud.com"))
+
+
+def resolve(it, cfg):
+    """Return (stream url, fetch-with-yt-dlp?) for a playable item."""
+    src = it["src"]
+    if src in ("YouTube Music", "YouTube", "SoundCloud"):
+        return it["url"], True
+    if src == "Bandcamp":
+        if it["page"]:
+            try:
+                d, _ = bc_tralbum(it["page"])
+                if d:
+                    for t in d.get("trackinfo", []):
+                        f = (t.get("file") or {}).get("mp3-128")
+                        if f and (len(d["trackinfo"]) == 1 or
+                                  t.get("title") == it["title"]):
+                            return f, False
+            except Exception:
+                pass
+        if it["url"]:
+            return it["url"], False
+        raise RuntimeError("Bandcamp does not stream this track")
+    if src == "Spotify":
+        hits = search_ytm("%s %s" % (it["artist"], it["title"]))
+        if not hits:
+            raise RuntimeError("no YouTube Music match for this track")
+        return hits[0]["url"], True
+    return it["url"], needs_ytdlp(it["url"])
+
+
+SOURCES = [
+    ("All", None),
+    ("YouTube Music", search_ytm),
+    ("YouTube", search_yt),
+    ("SoundCloud", search_sc),
+    ("Bandcamp", search_bc),
+    ("Internet Archive", search_ia),
+    ("Radio", search_radio),
+    ("Spotify", search_spotify),
+]
+
+
+# ---------------------------------------------------------------- player
+
+class Player:
+    """One mpv process per track, controlled through its JSON IPC socket."""
+
+    def __init__(self):
+        self.events = queue.Queue()
+        self.gen = 0
+        self.procs = []
+        self.mpv = None
+        self.sock = None
+        self.lock = threading.Lock()
+        self.errors = []
+
+    def play(self, url, via_ytdlp, volume, start=0):
+        self.stop()
+        self.gen += 1
+        gen = self.gen
+        path = "/tmp/tkmusic-%d-%d.sock" % (os.getpid(), gen)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        args = [TOOLS.mpv, "--no-video", "--force-window=no",
+                "--input-terminal=no", "--term-osd=no",
+                "--msg-level=all=error", "--volume=%d" % volume,
+                "--input-ipc-server=" + path, "--cache=yes",
+                "--demuxer-max-bytes=256MiB", "--demuxer-max-back-bytes=256MiB",
+                "--script-opts=ytdl_hook-ytdl_path=" + TOOLS.ytdlp]
+        if start:
+            args.append("--start=%d" % start)
+        self.errors = []
+        if via_ytdlp:
+            y = subprocess.Popen(
+                [TOOLS.ytdlp, "--no-update", "-q", "--no-warnings",
+                 "-f", "bestaudio/best", "-o", "-", url],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL)
+            m = subprocess.Popen(args + ["-"], stdin=y.stdout,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.PIPE)
+            y.stdout.close()
+            self.procs = [m, y]
+            self._collect(y.stderr)
+        else:
+            m = subprocess.Popen(args + ["--", url], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.PIPE)
+            self.procs = [m]
+        self.mpv = m
+        self._collect(m.stderr)
+        threading.Thread(target=self._reader, args=(gen, path, m),
+                         daemon=True).start()
+
+    def _collect(self, stream):
+        errors = self.errors
+
+        def run():
+            for line in stream:
+                line = line.decode("utf-8", "replace").strip()
+                if line:
+                    errors.append(line)
+                    del errors[:-5]
+        threading.Thread(target=run, daemon=True).start()
+
+    def _reader(self, gen, path, proc):
+        s = socket.socket(socket.AF_UNIX)
+        for _ in range(200):
+            if gen != self.gen or proc.poll() is not None:
+                return
+            try:
+                s.connect(path)
+                break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            return
+        with self.lock:
+            if gen != self.gen:
+                s.close()
+                return
+            self.sock = s
+        for i, p in enumerate(("time-pos", "duration", "pause", "metadata",
+                               "media-title", "seekable",
+                               "partially-seekable")):
+            self.command("observe_property", i + 1, p)
+        f = s.makefile("rb")
+        try:
+            for line in f:
+                if gen != self.gen:
+                    break
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if ev.get("event") == "property-change":
+                    self.events.put((gen, ev["name"], ev.get("data")))
+        except OSError:
+            pass
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def command(self, *args):
+        with self.lock:
+            if self.sock is None:
+                return
+            try:
+                self.sock.sendall((json.dumps({"command": list(args)}) +
+                                   "\n").encode())
+            except OSError:
+                pass
+
+    def finished(self):
+        """None while playing, else the mpv exit code."""
+        if self.mpv is None:
+            return None
+        return self.mpv.poll()
+
+    def stop(self):
+        self.gen += 1
+        with self.lock:
+            if self.sock is not None:
+                try:
+                    self.sock.close()
+                except OSError:
+                    pass
+            self.sock = None
+        for p in self.procs:
+            if p.poll() is None:
+                p.terminate()
+        for p in self.procs:
+            try:
+                p.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        self.procs = []
+        self.mpv = None
+
+
+# ---------------------------------------------------------------- app
+
+class App:
+    def __init__(self, root, initial=""):
+        self.root = root
+        self.cfg = self.load_config()
+        self.ui_q = queue.Queue()
+        self.player = Player()
+        self.items = {}              # tree iid -> item
+        self.history = []            # stack of (title, items) for Back
+        self.view_items = []
+        self.view_title = ""
+        self.search_id = 0
+        self.queue = []              # list of items
+        self.qpos = -1
+        self.current = None
+        self.state = {}
+        self.paused = False
+        self.seeking = False
+        self.failures = 0
+        self.play_token = 0
+        self.pending = set()
+        self.started = 0
+
+        root.title("tkmusic")
+        root.geometry(self.cfg.get("geometry", "1150x680"))
+        root.minsize(760, 420)
+        self.build_ui()
+        self.refresh_favourites()
+        self.refresh_queue()
+        root.protocol("WM_DELETE_WINDOW", self.quit)
+        root.after(POLL_MS, self.poll)
+        threading.Thread(target=self.bg_find_tools, daemon=True).start()
+        if not TOOLS.mpv:
+            self.status("mpv was not found - install it (brew install mpv) "
+                        "to play anything")
+        if initial:
+            self.search_var.set(initial)
+            self.root.after(100, self.do_search)
+        else:
+            self.entry.focus_set()
+
+    # ------------------------------------------------------------ config
+
+    def load_config(self):
+        try:
+            with open(CONFIG) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def save_config(self):
+        self.cfg["volume"] = int(self.volume.get())
+        self.cfg["source"] = self.source_var.get()
+        self.cfg["geometry"] = self.root.geometry()
+        try:
+            tmp = CONFIG + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.cfg, f, indent=1)
+            os.replace(tmp, CONFIG)
+        except OSError as e:
+            self.status("could not save settings: %s" % e)
+
+    # ------------------------------------------------------------ UI
+
+    def build_ui(self):
+        root = self.root
+        top = ttk.Frame(root, padding=(8, 8, 8, 4))
+        top.pack(fill="x")
+        self.search_var = tk.StringVar()
+        self.entry = ttk.Entry(top, textvariable=self.search_var,
+                               font=("Helvetica", 15))
+        self.entry.pack(side="left", fill="x", expand=True, ipady=3)
+        self.entry.bind("<Return>", lambda e: self.do_search())
+        self.source_var = tk.StringVar(value=self.cfg.get("source", "All"))
+        src = ttk.Combobox(top, textvariable=self.source_var, state="readonly",
+                           width=16, values=[s for s, _ in SOURCES])
+        src.pack(side="left", padx=6)
+        src.bind("<<ComboboxSelected>>", lambda e: self.do_search())
+        ttk.Button(top, text="Search", command=self.do_search).pack(
+            side="left")
+
+        pw = ttk.PanedWindow(root, orient="horizontal")
+        pw.pack(fill="both", expand=True, padx=8)
+
+        left = ttk.Frame(pw)
+        self.nb = ttk.Notebook(left)
+        self.nb.pack(fill="both", expand=True)
+
+        res = ttk.Frame(self.nb)
+        bar = ttk.Frame(res)
+        bar.pack(fill="x", pady=(4, 2))
+        self.back_btn = ttk.Button(bar, text="◀ Back", width=7,
+                                   command=self.go_back, state="disabled")
+        self.back_btn.pack(side="left")
+        self.view_label = ttk.Label(bar, text="", font=("Helvetica", 13,
+                                                        "bold"))
+        self.view_label.pack(side="left", padx=8)
+        ttk.Button(bar, text="Play all", command=self.play_all).pack(
+            side="right")
+        self.tree = self.make_tree(res, ("title", "artist", "album", "len",
+                                         "kind", "src"),
+                                   ("Title", "Artist / tags", "Album / where",
+                                    "Length", "Type", "Source"),
+                                   (320, 190, 180, 70, 70, 110))
+        self.nb.add(res, text="Results")
+
+        fav = ttk.Frame(self.nb)
+        self.fav_tree = self.make_tree(fav, ("title", "artist", "kind", "src"),
+                                       ("Title", "Artist / tags", "Type",
+                                        "Source"), (330, 220, 70, 110))
+        self.nb.add(fav, text="Favourites")
+        pw.add(left, weight=3)
+
+        right = ttk.Frame(pw)
+        qbar = ttk.Frame(right)
+        qbar.pack(fill="x", pady=(4, 2))
+        ttk.Label(qbar, text="Queue", font=("Helvetica", 13, "bold")).pack(
+            side="left", padx=4)
+        ttk.Button(qbar, text="Clear", command=self.clear_queue).pack(
+            side="right")
+        self.qtree = self.make_tree(right, ("mark", "title", "artist"),
+                                    ("", "Title", "Artist"), (22, 190, 120))
+        self.qtree.column("mark", stretch=False, anchor="center")
+        self.qtree.bind("<Delete>", lambda e: self.queue_remove())
+        self.qtree.bind("<BackSpace>", lambda e: self.queue_remove())
+        pw.add(right, weight=1)
+
+        # now playing / transport
+        np = ttk.Frame(root, padding=(8, 6, 8, 2))
+        np.pack(fill="x")
+        self.np_title = ttk.Label(np, text="Nothing playing",
+                                  font=("Helvetica", 16, "bold"))
+        self.np_title.pack(anchor="w")
+        self.np_sub = ttk.Label(np, text="", font=("Helvetica", 13))
+        self.np_sub.pack(anchor="w")
+
+        tr = ttk.Frame(root, padding=(8, 2, 8, 4))
+        tr.pack(fill="x")
+        for text, cmd in (("◀◀", self.prev), ("▶", None),
+                          ("▶▶", self.next), ("■", self.stop)):
+            b = ttk.Button(tr, text=text, width=4,
+                           command=cmd or self.toggle_pause)
+            b.pack(side="left")
+            if cmd is None:
+                self.pause_btn = b
+        self.pos_label = ttk.Label(tr, text="", width=8, anchor="e")
+        self.pos_label.pack(side="left", padx=(10, 4))
+        self.pos = tk.DoubleVar()
+        self.scale = ttk.Scale(tr, from_=0, to=1, variable=self.pos)
+        self.scale.pack(side="left", fill="x", expand=True)
+        self.scale.bind("<ButtonPress-1>", self.seek_press)
+        self.scale.bind("<ButtonRelease-1>", self.seek_release)
+        self.dur_label = ttk.Label(tr, text="", width=8)
+        self.dur_label.pack(side="left", padx=4)
+        ttk.Label(tr, text="Vol").pack(side="left", padx=(10, 2))
+        self.volume = tk.DoubleVar(value=self.cfg.get("volume", 80))
+        ttk.Scale(tr, from_=0, to=100, variable=self.volume, length=110,
+                  command=self.set_volume).pack(side="left")
+
+        self.status_label = ttk.Label(root, text="", foreground="#777",
+                                      padding=(8, 0, 8, 6))
+        self.status_label.pack(fill="x")
+
+        self.menu = tk.Menu(root, tearoff=False)
+        for seq in ("<Control-f>", "<Command-f>"):
+            root.bind(seq, self.focus_search)
+        for seq in ("<Control-q>", "<Command-q>"):
+            root.bind(seq, lambda e: self.quit())
+        root.bind("<Control-Right>", lambda e: self.next())
+        root.bind("<Control-Left>", lambda e: self.prev())
+        root.bind("<space>", self.key_space)
+        root.bind("/", self.key_slash)
+
+    def make_tree(self, parent, cols, heads, widths):
+        frame = ttk.Frame(parent)
+        frame.pack(fill="both", expand=True)
+        t = ttk.Treeview(frame, columns=cols, show="headings",
+                         selectmode="extended")
+        for c, h, w in zip(cols, heads, widths):
+            t.heading(c, text=h, anchor="w")
+            t.column(c, width=w, anchor="w",
+                     stretch=c in ("title", "artist", "album"))
+        sb = ttk.Scrollbar(frame, orient="vertical", command=t.yview)
+        t.configure(yscrollcommand=sb.set)
+        t.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        t.tag_configure("dead", foreground="#999")
+        t.tag_configure("now", font=("Helvetica", 13, "bold"))
+        t.bind("<Double-1>", lambda e: self.activate(t))
+        t.bind("<Return>", lambda e: self.activate(t))
+        t.bind("<BackSpace>", lambda e: self.go_back())
+        t.bind("<Button-3>", lambda e: self.popup(t, e))
+        t.bind("<Button-2>", lambda e: self.popup(t, e))
+        t.bind("<Control-Button-1>", lambda e: self.popup(t, e))
+        for k, fn in (("a", self.add_queue), ("n", self.play_next),
+                      ("f", self.toggle_favourite)):
+            t.bind("<KeyPress-%s>" % k, lambda e, fn=fn: fn(t))
+            t.bind("<KeyPress-%s>" % k.upper(), lambda e, fn=fn: fn(t))
+        return t
+
+    def focus_search(self, event=None):
+        self.entry.focus_set()
+        self.entry.select_range(0, "end")
+        return "break"
+
+    def in_text(self):
+        w = self.root.focus_get()
+        return isinstance(w, (ttk.Entry, tk.Entry, ttk.Combobox))
+
+    def key_space(self, event):
+        if self.in_text():
+            return None
+        self.toggle_pause()
+        return "break"
+
+    def key_slash(self, event):
+        if self.in_text():
+            return None
+        return self.focus_search()
+
+    def status(self, text):
+        self.status_label.config(text=text)
+
+    # ------------------------------------------------------------ threads
+
+    def bg(self, work, done, fail=None):
+        """Run work() in a thread; done(result) / fail(exc) on the UI."""
+        def run():
+            try:
+                r = work()
+            except Exception as e:      # noqa: BLE001 - reported to the user
+                # bind e now: Python deletes it when the except block ends
+                self.ui_q.put(lambda e=e: (fail or self.bg_error)(e))
+            else:
+                self.ui_q.put(lambda: done(r))
+        threading.Thread(target=run, daemon=True).start()
+
+    def bg_error(self, e):
+        self.status("Error: %s" % e)
+
+    def bg_find_tools(self):
+        TOOLS.find_ytdlp()
+        v = TOOLS.ytdlp_version
+        if not v:
+            self.ui_q.put(lambda: self.status(
+                "yt-dlp not found: YouTube and SoundCloud will not work"))
+
+    def poll(self):
+        # reschedule first, so an error in a callback cannot stop polling
+        self.root.after(POLL_MS, self.poll)
+        try:
+            while True:
+                self.ui_q.get_nowait()()
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                gen, name, data = self.player.events.get_nowait()
+                if gen == self.player.gen:
+                    self.on_property(name, data)
+        except queue.Empty:
+            pass
+        if self.current is not None:
+            rc = self.player.finished()
+            if rc is not None:
+                self.on_track_end(rc)
+
+    # ------------------------------------------------------------ search
+
+    def do_search(self):
+        q = self.search_var.get().strip()
+        if not q:
+            return
+        self.search_id += 1
+        sid = self.search_id
+        self.history = []
+        self.nb.select(0)
+        if re.match(r"https?://", q):
+            self.pending = set()
+            self.show_items("URL", [])
+            self.status("Opening %s ..." % q)
+            self.bg(lambda: url_items(q),
+                    lambda r: self.search_done(sid, "URL", r, 1))
+            return
+        name = self.source_var.get()
+        if name == "All":
+            srcs = [(n, f) for n, f in SOURCES if f is not None
+                    and (n != "Spotify" or Spotify.creds(self.cfg))]
+        else:
+            srcs = [(n, f) for n, f in SOURCES if n == name]
+        self.show_items('"%s"' % q, [])
+        self.pending = {n for n, _ in srcs}
+        self.status("Searching %s ..." % ", ".join(sorted(self.pending)))
+        for n, f in srcs:
+            if n == "Spotify":
+                work = (lambda f=f: f(q, self.cfg))
+            else:
+                work = (lambda f=f: f(q))
+            self.bg(work,
+                    lambda r, n=n: self.search_done(sid, n, r, len(srcs)),
+                    lambda e, n=n: self.search_failed(sid, n, e))
+
+    def search_done(self, sid, name, results, nsrc):
+        if sid != self.search_id:
+            return
+        self.pending.discard(name)
+        if nsrc == 1:
+            self.view_items = []
+        self.view_items.extend(results)
+        self.show_items(self.view_title, self.view_items)
+        self.search_status()
+
+    def search_failed(self, sid, name, e):
+        if sid != self.search_id:
+            return
+        self.pending.discard(name)
+        self.search_status("%s: %s" % (name, e))
+
+    def search_status(self, extra=""):
+        n = len(self.view_items)
+        if self.pending:
+            msg = "%d results so far, waiting for %s" % (
+                n, ", ".join(sorted(self.pending)))
+        else:
+            msg = "%d results" % n
+        self.status(msg + ("  -  " + extra if extra else ""))
+
+    def show_items(self, title, items):
+        self.view_title = title
+        self.view_items = items
+        self.view_label.config(text=title)
+        self.back_btn.config(state="normal" if self.history else "disabled")
+        self.fill(self.tree, items, ("title", "artist", "album", "len",
+                                     "kind", "src"))
+
+    def fill(self, tree, items, cols):
+        sel_first = tree.selection()[:1]
+        tree.delete(*tree.get_children())
+        for i, it in enumerate(items):
+            vals = []
+            for c in cols:
+                if c == "len":
+                    vals.append(fmt_time(it["dur"]) or it.get("info", ""))
+                elif c == "kind":
+                    vals.append(KIND_NAMES.get(it["kind"], it["kind"]))
+                elif c == "src":
+                    vals.append(it["src"])
+                elif c == "title" and it["kind"] not in PLAYABLE:
+                    vals.append(it["title"] + "  ▸")
+                else:
+                    vals.append(it.get(c, ""))
+            iid = "%s-%d" % (str(tree), i)
+            dead = it["kind"] == "track" and it.get("info") == \
+                "not streamable"
+            tree.insert("", "end", iid=iid, values=vals,
+                        tags=("dead",) if dead else ())
+            self.items[iid] = it
+        kids = tree.get_children()
+        if kids:
+            first = sel_first[0] if sel_first and sel_first[0] in kids \
+                else kids[0]
+            tree.selection_set(first)
+            tree.focus(first)
+
+    def selected(self, tree):
+        return [self.items[i] for i in tree.selection() if i in self.items]
+
+    def tree_items(self, tree):
+        return [self.items[i] for i in tree.get_children()]
+
+    # ------------------------------------------------------------ actions
+
+    def activate(self, tree):
+        sel = self.selected(tree)
+        if not sel:
+            return "break"
+        it = sel[0]
+        if tree is self.qtree:
+            self.play_index(self.queue.index(it) if it in self.queue else 0)
+        elif it["kind"] in PLAYABLE:
+            if it["kind"] == "station":
+                self.set_queue([it], 0)
+            else:
+                items = [x for x in self.tree_items(tree)
+                         if x["kind"] == "track"]
+                self.set_queue(items, items.index(it))
+        else:
+            self.open_item(it)
+        return "break"
+
+    def open_item(self, it, then=None):
+        self.nb.select(0)
+        self.status("Opening %s ..." % it["title"])
+        cfg = self.cfg
+
+        def work():
+            if it["src"] == "Bandcamp":
+                return bc_expand(it)
+            if it["src"] == "Internet Archive":
+                return ia_expand(it)
+            if it["src"] == "Spotify":
+                return sp_expand(it, cfg)
+            return []
+
+        def done(items):
+            if not items:
+                self.status("Nothing playable in %s" % it["title"])
+                return
+            self.search_id += 1
+            self.pending = set()
+            self.history.append((self.view_title, self.view_items))
+            title = it["title"]
+            if it["artist"] and it["artist"] != it["title"]:
+                title += " - " + it["artist"]
+            self.show_items(title, items)
+            self.status("%d items" % len(items))
+            if then:
+                then(items)
+        self.bg(work, done)
+
+    def go_back(self):
+        if self.history:
+            title, items = self.history.pop()
+            self.search_id += 1
+            self.pending = set()
+            self.show_items(title, items)
+        return "break"
+
+    def play_all(self):
+        items = [x for x in self.view_items if x["kind"] == "track"]
+        if items:
+            self.set_queue(items, 0)
+
+    def expand_for_queue(self, it, fn):
+        """Albums etc. are opened, then fn(tracks) is called."""
+        if it["kind"] in PLAYABLE:
+            fn([it])
+        else:
+            self.open_item(it, lambda items: fn(
+                [x for x in items if x["kind"] == "track"]))
+
+    def add_queue(self, tree):
+        for it in self.selected(tree):
+            self.expand_for_queue(it, self.queue_extend)
+        return "break"
+
+    def queue_extend(self, items):
+        self.queue.extend(items)
+        self.refresh_queue()
+        self.status("Added %d to the queue" % len(items))
+        if self.current is None and items and self.qpos < 0:
+            self.play_index(len(self.queue) - len(items))
+
+    def play_next(self, tree):
+        for it in reversed(self.selected(tree)):
+            def ins(items):
+                pos = self.qpos + 1
+                self.queue[pos:pos] = items
+                self.refresh_queue()
+                self.status("%d will play next" % len(items))
+            self.expand_for_queue(it, ins)
+        return "break"
+
+    def set_queue(self, items, pos):
+        self.queue = list(items)
+        self.play_index(pos)
+
+    def clear_queue(self):
+        self.queue = [self.current] if self.current else []
+        self.qpos = 0 if self.current else -1
+        self.refresh_queue()
+
+    def queue_remove(self):
+        sel = set(self.qtree.selection())
+        if not sel:
+            return "break"
+        keep = []
+        for i, iid in enumerate(self.qtree.get_children()):
+            if iid in sel:
+                if i < self.qpos:
+                    self.qpos -= 1
+                elif i == self.qpos:
+                    self.qpos -= 1     # current keeps playing, not in queue
+            else:
+                keep.append(self.queue[i])
+        self.queue = keep
+        self.refresh_queue()
+        return "break"
+
+    def refresh_queue(self):
+        self.fill(self.qtree, self.queue, ("mark", "title", "artist"))
+        kids = self.qtree.get_children()
+        if 0 <= self.qpos < len(kids):
+            self.qtree.set(kids[self.qpos], "mark", "▶")
+            self.qtree.item(kids[self.qpos], tags=("now",))
+            self.qtree.see(kids[self.qpos])
+
+    # ------------------------------------------------------------ favourites
+
+    def favourites(self):
+        return self.cfg.setdefault("favourites", [])
+
+    def fav_key(self, it):
+        return (it["src"], it["kind"], it["page"] or it["url"], it["title"])
+
+    def toggle_favourite(self, tree):
+        favs = self.favourites()
+        keys = [self.fav_key(f) for f in favs]
+        for it in self.selected(tree):
+            k = self.fav_key(it)
+            if k in keys:
+                del favs[keys.index(k)]
+                keys.remove(k)
+                self.status("Removed %s from favourites" % it["title"])
+            else:
+                favs.append(dict(it))
+                keys.append(k)
+                self.status("Added %s to favourites" % it["title"])
+        self.refresh_favourites()
+        self.save_config()
+        return "break"
+
+    def refresh_favourites(self):
+        self.fill(self.fav_tree, self.favourites(),
+                  ("title", "artist", "kind", "src"))
+
+    # ------------------------------------------------------------ menu
+
+    def popup(self, tree, event):
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return "break"
+        if iid not in tree.selection():
+            tree.selection_set(iid)
+        tree.focus(iid)
+        it = self.items[iid]
+        m = self.menu
+        m.delete(0, "end")
+        if tree is self.qtree:
+            m.add_command(label="Play", command=lambda: self.activate(tree))
+            m.add_command(label="Remove from queue",
+                          command=self.queue_remove)
+        else:
+            if it["kind"] in PLAYABLE:
+                m.add_command(label="Play",
+                              command=lambda: self.activate(tree))
+            else:
+                m.add_command(label="Open",
+                              command=lambda: self.open_item(it))
+                m.add_command(label="Play all", command=lambda: self.
+                              expand_for_queue(it, lambda x:
+                                               self.set_queue(x, 0)))
+            m.add_command(label="Play next   (N)",
+                          command=lambda: self.play_next(tree))
+            m.add_command(label="Add to queue   (A)",
+                          command=lambda: self.add_queue(tree))
+        fav = self.fav_key(it) in [self.fav_key(f) for f in self.favourites()]
+        m.add_command(label=("Remove from" if fav else "Add to") +
+                      " favourites   (F)",
+                      command=lambda: self.toggle_favourite(tree))
+        m.add_separator()
+        if it["page"]:
+            m.add_command(label="Open web page",
+                          command=lambda: webbrowser.open(it["page"]))
+        if it["src"] == "Spotify" and it["key"].startswith("spotify:"):
+            m.add_command(label="Open in Spotify app",
+                          command=lambda: subprocess.Popen(
+                              ["open", it["key"]]))
+        m.add_command(label="Copy link", command=lambda: self.copy(
+            it["page"] or it["url"]))
+        m.tk_popup(event.x_root, event.y_root)
+        return "break"
+
+    def copy(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status("Copied %s" % text)
+
+    # ------------------------------------------------------------ playback
+
+    def play_index(self, i):
+        if not (0 <= i < len(self.queue)):
+            return
+        if not TOOLS.mpv:
+            self.status("Cannot play: mpv is not installed")
+            return
+        self.qpos = i
+        it = self.queue[i]
+        self.refresh_queue()
+        self.player.stop()
+        self.current = None
+        self.state = {}
+        self.paused = False
+        self.pause_btn.config(text="❚❚")
+        self.np_title.config(text=it["title"])
+        self.np_sub.config(text=self.sub_text(it, "loading ..."))
+        self.pos.set(0)
+        self.pos_label.config(text="")
+        self.dur_label.config(text=fmt_time(it["dur"]))
+        self.root.title("%s - tkmusic" % it["title"])
+        self.play_token += 1
+        token = self.play_token
+        cfg = self.cfg
+
+        def done(r):
+            if token != self.play_token:
+                return
+            url, via = r
+            self.current = it
+            self.started = time.time()
+            self.player.play(url, via, int(self.volume.get()))
+            self.np_sub.config(text=self.sub_text(it, "buffering ..."))
+            self.status("Playing from %s" % it["src"] +
+                        (" (matched on YouTube Music)"
+                         if it["src"] == "Spotify" else ""))
+
+        def fail(e):
+            if token != self.play_token:
+                return
+            self.status("Cannot play %s: %s" % (it["title"], e))
+            self.np_sub.config(text=self.sub_text(it, "unavailable"))
+            self.failures += 1
+            if self.failures < 3:
+                self.root.after(800, self.next)
+        self.bg(lambda: resolve(it, cfg), done, fail)
+
+    def sub_text(self, it, extra=""):
+        parts = [x for x in (it["artist"], it["album"]) if x]
+        if it["kind"] == "station":
+            parts = [x for x in (it.get("info"), it["album"]) if x]
+        s = "  —  ".join(parts)
+        if extra:
+            s = (s + "   " if s else "") + "[" + extra + "]"
+        return s
+
+    def on_property(self, name, data):
+        self.state[name] = data
+        it = self.current
+        if it is None:
+            return
+        if name == "time-pos" and data is not None:
+            if self.failures or "[" in self.np_sub.cget("text") and \
+                    it["kind"] != "station":
+                self.np_sub.config(text=self.sub_text(it))
+            self.failures = 0
+            self.pos_label.config(text=fmt_time(data))
+            dur = self.duration()
+            if dur and not self.seeking:
+                self.scale.config(to=dur)
+                self.pos.set(min(data, dur))
+        elif name == "duration":
+            self.dur_label.config(text=fmt_time(self.duration()))
+        elif name == "pause":
+            self.paused = bool(data)
+            self.pause_btn.config(text="▶" if self.paused
+                                  else "❚❚")
+        elif name in ("metadata", "media-title"):
+            md = self.state.get("metadata") or {}
+            icy = md.get("icy-title")
+            if it["kind"] == "station" and icy:
+                self.np_sub.config(text="Now: " + icy + "   —  " +
+                                   self.sub_text(it))
+
+    def duration(self):
+        it = self.current
+        if it is None or it["kind"] == "station":
+            return None
+        d = self.state.get("duration")
+        return d if d and d > 0 else it["dur"]
+
+    def on_track_end(self, rc):
+        it = self.current
+        played = time.time() - self.started
+        self.current = None
+        failed = rc != 0 or (played < 2 and not self.state.get("time-pos"))
+        if failed:
+            errs = self.player.errors
+            msg = errs[-1] if errs else "exit status %s" % rc
+            msg = re.sub(r"^ERROR: (\[\w+\] [\w-]+: )?", "", msg)
+            self.status("Cannot play %s: %s" % (it["title"], msg[:200]))
+            self.np_sub.config(text=self.sub_text(it, "failed"))
+            self.failures += 1
+            if self.failures >= 3:
+                return
+        if it["kind"] == "station":
+            if not failed:
+                self.np_sub.config(text=self.sub_text(it, "stream ended"))
+            return
+        if self.qpos + 1 < len(self.queue):
+            if failed:
+                self.root.after(1500, lambda: self.current is None and
+                                self.play_index(self.qpos + 1))
+            else:
+                self.play_index(self.qpos + 1)
+        elif failed:
+            self.pause_btn.config(text="\u25b6")
+        else:
+            self.np_sub.config(text=self.sub_text(it, "finished"))
+            self.pause_btn.config(text="▶")
+            self.root.title("tkmusic")
+
+    def toggle_pause(self):
+        if self.current is None:
+            if self.queue:
+                self.play_index(max(self.qpos, 0))
+            return
+        self.player.command("cycle", "pause")
+
+    def next(self):
+        if self.qpos + 1 < len(self.queue):
+            self.play_index(self.qpos + 1)
+
+    def prev(self):
+        if self.current is not None and (self.state.get("time-pos") or 0) > 4:
+            self.player.command("seek", 0, "absolute")
+        elif self.qpos > 0:
+            self.play_index(self.qpos - 1)
+
+    def stop(self):
+        self.play_token += 1
+        self.player.stop()
+        self.current = None
+        self.np_sub.config(text="stopped")
+        self.pause_btn.config(text="▶")
+        self.pos.set(0)
+        self.pos_label.config(text="")
+        self.root.title("tkmusic")
+
+    def seek_press(self, event):
+        self.seeking = True
+
+    def seek_release(self, event):
+        self.seeking = False
+        if self.current is not None and self.duration():
+            self.player.command("seek", self.pos.get(), "absolute")
+
+    def set_volume(self, _=None):
+        self.player.command("set_property", "volume", int(self.volume.get()))
+
+    def quit(self):
+        self.play_token += 1
+        self.player.stop()
+        self.save_config()
+        self.root.destroy()
+
+
+def main(argv):
+    root = tk.Tk()
+    App(root, " ".join(argv[1:]))
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main(sys.argv)
