@@ -14,6 +14,8 @@ and shows linked views of the genome:
     selected feature(s).
 
 Usage:  tkgenome [file.gb | file.gbk.gz]
+        tkgenome --build-app [DIR]    build a macOS tkgenome.app (with icon)
+        tkgenome --icon-png SIZE [OUT.png]
 
 Mouse (circular map)
   click            select a feature (Ctrl/Cmd-click adds to the selection)
@@ -40,10 +42,15 @@ Filter box syntax (terms are ANDed, "!" negates):
 
 import gzip
 import math
+import os
+import plistlib
 import re
 import shlex
+import shutil
+import struct
 import sys
 import textwrap
+import zlib
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from xml.sax.saxutils import escape as xml_escape
@@ -1010,7 +1017,7 @@ class StripView:
     def __init__(self, app, canvas):
         self.app, self.c = app, canvas
         self.w0, self.w1 = 0.0, 20000.0
-        self.ya = 84
+        self.ya = 62
         self._pending = False
         self._press = None
         self._drag = False
@@ -1192,19 +1199,17 @@ class StripView:
         pos = self.w0 + x / scale
         tol = 3 / scale
         strand = 1 if y < self.ya else -1
-        row = (int((self.ya - 4 - y) // LANE_H) if strand > 0
-               else int((y - self.ya - 4) // LANE_H))
-        row = max(0, min(2, row))
-        found = None
+        best, bkey = None, None
         for f in app.vis_feats:
             if f.strand != strand:
                 continue
             for s, e in f.gsegs:
                 if s - 1 - tol <= pos <= e + tol:
-                    if f.lane == row:
-                        return f.idx
-                    found = f.idx if found is None else found
-        return found
+                    # prefer one under the pointer, then the shortest
+                    key = (max(s - 1 - pos, pos - e, 0), e - s)
+                    if bkey is None or key < bkey:
+                        best, bkey = f.idx, key
+        return best
 
     # -- events
 
@@ -1274,14 +1279,94 @@ COLUMNS = (("id", "ID", 120, "w"), ("rec", "Record", 90, "w"),
            ("end", "End", 80, "e"), ("len", "Len", 60, "e"),
            ("strand", "Strand", 50, "center"), ("ann", "Annotation", 300, "w"))
 NUMERIC = ("start", "end", "len")
-STRIP_H = 175
+STRIP_H = 130
 MAX_SEQ_FEATURES = 500
+
+
+ICON_PNG = (
+    "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"
+)
 
 
 class App:
     def __init__(self, root, path=None):
         self.root = root
         root.title("tkgenome")
+        try:
+            self._icon = tk.PhotoImage(data=ICON_PNG)
+            root.iconphoto(True, self._icon)
+        except tk.TclError:
+            pass
+        try:        # macOS: files opened via the app bundle / Finder
+            root.createcommand("::tk::mac::OpenDocument",
+                               lambda *files: self.load(files[0]))
+        except tk.TclError:
+            pass
         root.geometry("1380x860")
         self.records = []
         self.scope = None
@@ -1349,7 +1434,7 @@ class App:
         fm.add_command(label="Open...", accelerator="Ctrl-O",
                        command=self.open_dialog)
         fm.add_separator()
-        fm.add_command(label="Export map as SVG...", command=self.export_svg)
+        fm.add_command(label="Export figure (SVG, vector)...", command=self.export_svg)
         fm.add_command(label="Export map as PostScript...",
                        command=self.export_ps)
         fm.add_command(label="Export table as TSV...", command=self.export_tsv)
@@ -1430,6 +1515,8 @@ class App:
             side="left", padx=(14, 3))
         ttk.Button(bar2, text="Rotate to top", command=self.rotate_to_top).pack(
             side="left", padx=3)
+        ttk.Button(bar2, text="Export SVG...", command=self.export_svg).pack(
+            side="right", padx=3)
 
     def build_table(self, parent):
         fr = ttk.Frame(parent)
@@ -1616,22 +1703,9 @@ class App:
         self.redraw_all()
 
     def assign_lanes(self):
-        L = self.scope.length
-        for strand in (1, -1):
-            ends = [-1e18, -1e18, -1e18]
-            fs = sorted((f for f in self.vis_feats if f.strand == strand),
-                        key=lambda f: f.gmin)
-            for f in fs:
-                if len(f.gsegs) > 1 and f.gmax - f.gmin > L / 2:
-                    f.lane = 0
-                    continue
-                lane = 2
-                for i in range(3):
-                    if ends[i] < f.gmin:
-                        lane = i
-                        break
-                ends[lane] = max(ends[lane], f.gmax)
-                f.lane = lane
+        """The strip draws one lane per strand (overlaps just overdraw)."""
+        for f in self.vis_feats:
+            f.lane = 0
 
     def sort_by(self, col, toggle=True):
         if toggle:
@@ -1904,7 +1978,7 @@ class App:
         if self.scope is None:
             return
         path = filedialog.asksaveasfilename(
-            defaultextension=".svg", title="Export map as SVG",
+            defaultextension=".svg", title="Export figure as SVG",
             filetypes=[("SVG", "*.svg")])
         if not path:
             return
@@ -1945,7 +2019,154 @@ class App:
         self.write(path, "\n".join(rows) + "\n")
 
 
+# --------------------------------------------------- icon / app bundle
+
+ICON_BG = (27, 42, 65)
+ICON_BACKBONE = (150, 160, 175)
+ICON_PLUS = (47, 111, 208)
+ICON_MINUS = (232, 137, 43)
+ICON_GREEN = (46, 158, 72)
+ICON_RED = (255, 31, 31)
+ICON_WHITE = (240, 240, 240)
+
+ICON_PLUS_ARCS = [(8, 30), (34, 38), (66, 100), (106, 140), (150, 200),
+             (206, 214), (250, 300), (310, 350)]
+ICON_MINUS_ARCS = [(0, 22), (28, 70), (80, 120), (128, 134), (160, 220),
+              (228, 262), (270, 330), (338, 356)]
+ICON_TRNA_ARCS = [(100, 104), (224, 227)]
+ICON_HL_ARC = (40, 62)
+
+
+def _arc_in(theta, arcs):
+    return any(a <= theta < b for a, b in arcs)
+
+
+def icon_sample(x, y):
+    """RGBA of the icon at (x, y) in the unit square, or None (transparent)."""
+    # rounded-square tile
+    cx = min(max(x, 0.2), 0.8)
+    cy = min(max(y, 0.2), 0.8)
+    if math.hypot(x - cx, y - cy) > 0.2 or not (0 <= x <= 1 and 0 <= y <= 1):
+        return None
+    dx, dy = x - 0.5, y - 0.5
+    r = math.hypot(dx, dy)
+    th = math.degrees(math.atan2(dx, -dy)) % 360.0
+    if 0.325 <= r <= 0.415 and _arc_in(th, [ICON_HL_ARC]):
+        return ICON_RED
+    if 0.34 <= r <= 0.40 and _arc_in(th, ICON_PLUS_ARCS):
+        return ICON_PLUS
+    if 0.20 <= r <= 0.26 and _arc_in(th, ICON_MINUS_ARCS):
+        return ICON_MINUS
+    if 0.34 <= r <= 0.40 and _arc_in(th, ICON_TRNA_ARCS):
+        return ICON_GREEN
+    if 0.20 <= r <= 0.26 and _arc_in(th, [(100, 104)]):
+        return ICON_GREEN
+    if abs(r - 0.30) <= 0.006:
+        return ICON_BACKBONE
+    if 0.425 <= r <= 0.46 and (th < 1.5 or th > 358.5):
+        return ICON_WHITE
+    return ICON_BG
+
+
+def render_png(size):
+    n = 4 if size <= 256 else 2
+    rows = []
+    for py in range(size):
+        row = bytearray([0])                     # PNG filter type 0
+        for px in range(size):
+            ra = ga = ba = aa = 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = icon_sample((px + (sx + 0.5) / n) / size,
+                               (py + (sy + 0.5) / n) / size)
+                    if c:
+                        ra += c[0]
+                        ga += c[1]
+                        ba += c[2]
+                        aa += 1
+            if aa:
+                row += bytes((ra // aa, ga // aa, ba // aa,
+                              255 * aa // (n * n)))
+            else:
+                row += b"\0\0\0\0"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) +
+            chunk(b"IEND", b""))
+
+
+# ICNS entry types holding PNG data, with the pixel size of each
+ICNS_TYPES = [(b"icp4", 16), (b"icp5", 32), (b"ic11", 32), (b"ic12", 64),
+              (b"ic07", 128), (b"ic13", 256), (b"ic08", 256), (b"ic14", 512),
+              (b"ic09", 512)]
+
+
+def make_icns():
+    """An .icns file written directly (no iconutil needed)."""
+    pngs = {}
+    body = b""
+    for tag, size in ICNS_TYPES:
+        if size not in pngs:
+            pngs[size] = render_png(size)
+        body += tag + struct.pack(">I", len(pngs[size]) + 8) + pngs[size]
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
+def build_app(dest):
+    app = os.path.join(dest, "tkgenome.app")
+    if os.path.exists(app):
+        shutil.rmtree(app)
+    macos = os.path.join(app, "Contents", "MacOS")
+    res = os.path.join(app, "Contents", "Resources")
+    os.makedirs(macos)
+    os.makedirs(res)
+    shutil.copy(os.path.abspath(__file__),
+                os.path.join(res, "tkgenome.py"))
+
+    launcher = os.path.join(macos, "tkgenome")
+    with open(launcher, "w") as fh:
+        fh.write('#!/bin/sh\nexec "%s" "$(dirname "$0")/../Resources/'
+                 'tkgenome.py" "$@"\n' % sys.executable)
+    os.chmod(launcher, 0o755)
+
+    with open(os.path.join(res, "tkgenome.icns"), "wb") as fh:
+        fh.write(make_icns())
+
+    exts = ["gb", "gbk", "gbff", "genbank"]
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as fh:
+        plistlib.dump({
+            "CFBundleName": "tkgenome",
+            "CFBundleDisplayName": "tkgenome",
+            "CFBundleIdentifier": "org.badgerjh.tkgenome",
+            "CFBundleExecutable": "tkgenome",
+            "CFBundleIconFile": "tkgenome",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": "1.0",
+            "NSHighResolutionCapable": True,
+            "CFBundleDocumentTypes": [{
+                "CFBundleTypeName": "GenBank file",
+                "CFBundleTypeRole": "Viewer",
+                "CFBundleTypeExtensions": exts,
+            }],
+        }, fh)
+    return app
+
+
 def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--build-app"]:
+        print(build_app(args[1] if len(args) > 1 else
+                        os.path.dirname(os.path.abspath(__file__))))
+        return
+    if args[:1] == ["--icon-png"] and len(args) >= 2:
+        with open(args[2] if len(args) > 2 else "tkgenome.png", "wb") as fh:
+            fh.write(render_png(int(args[1])))
+        return
     root = tk.Tk()
     App(root, sys.argv[1] if len(sys.argv) > 1 else None)
     root.mainloop()

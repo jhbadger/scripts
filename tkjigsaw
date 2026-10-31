@@ -18,6 +18,9 @@ back); release near the correct slot to snap it into the outlined grid.
 Tk reads PNG, GIF and PPM itself.  Other formats (JPEG, PDF, ...) are converted
 to PNG with whatever system tool is available: sips (macOS), pdftoppm,
 magick/convert (ImageMagick).
+
+App bundle (macOS):  tkjigsaw --build-app [DIR]   builds tkjigsaw.app with an icon
+                     tkjigsaw --icon-png SIZE [OUT.png]
 """
 
 import base64
@@ -30,6 +33,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import plistlib
+import struct
 import tkinter as tk
 import zlib
 
@@ -756,7 +761,214 @@ class Jigsaw:
         self.rescale_pieces(s.get("scr_w", WIN_W), s.get("scr_h", WIN_H))
 
 
+# ------------------------------------------------ icon / macOS app bundle
+
+ICON_NAME = "tkjigsaw"
+ICON_DOC_EXTS = []
+
+
+def icon_rr(x, y, x0, y0, x1, y1, r):
+    """True inside the rounded rectangle (x0,y0)-(x1,y1) with corner radius r."""
+    cx = min(max(x, x0 + r), x1 - r)
+    cy = min(max(y, y0 + r), y1 - r)
+    return math.hypot(x - cx, y - cy) <= r
+
+
+ICON_BG = (45, 45, 60)
+ICON_DARK = (25, 25, 35)
+# (centre x, centre y, colour of the piece whose knob it is)
+ICON_KNOBS = [(0.5, 0.29, (220, 80, 70)), (0.5, 0.71, (240, 190, 60)),
+              (0.29, 0.5, (90, 180, 100)), (0.71, 0.5, (70, 130, 210))]
+
+
+def icon_art(x, y):
+    if not (0.1 <= x <= 0.9 and 0.1 <= y <= 0.9):
+        return ICON_BG
+    for cx, cy, col in ICON_KNOBS:
+        d = math.hypot(x - cx, y - cy)
+        if d < 0.064:
+            return col
+        if d < 0.076:
+            return ICON_DARK
+    if abs(x - 0.5) < 0.006 or abs(y - 0.5) < 0.006:
+        return ICON_DARK
+    if y < 0.5:
+        return (220, 80, 70) if x < 0.5 else (70, 130, 210)
+    return (90, 180, 100) if x < 0.5 else (240, 190, 60)
+
+
+def icon_sample(x, y):
+    """RGB of the icon at (x, y) in the unit square, or None (transparent)."""
+    if not icon_rr(x, y, 0.0, 0.0, 1.0, 1.0, 0.2):
+        return None
+    return icon_art(x, y)
+
+
+def icon_render_png(size):
+    n = 4 if size <= 256 else 2
+    rows = []
+    for py in range(size):
+        row = bytearray([0])                     # PNG filter type 0
+        for px in range(size):
+            ra = ga = ba = aa = 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = icon_sample((px + (sx + 0.5) / n) / size,
+                                    (py + (sy + 0.5) / n) / size)
+                    if c:
+                        ra += c[0]
+                        ga += c[1]
+                        ba += c[2]
+                        aa += 1
+            if aa:
+                row += bytes((ra // aa, ga // aa, ba // aa,
+                              255 * aa // (n * n)))
+            else:
+                row += b"\0\0\0\0"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) +
+            chunk(b"IEND", b""))
+
+
+# ICNS entry types holding PNG data, with the pixel size of each
+ICON_ICNS_TYPES = [(b"icp4", 16), (b"icp5", 32), (b"ic11", 32), (b"ic12", 64),
+                   (b"ic07", 128), (b"ic13", 256), (b"ic08", 256),
+                   (b"ic14", 512), (b"ic09", 512)]
+
+
+def icon_make_icns():
+    """An .icns file written directly (no iconutil needed)."""
+    pngs = {}
+    body = b""
+    for tag, size in ICON_ICNS_TYPES:
+        if size not in pngs:
+            pngs[size] = icon_render_png(size)
+        body += tag + struct.pack(">I", len(pngs[size]) + 8) + pngs[size]
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
+def icon_build_app(dest):
+    """Build a macOS <name>.app bundle (with icon) in dest."""
+    app = os.path.join(dest, ICON_NAME + ".app")
+    if os.path.exists(app):
+        shutil.rmtree(app)
+    macos = os.path.join(app, "Contents", "MacOS")
+    res = os.path.join(app, "Contents", "Resources")
+    os.makedirs(macos)
+    os.makedirs(res)
+    shutil.copy(os.path.abspath(__file__), os.path.join(res, ICON_NAME + ".py"))
+    launcher = os.path.join(macos, ICON_NAME)
+    with open(launcher, "w") as fh:
+        fh.write('#!/bin/sh\nexec "%s" "$(dirname "$0")/../Resources/%s.py" '
+                 '"$@"\n' % (sys.executable, ICON_NAME))
+    os.chmod(launcher, 0o755)
+    with open(os.path.join(res, ICON_NAME + ".icns"), "wb") as fh:
+        fh.write(icon_make_icns())
+    info = {
+        "CFBundleName": ICON_NAME,
+        "CFBundleDisplayName": ICON_NAME,
+        "CFBundleIdentifier": "org.badgerjh." + ICON_NAME,
+        "CFBundleExecutable": ICON_NAME,
+        "CFBundleIconFile": ICON_NAME,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.0",
+        "NSHighResolutionCapable": True,
+    }
+    if ICON_DOC_EXTS:
+        info["CFBundleDocumentTypes"] = [{
+            "CFBundleTypeName": ICON_NAME + " file",
+            "CFBundleTypeRole": "Viewer",
+            "CFBundleTypeExtensions": ICON_DOC_EXTS}]
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as fh:
+        plistlib.dump(info, fh)
+    return app
+
+
+def icon_args(args):
+    """Handle --build-app [DIR] and --icon-png SIZE [OUT]; True if handled."""
+    if args[:1] == ["--build-app"]:
+        print(icon_build_app(args[1] if len(args) > 1 else
+                             os.path.dirname(os.path.abspath(__file__))))
+        return True
+    if args[:1] == ["--icon-png"] and len(args) >= 2:
+        with open(args[2] if len(args) > 2 else ICON_NAME + ".png", "wb") as fh:
+            fh.write(icon_render_png(int(args[1])))
+        return True
+    return False
+
+
+def set_window_icon(root):
+    try:
+        root._icon = tk.PhotoImage(data=ICON_PNG)
+        root.iconphoto(True, root._icon)
+    except tk.TclError:
+        pass
+
+
+ICON_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAH4ElEQVR42u2dW2skRRTH+xvM8+Jl"
+    "WLPJEpPZmOskm8vkQiJBN+Oy3liVIbIoIqw+KOL6MOLtQRBUxBcf4pPgBQZREEScBx/2URB8Ewb8"
+    "AvEbtPNv5oTO0Jt0V1XP9Kn5N/wh25muNHV+51TVOVU7QeDwqlTWal01u2p11e4qpJyo3etT9G0t"
+    "KNLVfaFG7+VoqMEKfd4YltFLPRo7NMTQ1enZojRIjz9mxxdOx7lGhG7jZY7rauYLZdfGr9Pr1UWD"
+    "usuQz07VqYat8ZvsRPVq0vOphsmYz47zS/Uss31O+PycGJbTAMClnsdLROtxvzqzFj67uOGFFqaq"
+    "4cNXNsP57UMvdGVu13w+0Evvnhv60XH/PLHnhfYnpsJL8wfh3nt/eSFAkHIoKBkv+QiAegCSl4Zp"
+    "CzsEwAsAOsZrfgLgBQCn5wJZ6vkEwBsAWnEAQgIwcgCE8W1cBGAEAYi2l2Ut+BAArwBoZhr/CYB3"
+    "ALQyp34JgFcAtIOs+WQC4BUAIQEgAASAABAAAjBKAHy/vR7eWVgIZ8uXwwcnlsOZa3fCqy9/QwB8"
+    "BuDPx3cio4/fPx5euDCWqPvKlQiGnXfuEgCfAPhltxZ5O4yMsH+0sRoBEYcD9/A7fAZRYf32jwTA"
+    "BwBgfHg9hNCfZnjAZxENtEFAABLCPjwfBgUIWaFBJNA0HBCAPt2enYtCehrPT4oEeHZ67zUCoBEA"
+    "eD+8+MXKI8Zt4FkMBVqiAAGI6fPVZWPv748Cizc/JQDaAJDwb9uOpmGAAPRl+aBRyhYSAAJAAOIT"
+    "OEwCbdtBG5ObtwiANgA+qi5F4/cf+1vGbeBZtDH35IcEQBsAYjxMBm0nkptv/EYANCaCZBgwiQJ4"
+    "RlP4JwBnGHF9bPJU8SdNEgnPIAmkxfsJwDkJobQQiPE1JYAIQAoIpCKIPQFJIMT3C8DztRmfAKSo"
+    "8Em9XyKC5ArE4yGs+TXuBSAAGUCAp8Pw4u0wOnYCaTU8AeCmUAJAAAgAASAABIAAEAACQAAIAAHQ"
+    "BACycMjWofomyRkUclDStSnnDhsA1BFQSkZBCX8HwvYyZBnz2GiqDgAYHkaPH9earM1HeuChyyf3"
+    "AEMeIOQFAAwPo8ePnAkA8XuAwSUIqgCIH9eavbEa7n9yI7z5861Tuv71c+Hi87UIBkCCKFF0AODd"
+    "MK4YOKmaiIOoAojLY2hqAJCTNzBskuGTQBhfmok6zCUErgGA8fGOF6d3UpWRAYLA4gICFQDIcS0Y"
+    "/9qXz5xrfNFT3zUiCLIe8xoUADAgDAnjZwnr8pyLY2gqAEAhJjqlm8LzkyCIooaD3b6uAUA7pqeI"
+    "EAnQJyhIeQ9AtM2qO8nLanzRyks7UWe5iAKuAIAX2xpQAPIaADlqtft+3RgARAG0gUhSFABgeLyT"
+    "TQivHn4VtWHzP5UUHgAJ/zCiKQAQ5gJFOvSBNjD227QBeGyjyEAAwNesSLImq2TZZ2N8CEMIhhLT"
+    "9xDFN4TYSNqwBUmWhabvga+/yR2A6dmVk2RNVl2cnnIGACaDpu8RTzZNjF0KD7YnrYQ2XAEwX5kw"
+    "fo/FuWr+ACwf7FlP4FwMATYTyThI6Lj/fl+zEtpwNQR88OqM8Xu8cH2t2ABg6edqEgiYigIAjOZq"
+    "EvjrF4v+AgBJ6LaNIlmSSHkDcPeo6mQZiKHE5j1UACAGtEkEuQj/LgGQYcA2EWQT/tUAACNiMmia"
+    "Cs763KAAQBSAB5umgjH5+/enq/4DAMGAMKRJMWjr7cecGN81ANDRu3NGxSCAA4Bs/74aAAQCWRam"
+    "KQdDLo2fBwACAQyathwMz3dhfHUASFgXA5+1IQSAAAaXxs8LAOjvb5fDV56ePnNDCCB567BiHfZV"
+    "AxAHAd4NGAQAGH399UdzMXzeAMRB+OzN2QgGSdbA6IgSLg2vHoBhKW8ABi0CQAAIAAEgAASAABAA"
+    "AkAACAABIACJGUgUpPo3hKAQ4yojRwAKangYXTJxW9XLJ8kZ/Cz38W+tIBCAewhZRvF2eHpSFg73"
+    "8Dt8BkK2jgB4AACMLx6fJv2Kz0hE0AYBAUioJkZVxJTG74cAkQD5fAKgFAAUlEyNiGfwLAo5BEAh"
+    "APB+hHFU30w7FM+iDS1RgADEhFKyrfHwLNpASZcAKANAwr9tp2oaBghAToc+tGQLCQABIAAibC/D"
+    "+G3bqbYTSQIw5ASQzVErPKspIUQAEk4R2Uzg8CwmgXls4CQAAxwGTKKAeL+W8E8AzjiGlvXkjRzz"
+    "cnFciwAUoAwslcA0kQCfkYqgtrIwAUhxDA1Luh8+Xjjl2fgZ9/A718e1CECBhgPsBIofOevXWfsF"
+    "CIBHewJxEBUwICrA22F0m+UiAeCmUAJAAAgAASAABEAjAG0CMLIAtAFAiwCMLAAtANAkACMLQBMA"
+    "1AjAyAJQC3ARgNEEIJAryzyAAHgDQCsOQIMAjBwAjSB+dW90CMDIANAJ+q+0qwEC4AUAzSQASl0d"
+    "EwDvAYCNS0HSlWYuMLO4EUHgg/D1N/iaFXScD1pZMhj7EyBoZ80nU2rUDs67uh8qpxkKKHWCTctB"
+    "mqv7wTo7zDvVgyxXltwAVXg1ApMra6GIKqSagc3FSDCCnn+POQEnhromfPXA5dVbHXCJqGCpl3q2"
+    "bzEkMBoU0+sbwSCuXtq4mbaAROWqTs8WpWAYVy8itGiIgas1MI/PAEOtR2OL8wXn43qr17c1lzb7"
+    "HxDm9D87FOqYAAAAAElFTkSuQmCC"
+)
+
+
 def main(argv):
+    if icon_args(argv[1:]):
+        return 0
+    if len(argv) < 2 and not sys.stdout.isatty():
+        # launched from the macOS app bundle: ask which puzzle to open
+        from tkinter import filedialog
+        r = tk.Tk()
+        r.withdraw()
+        path = filedialog.askopenfilename(
+            title="Choose a puzzle image or save file",
+            filetypes=[("Images and saves",
+                        "*.png *.gif *.ppm *.jpg *.jpeg *.pdf *.sav"),
+                       ("All files", "*")])
+        r.destroy()
+        if not path:
+            return 0
+        argv = [argv[0], path]
     if len(argv) < 2:
         print("Usage: tkjigsaw <image.png|image.jpg|image.pdf|...> "
               "[approx-pieces]\n       tkjigsaw <savefile.sav>")
@@ -793,6 +1005,7 @@ def main(argv):
             pdf_page = random.randrange(pages)
 
     root = tk.Tk()
+    set_window_icon(root)
     root.title("Jigsaw Puzzle")
     root.configure(bg=BG)
     Jigsaw(root, filename, save_name, n_target, pdf_page, state)
