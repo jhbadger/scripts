@@ -22,6 +22,16 @@ Sources:
   A URL typed into the search box is played directly (or opened, for
   Bandcamp and Internet Archive pages).
 
+Searching: the menu next to the source picks the field the words are
+matched against (any, artist, album, title or genre), and fields can also
+be typed into the search box, as in
+    artist:radiohead album:kid a        (also by:, track:, song:, tag:)
+Words before the first field go to the field in the menu.  Spotify and the
+Internet Archive search fields themselves; YouTube Music, YouTube,
+SoundCloud and Bandcamp results are searched for all the words and then
+filtered on the field; sources that cannot search a field are skipped
+(radio stations only have a genre).
+
 Usage:  tkmusic [search words | audio files / playlists]
         tkmusic --build-app [DIR]    build a macOS tkmusic.app (with icon)
         tkmusic --icon-png SIZE [OUT.png]
@@ -56,6 +66,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import unicodedata
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -121,10 +132,11 @@ def parse_time(t):
 
 
 def item(src, kind, title, artist="", album="", dur=None, url="", page="",
-         key="", info=""):
+         key="", info="", genre=""):
     return {"src": src, "kind": kind, "title": title or "(untitled)",
             "artist": artist or "", "album": album or "", "dur": dur,
-            "url": url, "page": page, "key": key, "info": info}
+            "url": url, "page": page, "key": key, "info": info,
+            "genre": genre or ""}
 
 
 def run_ytdlp_json(args, timeout=40):
@@ -175,16 +187,103 @@ TOOLS = Tools()
 
 # ---------------------------------------------------------------- sources
 
-def search_ytm(q):
-    body = {"context": {"client": {"clientName": "WEB_REMIX",
-                                   "clientVersion": "1.20250101.01.00",
-                                   "hl": "en"}},
-            "query": q, "params": "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"}
-    d = http_json("https://music.youtube.com/youtubei/v1/search"
-                  "?prettyPrint=false", body,
-                  {"Origin": "https://music.youtube.com"})
-    out = []
+# ---------------------------------------------------------------- queries
 
+FIELDS = ("artist", "album", "title", "genre")
+FIELD_NAMES = {"artist": "artist", "by": "artist", "album": "album",
+               "title": "title", "track": "title", "song": "title",
+               "genre": "genre", "tag": "genre"}
+FIELD_MENU = ["Any field", "Artist", "Album", "Title", "Genre"]
+
+
+class Query:
+    """Search words, optionally split into fields.
+
+    'artist:radiohead album:kid a' searches by artist and album; words
+    before the first field go to `default` (a field name, or None for any).
+    """
+
+    def __init__(self, text, default=None):
+        self.any = ""
+        self.f = {}
+        parts = re.split(r"(?i)(?:^|\s)(%s):" % "|".join(FIELD_NAMES), text)
+        self.add(default, parts[0])
+        for name, value in zip(parts[1::2], parts[2::2]):
+            # a quoted value ends at its closing quote; words after it
+            # go to the default field
+            m = re.match(r'\s*"([^"]*)"?(.*)', value, re.S)
+            if m:
+                value = m.group(1)
+                self.add(default, m.group(2))
+            self.add(FIELD_NAMES[name.lower()], value)
+
+    def add(self, field, value):
+        value = value.strip().strip('"').strip()
+        if not value:
+            return
+        if field:
+            self.f[field] = (self.f[field] + " " + value
+                             if field in self.f else value)
+        else:
+            self.any = (self.any + " " + value).strip()
+
+    def text(self):
+        """Everything, for sources with no field search of their own."""
+        return " ".join([self.any] + [self.f[k] for k in FIELDS
+                                      if k in self.f]).strip()
+
+    def __str__(self):
+        bits = ['"%s"' % self.any] if self.any else []
+        bits += ['%s "%s"' % (k, self.f[k]) for k in FIELDS if k in self.f]
+        return ", ".join(bits)
+
+
+def norm(text):
+    text = unicodedata.normalize("NFKD", text or "")
+    return "".join(c for c in text if not unicodedata.combining(c)).lower()
+
+
+def words_in(words, text):
+    text = norm(text)
+    return all(w in text for w in re.findall(r"\w+", norm(words)))
+
+
+def field_match(it, field, value):
+    """Whether a result fits a field search (for sources without one)."""
+    kind = it["kind"]
+    if field == "artist":
+        who = it["artist"]
+        if it["src"] in ("YouTube", "SoundCloud"):
+            who += " " + it["title"]     # uploads are often "Artist - Song"
+        return words_in(value, who)
+    if field == "album":
+        if kind in ("album", "item"):
+            return words_in(value, it["title"] + " " + it["album"])
+        return kind == "track" and words_in(value, it["album"])
+    if field == "title":
+        return kind == "track" and words_in(value, it["title"])
+    if field == "genre":
+        return words_in(value, it["genre"])
+    return True
+
+
+# ---------------------------------------------------------------- sources
+
+YTM_SONGS = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
+YTM_ALBUMS = "EgWKAQIYAWoKEAkQAxAEEAkQBQ%3D%3D"
+
+
+def ytm_call(endpoint, body):
+    body["context"] = {"client": {"clientName": "WEB_REMIX",
+                                  "clientVersion": "1.20250101.01.00",
+                                  "hl": "en"}}
+    return http_json("https://music.youtube.com/youtubei/v1/%s"
+                     "?prettyPrint=false" % endpoint, body,
+                     {"Origin": "https://music.youtube.com"})
+
+
+def ytm_rows(d):
+    """(renderer, flex-column texts) for each list row in a response."""
     def walk(o):
         if isinstance(o, dict):
             if "musicResponsiveListItemRenderer" in o:
@@ -196,14 +295,21 @@ def search_ytm(q):
                 yield from walk(v)
 
     for r in walk(d):
-        vid = (r.get("playlistItemData") or {}).get("videoId")
-        if not vid:
-            continue
         cols = []
         for c in r.get("flexColumns", []):
             runs = c.get("musicResponsiveListItemFlexColumnRenderer", {}) \
                     .get("text", {}).get("runs", [])
             cols.append("".join(x.get("text", "") for x in runs))
+        yield r, cols
+
+
+def ytm_songs(text):
+    out = []
+    for r, cols in ytm_rows(ytm_call("search", {"query": text,
+                                                "params": YTM_SONGS})):
+        vid = (r.get("playlistItemData") or {}).get("videoId")
+        if not vid:
+            continue
         title = cols[0] if cols else ""
         parts = [p.strip() for p in (cols[1] if len(cols) > 1 else "")
                  .split(" • ")]
@@ -221,8 +327,77 @@ def search_ytm(q):
     return out
 
 
+def ytm_albums(text):
+    out = []
+    for r, cols in ytm_rows(ytm_call("search", {"query": text,
+                                                "params": YTM_ALBUMS})):
+        bid = r.get("navigationEndpoint", {}).get("browseEndpoint", {}) \
+               .get("browseId")
+        if not bid or not cols:
+            continue
+        # "Album • Radiohead • 1997" (or Single / EP)
+        parts = [p.strip() for p in (cols[1] if len(cols) > 1 else "")
+                 .split(" • ")]
+        kind = parts.pop(0) if len(parts) > 2 else "Album"
+        year = parts.pop() if parts and re.fullmatch(r"\d{4}", parts[-1]) \
+            else ""
+        info = year if kind == "Album" else ("%s %s" % (kind, year)).strip()
+        out.append(item("YouTube Music", "album", cols[0],
+                        " ".join(parts), cols[0], None, "",
+                        "https://music.youtube.com/browse/" + bid, bid,
+                        info=info))
+    return out
+
+
+def ytm_album_tracks(it):
+    d = ytm_call("browse", {"browseId": it["key"]})
+    artist = it["artist"]
+
+    def walk(o):
+        if isinstance(o, dict):
+            if "musicResponsiveHeaderRenderer" in o:
+                yield o["musicResponsiveHeaderRenderer"]
+            for v in o.values():
+                yield from walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                yield from walk(v)
+
+    for h in walk(d):
+        runs = h.get("straplineTextOne", {}).get("runs", [])
+        artist = "".join(x.get("text", "") for x in runs) or artist
+        break
+    out = []
+    for r, cols in ytm_rows(d):
+        vid = (r.get("playlistItemData") or {}).get("videoId")
+        if not vid or not cols:
+            continue
+        dur = None
+        for c in r.get("fixedColumns", []):
+            runs = c.get("musicResponsiveListItemFixedColumnRenderer", {}) \
+                    .get("text", {}).get("runs", [])
+            dur = parse_time("".join(x.get("text", "") for x in runs)) or dur
+        url = "https://music.youtube.com/watch?v=" + vid
+        out.append(item("YouTube Music", "track", cols[0],
+                        (cols[1] if len(cols) > 1 else "") or artist,
+                        it["title"], dur, url, url))
+    return out
+
+
+def search_ytm(q, cfg):
+    text = q.text()
+    songs = ytm_songs(text)
+    if "title" in q.f:
+        return songs
+    albums = ytm_albums(text)
+    if "album" in q.f:
+        return albums + songs
+    return songs + albums[:8]
+
+
 def _ytdlp_search(prefix, q, src, n=25):
-    d = run_ytdlp_json(["--flat-playlist", "-J", "%s%d:%s" % (prefix, n, q)])
+    d = run_ytdlp_json(["--flat-playlist", "-J",
+                        "%s%d:%s" % (prefix, n, q.text())])
     out = []
     for e in d.get("entries") or []:
         url = e.get("webpage_url") or e.get("url")
@@ -230,31 +405,34 @@ def _ytdlp_search(prefix, q, src, n=25):
             continue
         artist = e.get("uploader") or e.get("channel") or ""
         out.append(item(src, "track", e.get("title"), artist, "",
-                        e.get("duration"), url, url))
+                        e.get("duration"), url, url,
+                        genre=", ".join(e.get("genres") or [])))
     return out
 
 
-def search_yt(q):
+def search_yt(q, cfg):
     return _ytdlp_search("ytsearch", q, "YouTube")
 
 
-def search_sc(q):
+def search_sc(q, cfg):
     return _ytdlp_search("scsearch", q, "SoundCloud")
 
 
-def search_bc(q):
+def search_bc(q, cfg):
+    # Bandcamp's search can be limited to tracks, albums or artists
+    flt = "t" if "title" in q.f else "a" if "album" in q.f else ""
     d = http_json("https://bandcamp.com/api/bcsearch_public_api/1/"
                   "autocomplete_elastic",
-                  {"search_text": q, "search_filter": "", "full_page": False,
-                   "fan_id": None})
+                  {"search_text": q.text(), "search_filter": flt,
+                   "full_page": False, "fan_id": None})
     out = []
     for r in d.get("auto", {}).get("results", []):
         t = r.get("type")
         if t == "b":
+            tags = ", ".join(r.get("tag_names") or [])
             out.append(item("Bandcamp", "artist", r.get("name"),
                             r.get("name"), "", None, "",
-                            r.get("item_url_root"),
-                            info=", ".join(r.get("tag_names") or [])))
+                            r.get("item_url_root"), info=tags, genre=tags))
         elif t == "a":
             out.append(item("Bandcamp", "album", r.get("name"),
                             r.get("band_name"), r.get("name"), None, "",
@@ -338,13 +516,22 @@ def bc_discography(text, it):
     return out
 
 
-def search_ia(q):
-    # matches in title or creator, most downloaded first; failing that,
-    # anywhere in the description, most relevant first
+def search_ia(q, cfg):
+    if q.f:
+        # fielded: creator = artist, title = album, subject = genre
+        terms = ["(%s)" % q.any] if q.any else []
+        for field, ia in (("artist", "creator"), ("album", "title"),
+                          ("genre", "subject")):
+            if field in q.f:
+                terms.append("%s:(%s)" % (ia, q.f[field]))
+        tries = ((" AND ".join(terms), [("sort[]", "downloads desc")]),)
+    else:
+        # matches in title or creator, most downloaded first; failing
+        # that, anywhere in the description, most relevant first
+        tries = (("(title:(%s) OR creator:(%s))" % (q.any, q.any),
+                  [("sort[]", "downloads desc")]), ("(%s)" % q.any, []))
     docs = []
-    for query, sort in (("(title:(%s) OR creator:(%s))" % (q, q),
-                         [("sort[]", "downloads desc")]),
-                        ("(%s)" % q, [])):
+    for query, sort in tries:
         params = urllib.parse.urlencode([
             ("q", query + " AND mediatype:(audio OR etree)"),
             ("fl[]", "identifier"), ("fl[]", "title"), ("fl[]", "creator"),
@@ -360,7 +547,7 @@ def search_ia(q):
             creator = ", ".join(creator)
         ident = r["identifier"]
         out.append(item("Internet Archive", "item", r.get("title", ident),
-                        creator, "", None, "",
+                        creator, r.get("title", ident), None, "",
                         "https://archive.org/details/" + ident, ident,
                         info=(r.get("date") or "")[:10]))
     return out
@@ -403,12 +590,17 @@ def ia_expand(it):
 RADIO_API = "https://all.api.radio-browser.info/json/stations/search?"
 
 
-def search_radio(q):
+def search_radio(q, cfg):
+    if "genre" in q.f:
+        tries = [{"tag": q.f["genre"], "name": q.any} if q.any
+                 else {"tag": q.f["genre"]}]
+    else:
+        tries = [{"name": q.any}, {"tag": q.any}]
     seen, out = set(), []
-    for field in ("name", "tag"):
-        params = urllib.parse.urlencode({
-            field: q, "limit": 60, "hidebroken": "true",
-            "order": "clickcount", "reverse": "true"})
+    for t in tries:
+        params = urllib.parse.urlencode(dict(
+            t, limit=60, hidebroken="true", order="clickcount",
+            reverse="true"))
         try:
             rows = http_json(RADIO_API + params, headers={"User-Agent":
                                                           "tkmusic/1.0"})
@@ -427,7 +619,8 @@ def search_radio(q):
             out.append(item("Radio", "station", r["name"].strip(), tags,
                             r.get("country", ""), None,
                             r.get("url_resolved") or r["url"],
-                            r.get("homepage", ""), r["stationuuid"], info))
+                            r.get("homepage", ""), r["stationuuid"], info,
+                            genre=r.get("tags", "")))
     return out
 
 
@@ -473,8 +666,12 @@ def sp_track(t, album=None):
 
 
 def search_spotify(q, cfg):
+    text = " ".join([q.any] + ['%s:"%s"' % ("track" if k == "title" else k,
+                                            q.f[k])
+                               for k in FIELDS if k in q.f]).strip()
+    types = "track" if "title" in q.f else "track,album"
     d = Spotify.get(cfg, "search?" + urllib.parse.urlencode(
-        {"q": q, "type": "track,album", "limit": 20}))
+        {"q": text, "type": types, "limit": 20}))
     out = [sp_track(t) for t in d.get("tracks", {}).get("items", []) if t]
     for a in d.get("albums", {}).get("items", []):
         if a:
@@ -530,7 +727,7 @@ def resolve(it, cfg):
             return it["url"], False
         raise RuntimeError("Bandcamp does not stream this track")
     if src == "Spotify":
-        hits = search_ytm("%s %s" % (it["artist"], it["title"]))
+        hits = ytm_songs("%s %s" % (it["artist"], it["title"]))
         if not hits:
             raise RuntimeError("no YouTube Music match for this track")
         return hits[0]["url"], True
@@ -547,6 +744,30 @@ SOURCES = [
     ("Radio", search_radio),
     ("Spotify", search_spotify),
 ]
+
+# The fields each source can search: "native" ones are searched by the
+# source itself, "filter" ones by searching all the words and keeping the
+# results whose field matches.
+FIELD_SUPPORT = {
+    "YouTube Music": {"artist": "filter", "album": "filter",
+                      "title": "filter"},
+    "YouTube": {"artist": "filter", "title": "filter"},
+    "SoundCloud": {"artist": "filter", "title": "filter", "genre": "filter"},
+    "Bandcamp": {"artist": "filter", "album": "filter", "title": "filter"},
+    "Internet Archive": {"artist": "native", "album": "native",
+                         "genre": "native"},
+    "Radio": {"genre": "native"},
+    "Spotify": {"artist": "native", "album": "native", "title": "native",
+                "genre": "native"},
+}
+
+
+def run_search(name, fn, q, cfg):
+    results = fn(q, cfg)
+    for field, value in q.f.items():
+        if FIELD_SUPPORT[name].get(field) == "filter":
+            results = [it for it in results if field_match(it, field, value)]
+    return results
 
 
 # ---------------------------------------------------------------- player
@@ -713,6 +934,7 @@ class App:
         self.failures = 0
         self.play_token = 0
         self.pending = set()
+        self.skip_note = ""
         self.started = 0
 
         root.title("tkmusic")
@@ -754,6 +976,7 @@ class App:
     def save_config(self):
         self.cfg["volume"] = int(self.volume.get())
         self.cfg["source"] = self.source_var.get()
+        self.cfg["field"] = self.field_var.get()
         self.cfg["geometry"] = self.root.geometry()
         try:
             tmp = CONFIG + ".tmp"
@@ -779,6 +1002,12 @@ class App:
                            width=16, values=[s for s, _ in SOURCES])
         src.pack(side="left", padx=6)
         src.bind("<<ComboboxSelected>>", lambda e: self.do_search())
+        self.field_var = tk.StringVar(value=self.cfg.get("field",
+                                                         FIELD_MENU[0]))
+        fld = ttk.Combobox(top, textvariable=self.field_var,
+                           state="readonly", width=9, values=FIELD_MENU)
+        fld.pack(side="left", padx=(0, 6))
+        fld.bind("<<ComboboxSelected>>", lambda e: self.do_search())
         ttk.Button(top, text="Search", command=self.do_search).pack(
             side="left")
 
@@ -971,35 +1200,43 @@ class App:
     # ------------------------------------------------------------ search
 
     def do_search(self):
-        q = self.search_var.get().strip()
-        if not q:
+        text = self.search_var.get().strip()
+        if not text:
             return
         self.search_id += 1
         sid = self.search_id
         self.history = []
         self.nb.select(0)
-        if re.match(r"https?://", q):
+        if re.match(r"https?://", text):
             self.pending = set()
             self.show_items("URL", [])
-            self.status("Opening %s ..." % q)
-            self.bg(lambda: url_items(q),
+            self.status("Opening %s ..." % text)
+            self.bg(lambda: url_items(text),
                     lambda r: self.search_done(sid, "URL", r, 1))
             return
+        field = self.field_var.get().lower()
+        q = Query(text, None if field not in FIELDS else field)
+        if not q.any and not q.f:
+            return
         name = self.source_var.get()
-        if name == "All":
-            srcs = [(n, f) for n, f in SOURCES if f is not None
-                    and (n != "Spotify" or Spotify.creds(self.cfg))]
-        else:
-            srcs = [(n, f) for n, f in SOURCES if n == name]
-        self.show_items('"%s"' % q, [])
+        cands = [(n, f) for n, f in SOURCES if f is not None and
+                 (n == name or name == "All" and
+                  (n != "Spotify" or Spotify.creds(self.cfg)))]
+        srcs = [(n, f) for n, f in cands
+                if all(k in FIELD_SUPPORT[n] for k in q.f)]
+        skipped = [n for n, _ in cands if n not in dict(srcs)]
+        self.show_items(str(q), [])
         self.pending = {n for n, _ in srcs}
+        self.skip_note = ("%s can't search by %s" % (
+            ", ".join(skipped), " and ".join(sorted(q.f)))
+            if skipped else "")
+        if not srcs:
+            self.status(self.skip_note)
+            return
         self.status("Searching %s ..." % ", ".join(sorted(self.pending)))
+        cfg = self.cfg
         for n, f in srcs:
-            if n == "Spotify":
-                work = (lambda f=f: f(q, self.cfg))
-            else:
-                work = (lambda f=f: f(q))
-            self.bg(work,
+            self.bg(lambda n=n, f=f: run_search(n, f, q, cfg),
                     lambda r, n=n: self.search_done(sid, n, r, len(srcs)),
                     lambda e, n=n: self.search_failed(sid, n, e))
 
@@ -1020,6 +1257,8 @@ class App:
         self.search_status("%s: %s" % (name, e))
 
     def search_status(self, extra=""):
+        if self.skip_note:
+            extra = (extra + "  -  " if extra else "") + self.skip_note
         n = len(self.view_items)
         if self.pending:
             msg = "%d results so far, waiting for %s" % (
@@ -1103,6 +1342,8 @@ class App:
                 return ia_expand(it)
             if it["src"] == "Spotify":
                 return sp_expand(it, cfg)
+            if it["src"] == "YouTube Music":
+                return ytm_album_tracks(it)
             return []
 
         def done(items):
