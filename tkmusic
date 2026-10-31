@@ -773,7 +773,14 @@ def run_search(name, fn, q, cfg):
 # ---------------------------------------------------------------- player
 
 class Player:
-    """One mpv process per track, controlled through its JSON IPC socket."""
+    """One mpv process per track, controlled through its JSON IPC.
+
+    mpv talks to us over one end of a socket pair that it inherits
+    (--input-ipc-client), and quits when the other end closes.  The other end
+    is only ever open in this process, so however tkmusic ends - quitting,
+    a crash, Force Quit or kill -9 - the operating system closes it and mpv
+    exits rather than playing on as an orphan.
+    """
 
     def __init__(self):
         self.events = queue.Queue()
@@ -788,77 +795,72 @@ class Player:
         self.stop()
         self.gen += 1
         gen = self.gen
-        path = "/tmp/tkmusic-%d-%d.sock" % (os.getpid(), gen)
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        ours, theirs = socket.socketpair()
         args = [TOOLS.mpv, "--no-video", "--force-window=no",
                 "--input-terminal=no", "--term-osd=no",
                 "--msg-level=all=error", "--volume=%d" % volume,
-                "--input-ipc-server=" + path, "--cache=yes",
+                "--input-ipc-client=fd://%d" % theirs.fileno(), "--cache=yes",
                 "--demuxer-max-bytes=256MiB", "--demuxer-max-back-bytes=256MiB",
                 "--script-opts=ytdl_hook-ytdl_path=" + TOOLS.ytdlp]
         if start:
             args.append("--start=%d" % start)
         self.errors = []
-        if via_ytdlp:
-            y = subprocess.Popen(
-                [TOOLS.ytdlp, "--no-update", "-q", "--no-warnings",
-                 "-f", "bestaudio/best", "-o", "-", url],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL)
-            m = subprocess.Popen(args + ["-"], stdin=y.stdout,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.PIPE)
-            y.stdout.close()
-            self.procs = [m, y]
-            self._collect(y.stderr)
-        else:
-            m = subprocess.Popen(args + ["--", url], stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.PIPE)
-            self.procs = [m]
+        try:
+            if via_ytdlp:
+                # yt-dlp exits when its output pipe closes, i.e. with mpv
+                y = subprocess.Popen(
+                    [TOOLS.ytdlp, "--no-update", "-q", "--no-warnings",
+                     "-f", "bestaudio/best", "-o", "-", url],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL)
+                self.procs = [y]
+                m = subprocess.Popen(args + ["-"], stdin=y.stdout,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.PIPE,
+                                     pass_fds=(theirs.fileno(),))
+                y.stdout.close()
+                self.procs = [m, y]
+                self._collect(y)
+            else:
+                m = subprocess.Popen(args + ["--", url],
+                                     stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.PIPE,
+                                     pass_fds=(theirs.fileno(),))
+                self.procs = [m]
+        except OSError:
+            ours.close()
+            self.stop()
+            raise
+        finally:
+            theirs.close()
         self.mpv = m
-        self._collect(m.stderr)
-        threading.Thread(target=self._reader, args=(gen, path, m),
-                         daemon=True).start()
-
-    def _collect(self, stream):
-        errors = self.errors
-
-        def run():
-            for line in stream:
-                line = line.decode("utf-8", "replace").strip()
-                if line:
-                    errors.append(line)
-                    del errors[:-5]
-        threading.Thread(target=run, daemon=True).start()
-
-    def _reader(self, gen, path, proc):
-        s = socket.socket(socket.AF_UNIX)
-        for _ in range(200):
-            if gen != self.gen or proc.poll() is not None:
-                return
-            try:
-                s.connect(path)
-                break
-            except OSError:
-                time.sleep(0.05)
-        else:
-            return
+        self._collect(m)
         with self.lock:
-            if gen != self.gen:
-                s.close()
-                return
-            self.sock = s
+            self.sock = ours
         for i, p in enumerate(("time-pos", "duration", "pause", "metadata",
                                "media-title", "seekable",
                                "partially-seekable")):
             self.command("observe_property", i + 1, p)
-        f = s.makefile("rb")
+        threading.Thread(target=self._reader, args=(gen, ours),
+                         daemon=True).start()
+
+    def _collect(self, proc):
+        """Keep the last few lines of proc's stderr; reap it when done."""
+        errors = self.errors
+
+        def run():
+            for line in proc.stderr:
+                line = line.decode("utf-8", "replace").strip()
+                if line:
+                    errors.append(line)
+                    del errors[:-5]
+            proc.wait()
+        threading.Thread(target=run, daemon=True).start()
+
+    def _reader(self, gen, sock):
         try:
-            for line in f:
+            for line in sock.makefile("rb"):
                 if gen != self.gen:
                     break
                 try:
@@ -867,13 +869,8 @@ class Player:
                     continue
                 if ev.get("event") == "property-change":
                     self.events.put((gen, ev["name"], ev.get("data")))
-        except OSError:
+        except (OSError, ValueError):
             pass
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
 
     def command(self, *args):
         with self.lock:
@@ -896,9 +893,10 @@ class Player:
         with self.lock:
             if self.sock is not None:
                 try:
-                    self.sock.close()
+                    self.sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
+                self.sock.close()
             self.sock = None
         for p in self.procs:
             if p.poll() is None:
@@ -908,6 +906,7 @@ class Player:
                 p.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 p.kill()
+                p.wait()
         self.procs = []
         self.mpv = None
 
