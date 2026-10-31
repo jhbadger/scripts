@@ -1,0 +1,3092 @@
+#!/usr/bin/env python3
+"""tkinterface - build Tk interfaces by drawing them, in the spirit of the
+NeXTSTEP Interface Builder.  Python + Tk, standard library only.
+
+Drag objects from the Palette onto the window, arrange them, set their
+attributes in the Inspector, then Control-drag from one object to another to
+connect them: a control (button, slider, field ...) sends an action to its
+target, which can be another object (a label that takes the slider's value,
+a progress bar that steps when a timer fires ...) or the Controller, whose
+action methods you write in the Inspector.  Control-dragging from the
+Controller to an object makes an outlet - a Controller attribute that refers
+to that object.
+
+Test Interface runs the window for real, with every connection live and
+print() output going to a console.  Generate Code writes a standalone Python
+program (an Interface class that builds and wires the window, and your
+Controller class); documents are saved as JSON (.tkif).
+
+Usage:  tkinterface [file.tkif]
+        tkinterface --build-app [DIR]    build a macOS tkinterface.app (with icon)
+        tkinterface --icon-png SIZE [OUT.png]
+
+Mouse (design window):
+  click / shift-click / drag on empty space   select
+  drag an object or its handles               move / resize
+  double-click an object                      edit its text in place
+  Control-drag or right-drag                  connect (or use Connect mode)
+  drag the window's bottom-right corner       resize the window
+
+Keys (Cmd on macOS, Ctrl elsewhere):
+  N O S Shift-S   new / open / save / save as
+  R               test the interface        G   generate code
+  Z Shift-Z       undo / redo               X C V D A   cut copy paste
+                                                        duplicate select-all
+  F B             bring to front / send to back
+  Delete          delete the selection      arrows  nudge (Shift: by grid)
+"""
+
+import copy
+import json
+import keyword
+import math
+import os
+import plistlib
+import re
+import shutil
+import struct
+import sys
+import time
+import traceback
+import tkinter as tk
+import zlib
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
+from types import SimpleNamespace
+
+MAC = sys.platform == "darwin"
+MOD = "Command" if MAC else "Control"
+MODKEY = "Cmd" if MAC else "Ctrl"
+GRID = 8
+FX, FY = 40, 64           # the designed window's content origin on the canvas
+TITLE_H = 22
+HANDLE = 7
+SLOT = 92                 # width of an icon in the objects tray
+WORKSPACE = "#7d7d7d"
+MONO = ("Menlo", 12) if MAC else ("Courier", 11)
+
+
+# ---------------------------------------------------------------- object types
+
+def P(key, kind, default, opt=None, choices=None, label=None):
+    """A property: kind is str, text, ident, int, float, bool, choice, color
+    or font; opt is the Tk option it sets (None for values set otherwise)."""
+    return {"key": key, "kind": kind, "default": default, "opt": opt,
+            "choices": choices, "label": label or key}
+
+
+RELIEFS = ["flat", "raised", "sunken", "groove", "ridge", "solid"]
+ANCHORS = ["w", "center", "e", "n", "s", "nw", "ne", "sw", "se"]
+JUSTIFY = ["left", "center", "right"]
+ORIENT = ["horizontal", "vertical"]
+FONT = P("font", "font", "", "font")
+FG = P("fg", "color", "", "fg", label="text color")
+BG = P("bg", "color", "", "bg", label="background")
+STATE = P("state", "choice", "normal", "state", ["normal", "disabled"])
+
+
+def TEXT(default):
+    return P("text", "str", default, "text")
+
+
+TYPES = {
+    "Button": dict(
+        cls="tk.Button", size=(90, 30), source="command",
+        props=[TEXT("Button"), FONT, FG, BG, STATE],
+        actions=["takeValueFrom", "performClick", "enable", "disable"]),
+    "Label": dict(
+        cls="tk.Label", size=(100, 24),
+        props=[TEXT("Label"), FONT, FG, BG,
+               P("anchor", "choice", "w", "anchor", ANCHORS),
+               P("justify", "choice", "left", "justify", JUSTIFY),
+               P("relief", "choice", "flat", "relief", RELIEFS)],
+        actions=["takeValueFrom", "appendValueFrom", "clear"]),
+    "Entry": dict(
+        cls="tk.Entry", size=(150, 26), source="return",
+        props=[P("value", "str", ""), FONT, FG, BG,
+               P("justify", "choice", "left", "justify", JUSTIFY),
+               P("show", "str", "", "show", label="show (e.g. *)"), STATE],
+        actions=["takeValueFrom", "appendValueFrom", "clear", "selectAll",
+                 "focus", "enable", "disable"]),
+    "Text": dict(
+        cls="tk.Text", size=(220, 110),
+        props=[P("value", "text", ""), FONT, FG, BG,
+               P("wrap", "choice", "word", "wrap", ["word", "char", "none"]),
+               STATE],
+        actions=["takeValueFrom", "appendValueFrom", "clear", "focus",
+                 "enable", "disable"]),
+    "Checkbutton": dict(
+        cls="tk.Checkbutton", size=(110, 24), source="command",
+        props=[TEXT("Switch"), P("value", "bool", False, label="checked"),
+               FONT, FG, BG, STATE],
+        actions=["takeValueFrom", "toggle", "performClick", "enable",
+                 "disable"]),
+    "Radiobutton": dict(
+        cls="tk.Radiobutton", size=(110, 24), source="command",
+        props=[TEXT("Option"), P("group", "ident", "group1"),
+               P("choice", "str", "", label="value (blank: text)"),
+               P("value", "bool", False, label="selected"),
+               FONT, FG, BG, STATE],
+        actions=["performClick", "enable", "disable"]),
+    "Scale": dict(
+        cls="tk.Scale", size=(170, 44), source="command",
+        props=[P("from_", "float", 0, "from_", label="from"),
+               P("to", "float", 100, "to"), P("value", "float", 0),
+               P("resolution", "float", 1, "resolution"),
+               P("orient", "choice", "horizontal", "orient", ORIENT),
+               P("showvalue", "bool", True, "showvalue"),
+               P("label", "str", "", "label"), FONT, FG, BG, STATE],
+        actions=["takeValueFrom", "increment", "decrement", "enable",
+                 "disable"]),
+    "Spinbox": dict(
+        cls="tk.Spinbox", size=(90, 26), source="spin",
+        props=[P("from_", "float", 0, "from_", label="from"),
+               P("to", "float", 100, "to"),
+               P("increment", "float", 1, "increment"),
+               P("value", "str", "0"), FONT, FG, BG,
+               P("justify", "choice", "left", "justify", JUSTIFY), STATE],
+        actions=["takeValueFrom", "increment", "decrement", "clear",
+                 "enable", "disable"]),
+    "Listbox": dict(
+        cls="tk.Listbox", size=(150, 110), source="<<ListboxSelect>>",
+        props=[P("items", "text", "One\nTwo\nThree"),
+               P("selectmode", "choice", "browse", "selectmode",
+                 ["browse", "single", "multiple", "extended"]),
+               FONT, FG, BG],
+        actions=["takeValueFrom", "appendValueFrom", "clear",
+                 "deleteSelected"]),
+    "Combobox": dict(
+        cls="ttk.Combobox", size=(150, 26), source="<<ComboboxSelected>>",
+        props=[P("items", "text", "Red\nGreen\nBlue"),
+               P("value", "str", "Red"),
+               P("state", "choice", "readonly", "state",
+                 ["readonly", "normal", "disabled"]), FONT],
+        actions=["takeValueFrom", "clear", "enable", "disable"]),
+    "Progressbar": dict(
+        cls="ttk.Progressbar", size=(170, 20),
+        props=[P("maximum", "float", 100, "maximum"),
+               P("value", "float", 30, "value"),
+               P("mode", "choice", "determinate", "mode",
+                 ["determinate", "indeterminate"]),
+               P("orient", "choice", "horizontal", "orient", ORIENT)],
+        actions=["takeValueFrom", "increment", "decrement", "clear",
+                 "start", "stop"]),
+    "Canvas": dict(
+        cls="tk.Canvas", size=(200, 150), source="click",
+        props=[P("bg", "color", "white", "bg", label="background"),
+               P("relief", "choice", "sunken", "relief", RELIEFS),
+               P("bd", "int", 1, "bd", label="border width"),
+               P("highlightthickness", "int", 0, "highlightthickness",
+                 label="focus ring")],
+        actions=["takeValueFrom", "clear"]),
+    "Frame": dict(
+        cls="tk.Frame", size=(200, 120),
+        props=[BG, P("relief", "choice", "groove", "relief", RELIEFS),
+               P("bd", "int", 2, "bd", label="border width")],
+        actions=[]),
+    "LabelFrame": dict(
+        cls="tk.LabelFrame", size=(200, 120),
+        props=[TEXT("Box"), FONT, FG, BG,
+               P("relief", "choice", "groove", "relief", RELIEFS),
+               P("bd", "int", 2, "bd", label="border width")],
+        actions=["takeValueFrom"]),
+    "Separator": dict(
+        cls="ttk.Separator", size=(200, 2),
+        props=[P("orient", "choice", "horizontal", "orient", ORIENT)],
+        actions=[]),
+    "Timer": dict(
+        cls=None, nonvisual=True, source="timer",
+        props=[P("interval", "int", 1000, label="interval (ms)"),
+               P("repeat", "bool", True),
+               P("autostart", "bool", True, label="start at launch")],
+        actions=["start", "stop", "toggleRunning"]),
+}
+PALETTE = ["Button", "Label", "Entry", "Text", "Checkbutton", "Radiobutton",
+           "Scale", "Spinbox", "Listbox", "Combobox", "Progressbar",
+           "Canvas", "Frame", "LabelFrame", "Separator", "Timer"]
+
+ACTION_HELP = {
+    "takeValueFrom": "show the sender's value",
+    "appendValueFrom": "add the sender's value as a new line",
+    "clear": "clear / reset",
+    "increment": "step up",
+    "decrement": "step down",
+    "toggle": "turn on / off",
+    "performClick": "act as if clicked",
+    "enable": "enable",
+    "disable": "disable (grey out)",
+    "focus": "take the keyboard focus",
+    "selectAll": "select all its text",
+    "deleteSelected": "delete the selected items",
+    "start": "start running",
+    "stop": "stop running",
+    "toggleRunning": "start or stop",
+    "quit": "close the window",
+}
+ACTION_CODE = {
+    "takeValueFrom": "self.set_value({d}, self.value_of({s}))",
+    "appendValueFrom": "self.append({d}, self.value_of({s}))",
+    "clear": "self.clear({d})",
+    "increment": "self.step({d}, 1)",
+    "decrement": "self.step({d}, -1)",
+    "toggle": "self.toggle({d})",
+    "performClick": "{d}.invoke()",
+    "enable": "self.set_enabled({d}, True)",
+    "disable": "self.set_enabled({d}, False)",
+    "focus": "{d}.focus_set()",
+    "selectAll": "self.select_all({d})",
+    "deleteSelected": "self.delete_selected({d})",
+    "start": "{d}.start()",
+    "stop": "{d}.stop()",
+    "toggleRunning": "{d}.toggle()",
+}
+SOURCE_HELP = {
+    "command": "is clicked", "return": "gets Return",
+    "spin": "is stepped or gets Return",
+    "<<ListboxSelect>>": "has an item selected",
+    "<<ComboboxSelected>>": "has a choice made", "click": "is clicked",
+    "timer": "fires",
+}
+# names objects can't have: the Interface's own attributes and helpers
+RESERVED = {"master", "controller", "name_of", "value_of", "set_value",
+            "clear", "append", "step", "toggle", "set_enabled", "select_all",
+            "delete_selected", "on_click", "self", "Timer", "Interface"}
+FONTS = ["", "TkDefaultFont", "TkFixedFont", "TkHeadingFont",
+         "Helvetica 13", "Helvetica 13 bold", "Helvetica 18 bold",
+         "Times 14", "Times 14 italic", "Courier 13", "Menlo 12",
+         "{Helvetica Neue} 24"]
+
+
+def is_visual(o):
+    return o["type"] in TYPES and not TYPES[o["type"]].get("nonvisual")
+
+
+def props_of(o):
+    have = o.get("props", {})
+    return {p["key"]: have.get(p["key"], p["default"])
+            for p in TYPES[o["type"]]["props"]}
+
+
+def num(v):
+    """A number tidied for display / code: 3.0 -> 3."""
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return v
+
+
+def valid_ident(s):
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", s or "")) \
+        and not keyword.iskeyword(s)
+
+
+def new_doc():
+    return {"format": "tkinterface", "version": 1,
+            "window": {"title": "Untitled", "width": 420, "height": 300,
+                       "bg": "", "resizable": True},
+            "controller": {"classname": "Controller", "awake": "pass",
+                           "actions": {}},
+            "objects": [], "connections": []}
+
+
+def default_action_body(name):
+    return ('print("%s: sent by", self.ui.name_of(sender), '
+            '"with value", repr(self.ui.value_of(sender)))' % name)
+
+
+# ---------------------------------------------------------------- code generation
+
+TIMER_CODE = '''
+def _number(v):
+    """v as an int or float, or None if it isn't a number."""
+    if isinstance(v, bool):
+        return int(v)
+    try:
+        f = float(str(v))
+    except ValueError:
+        return None
+    return int(f) if f.is_integer() else f
+
+
+class Timer:
+    """A non-visual object that sends its action every `interval` ms."""
+
+    def __init__(self, master, interval=1000, repeat=True):
+        self.master, self.interval, self.repeat = master, interval, repeat
+        self.action = None
+        self.ticks = 0
+        self._job = None
+
+    @property
+    def running(self):
+        return self._job is not None
+
+    def start(self):
+        if self._job is None:
+            self._job = self.master.after(self.interval, self._tick)
+
+    def stop(self):
+        if self._job is not None:
+            self.master.after_cancel(self._job)
+            self._job = None
+
+    def toggle(self):
+        if self.running:
+            self.stop()
+        else:
+            self.start()
+
+    def _tick(self):
+        self._job = None
+        if not self.master.winfo_exists():
+            return
+        if self.repeat:
+            self.start()
+        self.ticks += 1
+        if self.action:
+            self.action()
+'''
+
+RUNTIME = '''
+    # ---- what targets do when they are sent an action ----
+
+    def name_of(self, widget):
+        """The name of one of this interface's objects."""
+        for name, value in vars(self).items():
+            if value is widget:
+                return name
+        return str(widget)
+
+    def value_of(self, w):
+        """The value a sender passes along: its text, number or state."""
+        if isinstance(w, Timer):
+            return w.ticks
+        if getattr(w, "var", None) is not None:
+            return w.var.get()
+        if isinstance(w, tk.Text):
+            return w.get("1.0", "end-1c")
+        if isinstance(w, tk.Listbox):
+            sel = w.curselection()
+            return w.get(sel[0]) if sel else ""
+        if isinstance(w, tk.Scale):
+            return w.get()
+        if isinstance(w, ttk.Progressbar):
+            return _number(w.cget("value"))
+        if isinstance(w, tk.Canvas):
+            return getattr(w, "clicked", "")
+        if isinstance(w, (tk.Entry, tk.Spinbox, ttk.Entry)):
+            return w.get()
+        return w.cget("text")
+
+    def set_value(self, w, v):
+        """Make w show the value v."""
+        if isinstance(w, tk.Checkbutton):
+            w.var.set(str(v).lower() not in ("", "0", "false", "no", "off"))
+        elif isinstance(w, tk.Text):
+            w.delete("1.0", "end")
+            w.insert("1.0", str(v))
+        elif isinstance(w, tk.Listbox):
+            items = w.get(0, "end")
+            w.selection_clear(0, "end")
+            if str(v) in items:
+                i = items.index(str(v))
+                w.selection_set(i)
+                w.see(i)
+        elif isinstance(w, tk.Scale):
+            if _number(v) is not None:
+                w.set(_number(v))
+        elif isinstance(w, ttk.Progressbar):
+            if _number(v) is not None:
+                w.configure(value=_number(v))
+        elif isinstance(w, tk.Canvas):
+            w.delete("value")
+            w.create_text(w.winfo_width() // 2, w.winfo_height() // 2,
+                          text=str(v), tags="value")
+        elif isinstance(w, ttk.Combobox):
+            w.set(str(v))
+        elif isinstance(w, (tk.Entry, tk.Spinbox, ttk.Entry)):
+            w.delete(0, "end")
+            w.insert(0, str(v))
+        else:
+            w.configure(text=str(v))
+
+    def clear(self, w):
+        if isinstance(w, tk.Listbox):
+            w.delete(0, "end")
+        elif isinstance(w, tk.Canvas):
+            w.delete("all")
+        elif isinstance(w, ttk.Progressbar):
+            w.configure(value=0)
+        elif isinstance(w, tk.Scale):
+            w.set(w.cget("from"))
+        else:
+            self.set_value(w, "")
+
+    def append(self, w, v):
+        if isinstance(w, tk.Text):
+            if w.get("1.0", "end-1c"):
+                w.insert("end", "\\n")
+            w.insert("end", str(v))
+            w.see("end")
+        elif isinstance(w, tk.Listbox):
+            w.insert("end", str(v))
+            w.see("end")
+        else:
+            self.set_value(w, "%s%s" % (self.value_of(w), v))
+
+    def step(self, w, n):
+        if isinstance(w, ttk.Progressbar):
+            w.step(n)
+        elif isinstance(w, tk.Scale):
+            res = float(w.cget("resolution"))
+            w.set(w.get() + n * (res if res > 0 else 1))
+        else:
+            lo, hi = float(w.cget("from")), float(w.cget("to"))
+            v = (_number(w.get()) or 0) + n * float(w.cget("increment"))
+            self.set_value(w, _number(min(max(v, lo), hi)))
+
+    def toggle(self, w):
+        w.var.set(not w.var.get())
+
+    def set_enabled(self, w, on):
+        if isinstance(w, ttk.Widget):
+            w.state(["!disabled" if on else "disabled"])
+        else:
+            w.configure(state="normal" if on else "disabled")
+
+    def select_all(self, w):
+        w.focus_set()
+        w.select_range(0, "end")
+        w.icursor("end")
+
+    def delete_selected(self, w):
+        for i in reversed(w.curselection()):
+            w.delete(i)
+
+    def on_click(self, w, action):
+        def clicked(event):
+            w.clicked = "%d,%d" % (event.x, event.y)
+            action()
+        w.bind("<Button-1>", clicked)
+'''
+
+
+def lit(v):
+    return repr(num(v))
+
+
+def ctor_kwargs(o):
+    """The keyword arguments o's widget is created with."""
+    kw = {}
+    for p in TYPES[o["type"]]["props"]:
+        if not p["opt"] or p["key"] == "state":
+            continue
+        v = props_of(o)[p["key"]]
+        if v == "" and p["kind"] in ("color", "font"):
+            continue
+        kw[p["opt"]] = num(v)
+    if o["type"] == "Combobox":
+        kw["values"] = items_of(o)
+    return kw
+
+
+def items_of(o):
+    return [s for s in props_of(o)["items"].splitlines() if s.strip()]
+
+
+def radio_value(o):
+    p = props_of(o)
+    return p["choice"] or p["text"]
+
+
+def widget_lines(o):
+    """Python that creates o's widget as self.<name>, child of `master`."""
+    t, typ, p = TYPES[o["type"]], o["type"], props_of(o)
+    me = "self." + o["name"]
+    args = "".join(", %s=%s" % (k, repr(v)) for k, v in ctor_kwargs(o).items())
+    out = ["%s = %s(master%s)" % (me, t["cls"], args)]
+    if typ == "Spinbox":
+        out.append('%s.delete(0, "end")' % me)
+    if typ in ("Entry", "Spinbox") and p["value"] != "":
+        out.append("%s.insert(0, %r)" % (me, p["value"]))
+    elif typ == "Text" and p["value"]:
+        out.append('%s.insert("1.0", %r)' % (me, p["value"]))
+    elif typ == "Checkbutton":
+        out.append("%s.var = tk.BooleanVar(master, value=%r)"
+                   % (me, bool(p["value"])))
+        out.append("%s.configure(variable=%s.var)" % (me, me))
+    elif typ == "Radiobutton":
+        g = "self.%s_var" % p["group"]
+        out.append("%s.var = %s" % (me, g))
+        out.append("%s.configure(variable=%s, value=%r)"
+                   % (me, g, radio_value(o)))
+        if p["value"]:
+            out.append("%s.set(%r)" % (g, radio_value(o)))
+    elif typ == "Scale":
+        out.append("%s.set(%s)" % (me, lit(p["value"])))
+    elif typ == "Listbox" and items_of(o):
+        out.append('%s.insert("end", *%r)' % (me, items_of(o)))
+    elif typ == "Combobox":
+        out.append("%s.set(%r)" % (me, p["value"]))
+    if "state" in p and p["state"] != "normal":
+        out.append("%s.configure(state=%r)" % (me, p["state"]))
+    return out
+
+
+def place_args(o, W, H):
+    """place() arguments honouring o's anchors (its 'springs')."""
+    a, x, y, w, h = o.get("anchors", "nw"), o["x"], o["y"], o["w"], o["h"]
+    args = []
+    for lo, hi, pos, size, total, rel, rsize in (
+            ("w", "e", x, w, W, "relx", "relwidth"),
+            ("n", "s", y, h, H, "rely", "relheight")):
+        p, s = rel[-1], "width" if rel == "relx" else "height"
+        if lo in a and hi in a:
+            args += ["%s=%d" % (p, pos), "%s=1.0" % rsize,
+                     "%s=%d" % (s, size - total)]
+        elif hi in a:
+            args += ["%s=1.0" % rel, "%s=%d" % (p, pos - total),
+                     "%s=%d" % (s, size)]
+        elif lo in a:
+            args += ["%s=%d" % (p, pos), "%s=%d" % (s, size)]
+        else:
+            args += ["%s=%.4g" % (rel, pos / total), "%s=%d" % (s, size)]
+    return ", ".join(args)
+
+
+def indent(body, n):
+    lines = body.expandtabs(4).rstrip().splitlines()
+    if not any(s.strip() for s in lines):
+        lines = ["pass"]
+    return [(" " * n + s) if s.strip() else "" for s in lines]
+
+
+def generate(doc, source=""):
+    """The whole standalone program for doc."""
+    win, ctl = doc["window"], doc["controller"]
+    W, H, cls = win["width"], win["height"], ctl["classname"]
+    objs = doc["objects"]
+    names = {o["name"]: o for o in objs}
+    conns = doc["connections"]
+    outlets = [c for c in conns if c.get("kind") == "outlet"]
+    out = []
+    w = out.append
+    w("#!/usr/bin/env python3")
+    w('"""%s - a Tk interface generated by tkinterface%s.'
+      % (win["title"], " from " + os.path.basename(source) if source else ""))
+    w("")
+    w("The Interface class builds the window and makes its connections; it is")
+    w("rewritten each time the code is generated.  Put behaviour in the")
+    w("%s class (whose action methods can be edited in tkinterface's" % cls)
+    w('Inspector, so they survive regeneration)."""')
+    w("")
+    w("import tkinter as tk")
+    w("from tkinter import ttk")
+    w("")
+    w(TIMER_CODE)
+    w("")
+    w("class %s:" % cls)
+    w('    """Receives the actions sent by the interface\'s controls."""')
+    w("")
+    w("    def __init__(self):")
+    w("        self.ui = None    # the Interface, set when the window is built")
+    for c in outlets:
+        w("        self.%s = None    # outlet: %s" % (c["action"], c["dst"]))
+    w("")
+    w("    def awakeFromNib(self):")
+    w('        """Called once the interface is built and connected."""')
+    out += indent(ctl.get("awake", "pass"), 8)
+    for a, body in ctl["actions"].items():
+        w("")
+        w("    def %s(self, sender):" % a)
+        out += indent(body, 8)
+    w("")
+    w("")
+    w("class Interface:")
+    w('    """The window: its objects are attributes, named as in tkinterface."""')
+    w("")
+    w("    def __init__(self, master, controller):")
+    w("        self.master = master")
+    w("        self.controller = controller")
+    w("        master.title(%r)" % win["title"])
+    w('        master.geometry("%dx%d")' % (W, H))
+    if not win.get("resizable", True):
+        w("        master.resizable(False, False)")
+    if win.get("bg"):
+        w("        master.configure(bg=%r)" % win["bg"])
+    groups = []
+    for o in objs:
+        if o["type"] == "Radiobutton" and props_of(o)["group"] not in groups:
+            groups.append(props_of(o)["group"])
+    if groups:
+        w("")
+        for g in groups:
+            w('        self.%s_var = tk.StringVar(master, value="<none>")' % g)
+    for o in objs:
+        w("")
+        if is_visual(o):
+            out += ["        " + s for s in widget_lines(o)]
+            w("        self.%s.place(%s)" % (o["name"], place_args(o, W, H)))
+        else:
+            p = props_of(o)
+            w("        self.%s = Timer(master, %d, %r)"
+              % (o["name"], p["interval"], bool(p["repeat"])))
+    sources = [o for o in objs
+               if any(c["src"] == o["name"] and c.get("kind") != "outlet"
+                      for c in conns)]
+    if sources:
+        w("")
+        w("        # target / action connections")
+    for o in sources:
+        me, m = "self." + o["name"], "self.%s_action" % o["name"]
+        s = TYPES[o["type"]]["source"]
+        if s == "command":
+            w("        %s.configure(command=%s)" % (me, m))
+        elif s == "return":
+            w('        %s.bind("<Return>", %s)' % (me, m))
+        elif s == "spin":
+            w("        %s.configure(command=%s)" % (me, m))
+            w('        %s.bind("<Return>", %s)' % (me, m))
+        elif s == "click":
+            w("        self.on_click(%s, %s)" % (me, m))
+        elif s == "timer":
+            w("        %s.action = %s" % (me, m))
+        else:
+            w("        %s.bind(%r, %s)" % (me, s, m))
+    w("")
+    w("        controller.ui = self")
+    for c in outlets:
+        w("        controller.%s = self.%s" % (c["action"], c["dst"]))
+    w("        controller.awakeFromNib()")
+    for o in objs:
+        if o["type"] == "Timer" and props_of(o)["autostart"]:
+            w("        self.%s.start()" % o["name"])
+    for o in sources:
+        w("")
+        w("    def %s_action(self, *args):" % o["name"])
+        w('        """Sent when %s %s."""'
+          % (o["name"], SOURCE_HELP[TYPES[o["type"]]["source"]]))
+        for c in conns:
+            if c["src"] != o["name"] or c.get("kind") == "outlet":
+                continue
+            s, d = "self." + c["src"], "self." + c["dst"]
+            if c["dst"] == "controller":
+                if c["action"] == "quit":
+                    w("        self.master.destroy()")
+                else:
+                    w("        self.controller.%s(%s)" % (c["action"], s))
+            elif c["dst"] in names:
+                w("        " + ACTION_CODE[c["action"]].format(s=s, d=d))
+    out += RUNTIME.rstrip().split("\n")
+    w("")
+    w("")
+    w("def main():")
+    w("    root = tk.Tk()")
+    w("    Interface(root, %s())" % cls)
+    w("    root.mainloop()")
+    w("")
+    w("")
+    w('if __name__ == "__main__":')
+    w("    main()")
+    return "\n".join(out) + "\n"
+
+
+def make_live(o, master, ns):
+    """Build o's widget the way the generated code does, inside master."""
+    p = props_of(o)
+    if o["type"] == "Radiobutton" and not hasattr(ns, p["group"] + "_var"):
+        setattr(ns, p["group"] + "_var", tk.StringVar(master, value="<none>"))
+    env = {"tk": tk, "ttk": ttk, "self": ns, "master": master}
+    exec("\n".join(widget_lines(o)), env)
+    return getattr(ns, o["name"])
+
+
+def edge_point(r, p):
+    """Where the line from the centre of rectangle r towards p leaves r."""
+    x0, y0, x1, y1 = r
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    dx, dy = p[0] - cx, p[1] - cy
+    if dx == 0 and dy == 0:
+        return cx, cy
+    tx = (x1 - x0) / 2 / abs(dx) if dx else float("inf")
+    ty = (y1 - y0) / 2 / abs(dy) if dy else float("inf")
+    t = min(tx, ty, 1)
+    return cx + dx * t, cy + dy * t
+
+
+def centre(r):
+    return (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
+
+
+# ---------------------------------------------------------------- small widgets
+
+class ScrollFrame(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0)
+        sb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=sb.set)
+        self.inner = ttk.Frame(self.canvas, padding=8)
+        self.win = self.canvas.create_window(0, 0, window=self.inner,
+                                             anchor="nw")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(
+            scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(
+            self.win, width=e.width))
+
+    def clear(self):
+        for c in self.inner.winfo_children():
+            c.destroy()
+        self.canvas.yview_moveto(0)
+
+
+class Outline:
+    """Four thin frames framing a rectangle on the canvas (canvas lines would
+    be hidden behind the embedded widgets)."""
+
+    def __init__(self, canvas, color, t=2):
+        self.canvas, self.t = canvas, t
+        self.parts = []
+        for _ in range(4):
+            f = tk.Frame(canvas, bg=color, bd=0, highlightthickness=0)
+            f.bindtags(("Design", "all"))
+            self.parts.append((f, None))
+        self.shown = None
+
+    def show(self, r):
+        if r == self.shown:
+            return
+        self.hide()
+        x0, y0, x1, y1 = r[0] - 3, r[1] - 3, r[2] + 3, r[3] + 3
+        t = self.t
+        boxes = [(x0, y0, x1 - x0, t), (x0, y1 - t, x1 - x0, t),
+                 (x0, y0, t, y1 - y0), (x1 - t, y0, t, y1 - y0)]
+        self.parts = [(f, self.canvas.create_window(
+            x, y, window=f, anchor="nw", width=w, height=h))
+            for (f, _), (x, y, w, h) in zip(self.parts, boxes)]
+        for f, _ in self.parts:
+            f.lift()
+        self.shown = r
+
+    def hide(self):
+        for f, item in self.parts:
+            if item:
+                self.canvas.delete(item)
+        self.parts = [(f, None) for f, _ in self.parts]
+        self.shown = None
+
+
+class Row:
+    """One editable attribute in the Inspector."""
+
+    def __init__(self, get, show, setter, value):
+        self.get, self.show, self.setter, self.value = get, show, setter, value
+
+    def apply(self, app):
+        try:
+            v = self.get()
+        except ValueError:
+            app.status("That isn't a valid value.", error=True)
+            self.show(self.value)
+            return
+        if v == self.value:
+            return
+        if self.setter(v) is False:
+            self.show(self.value)
+        else:
+            self.value = v
+
+
+# ---------------------------------------------------------------- the Palette
+
+class Palette(ttk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, padding=6)
+        self.app = app
+        self.drag = None
+        self.types = {}
+        self.ns = SimpleNamespace()
+        ttk.Label(self, text="Palette", font=("Helvetica", 13, "bold")) \
+            .grid(row=0, column=0, columnspan=2, pady=(0, 6))
+        small = ("Helvetica", 10)
+        for i, t in enumerate(PALETTE):
+            cell = tk.Frame(self, width=112, height=58, bd=1, relief="raised")
+            cell.grid(row=1 + i // 2, column=i % 2, padx=2, pady=2)
+            if t == "Timer":
+                sample = tk.Canvas(cell, width=30, height=30,
+                                   highlightthickness=0, bd=0,
+                                   bg=cell.cget("bg"))
+                draw_timer_icon(sample, 2, 2, 26)
+                sample.place(relx=0.5, y=4, anchor="n")
+            else:
+                o = {"type": t, "name": "sample_" + t.lower(), "props": {}}
+                sample = make_live(o, cell, self.ns)
+                sw, sh = TYPES[t]["size"]
+                sample.place(relx=0.5, y=4 if sh > 4 else 16, anchor="n",
+                             width=min(sw, 100), height=min(sh, 32))
+            cap = tk.Label(cell, text=t, font=small)
+            cap.place(relx=0.5, rely=1.0, y=-1, anchor="s")
+            for wdg in (cell, sample, cap):
+                wdg.bindtags(("Palette", "all"))
+                self.types[str(wdg)] = t
+        ttk.Label(self, text="Drag onto the window,\nor double-click.",
+                  justify="center", foreground="#555") \
+            .grid(row=99, column=0, columnspan=2, pady=8)
+        r = app.root
+        r.bind_class("Palette", "<ButtonPress-1>", self.press)
+        r.bind_class("Palette", "<B1-Motion>", self.motion)
+        r.bind_class("Palette", "<ButtonRelease-1>", self.release)
+        r.bind_class("Palette", "<Double-Button-1>", self.double)
+
+    def press(self, e):
+        self.drag = {"type": self.types.get(str(e.widget)),
+                     "start": (e.x_root, e.y_root), "ghost": None}
+
+    def motion(self, e):
+        d = self.drag
+        if not d or not d["type"]:
+            return
+        if not d["ghost"]:
+            if abs(e.x_root - d["start"][0]) + abs(e.y_root - d["start"][1]) < 5:
+                return
+            g = d["ghost"] = tk.Toplevel(self)
+            g.overrideredirect(True)
+            try:
+                g.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            tk.Label(g, text=" %s " % d["type"], bg="#ffffd8", fg="black",
+                     relief="solid", bd=1, padx=6, pady=3).pack()
+        d["ghost"].geometry("+%d+%d" % (e.x_root + 12, e.y_root + 10))
+
+    def release(self, e):
+        d, self.drag = self.drag, None
+        if d and d["ghost"]:
+            d["ghost"].destroy()
+            self.app.drop(d["type"], e.x_root, e.y_root)
+
+    def double(self, e):
+        t = self.types.get(str(e.widget))
+        if t:
+            self.app.add_object(t)
+
+
+def draw_timer_icon(c, x, y, s, tags=()):
+    c.create_oval(x, y, x + s, y + s, fill="white", outline="black",
+                  width=2, tags=tags)
+    cx, cy = x + s / 2, y + s / 2
+    c.create_line(cx, cy, cx, y + s * 0.18, width=2, tags=tags)
+    c.create_line(cx, cy, x + s * 0.75, cy, width=2, tags=tags)
+    c.create_rectangle(cx - 2, y - 4, cx + 2, y, fill="black", tags=tags)
+
+
+def draw_controller_icon(c, x, y, s, tags=()):
+    """A cube, like IB's File's Owner."""
+    d = s * 0.3
+    c.create_polygon(x, y + d, x + s - d, y + d, x + s - d, y + s, x, y + s,
+                     fill="#d9d9d9", outline="black", tags=tags)
+    c.create_polygon(x, y + d, x + d, y, x + s, y, x + s - d, y + d,
+                     fill="#f2f2f2", outline="black", tags=tags)
+    c.create_polygon(x + s - d, y + d, x + s, y, x + s, y + s - d,
+                     x + s - d, y + s, fill="#a9a9a9", outline="black",
+                     tags=tags)
+
+
+# ---------------------------------------------------------------- the Inspector
+
+class Inspector(ttk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, padding=(6, 6, 6, 0), width=330)
+        self.app = app
+        self.rows = []
+        self.name = None          # the object being inspected
+        self.cur_action = None
+        self.body_text = None
+        self.awake_text = None
+        self.head = ttk.Label(self, font=("Helvetica", 13, "bold"))
+        self.head.pack(anchor="w")
+        self.sub = ttk.Label(self, foreground="#555")
+        self.sub.pack(anchor="w", pady=(0, 4))
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True)
+        self.attr = ScrollFrame(self.nb)
+        self.size = ttk.Frame(self.nb, padding=8)
+        self.conn = ttk.Frame(self.nb, padding=8)
+        self.nb.add(self.attr, text="Attributes")
+        self.nb.add(self.size, text="Size")
+        self.nb.add(self.conn, text="Connections")
+
+    # -- rows
+
+    def commit(self):
+        """Apply edits not yet applied (the focus may not have left them)."""
+        self.save_body()
+        for r in list(self.rows):
+            try:
+                r.apply(self.app)
+            except tk.TclError:
+                pass
+
+    def row(self, parent, label, kind, value, setter, choices=None):
+        r = parent.grid_size()[1]
+        ttk.Label(parent, text=label).grid(row=r, column=0, sticky="nw",
+                                           padx=(0, 6), pady=2)
+        apply = lambda *_: row.apply(self.app)
+        if kind == "bool":
+            var = tk.BooleanVar(value=bool(value))
+            ttk.Checkbutton(parent, variable=var, command=apply) \
+                .grid(row=r, column=1, sticky="w", pady=2)
+            row = Row(var.get, var.set, setter, bool(value))
+        elif kind == "text":
+            t = tk.Text(parent, width=24, height=4, wrap="none", undo=True,
+                        font=MONO)
+            t.insert("1.0", value)
+            t.grid(row=r, column=1, sticky="ew", pady=2)
+            t.bind("<FocusOut>", apply)
+
+            def show(v, t=t):
+                t.delete("1.0", "end")
+                t.insert("1.0", v)
+            row = Row(lambda: t.get("1.0", "end-1c"), show, setter, value)
+        else:
+            var = tk.StringVar(value=str(num(value)))
+            if kind == "choice":
+                wdg = ttk.Combobox(parent, textvariable=var, values=choices,
+                                   state="readonly", width=18)
+                wdg.bind("<<ComboboxSelected>>", apply)
+            elif kind == "font":
+                wdg = ttk.Combobox(parent, textvariable=var, values=FONTS,
+                                   width=18)
+                wdg.bind("<<ComboboxSelected>>", apply)
+            else:
+                wdg = ttk.Entry(parent, textvariable=var, width=20)
+            wdg.bind("<Return>", apply)
+            wdg.bind("<FocusOut>", apply)
+            conv = {"int": lambda s: int(float(s)), "float": float}.get(
+                kind, lambda s: s.strip() if kind == "ident" else s)
+            if kind == "color":
+                f = ttk.Frame(parent)
+                wdg.destroy()
+                wdg = ttk.Entry(f, textvariable=var, width=15)
+                wdg.bind("<Return>", apply)
+                wdg.bind("<FocusOut>", apply)
+                wdg.pack(side="left", fill="x", expand=True)
+                sw = tk.Label(f, width=2, relief="solid", bd=1, cursor="hand2")
+                sw.pack(side="left", padx=(4, 0))
+
+                def paint(*_, sw=sw):
+                    try:
+                        sw.configure(bg=var.get() or self.cget_bg())
+                    except tk.TclError:
+                        pass
+
+                def pick(e, sw=sw):
+                    c = colorchooser.askcolor(var.get() or None,
+                                              parent=self.app.root)[1]
+                    if c:
+                        var.set(c)
+                        apply()
+                var.trace_add("write", paint)
+                paint()
+                sw.bind("<Button-1>", pick)
+                f.grid(row=r, column=1, sticky="ew", pady=2)
+            else:
+                wdg.grid(row=r, column=1, sticky="ew", pady=2)
+            row = Row(lambda: conv(var.get()),
+                      lambda v: var.set(str(num(v))), setter,
+                      conv(str(num(value))) if kind in ("int", "float")
+                      else value)
+        parent.columnconfigure(1, weight=1)
+        self.rows.append(row)
+        return row
+
+    def cget_bg(self):
+        return self.app.root.cget("bg")
+
+    def note(self, parent, text):
+        ttk.Label(parent, text=text, foreground="#555", wraplength=270,
+                  justify="left").grid(row=parent.grid_size()[1], column=0,
+                                       columnspan=2, sticky="w", pady=(8, 2))
+
+    # -- showing a selection
+
+    def show(self, sel):
+        self.commit()
+        self.rows = []
+        self.body_text = None
+        self.awake_text = None
+        self.cur_action = None
+        self.attr.clear()
+        for f in (self.size, self.conn):
+            for c in f.winfo_children():
+                c.destroy()
+        app, a = self.app, self.attr.inner
+        if not sel:
+            self.name = None
+            self.show_window(a)
+        elif len(sel) > 1:
+            self.name = None
+            self.head.configure(text="%d objects" % len(sel))
+            self.sub.configure(text="Layout menu: align, size, stacking")
+            self.note(a, "Shift-click to add or remove objects from the "
+                      "selection.  Drag any of them to move them together.")
+        elif sel[0] == "controller":
+            self.name = "controller"
+            self.show_controller(a)
+        else:
+            self.name = sel[0]
+            self.show_object(a, app.obj(sel[0]))
+        self.show_connections()
+
+    def show_window(self, a):
+        app, win = self.app, self.app.doc["window"]
+        self.head.configure(text="Window")
+        self.sub.configure(text="the window being designed")
+        for key, kind, label in (("title", "str", "title"),
+                                 ("width", "int", "width"),
+                                 ("height", "int", "height"),
+                                 ("bg", "color", "background"),
+                                 ("resizable", "bool", "resizable")):
+            self.row(a, label, kind, win[key],
+                     lambda v, k=key: app.set_window(k, v))
+        self.note(a, "Drag objects here from the Palette.  Control-drag "
+                  "(or right-drag) from a control to another object to "
+                  "connect them; from the Controller to an object to make "
+                  "an outlet.")
+        ttk.Label(self.size, text="Select an object to set its size and "
+                  "how it follows the window when it is resized.",
+                  wraplength=270, foreground="#555").pack(anchor="w")
+
+    def show_object(self, a, o):
+        app = self.app
+        self.head.configure(text=o["name"])
+        self.sub.configure(text=o["type"] + (" (non-visual)"
+                                              if not is_visual(o) else ""))
+        self.row(a, "name", "ident", o["name"],
+                 lambda v: app.rename(self.name, v))
+        p = props_of(o)
+        for spec in TYPES[o["type"]]["props"]:
+            self.row(a, spec["label"], spec["kind"], p[spec["key"]],
+                     lambda v, k=spec["key"]: app.set_prop(self.name, k, v),
+                     spec["choices"])
+        if o["type"] == "Radiobutton":
+            self.note(a, "Radio buttons in the same group turn each other "
+                      "off.  The group's value is the value of the one "
+                      "that is on.")
+        if TYPES[o["type"]].get("source"):
+            self.note(a, "Sends its action when it %s."
+                      % SOURCE_HELP[TYPES[o["type"]]["source"]])
+        if not is_visual(o):
+            ttk.Label(self.size, text="A non-visual object: it lives in the "
+                      "objects tray, not in the window.", wraplength=270,
+                      foreground="#555").pack(anchor="w")
+            return
+        s = ttk.Frame(self.size)
+        s.pack(anchor="w")
+        for key in ("x", "y", "w", "h"):
+            self.row(s, {"w": "width", "h": "height"}.get(key, key), "int",
+                     o[key], lambda v, k=key: app.set_geom(self.name, k, v))
+        ttk.Label(self.size, text="Autosizing", font=("Helvetica", 12, "bold")).pack(anchor="w", pady=(14, 4))
+        self.springs(o)
+        ttk.Label(self.size, wraplength=270, foreground="#555",
+                  justify="left", text="Click the struts.  A red strut pins "
+                  "that side to the window's edge when the window is "
+                  "resized; pin both left and right (or top and bottom) "
+                  "and the object stretches.  Unpinned on both sides, it "
+                  "keeps its proportional place.").pack(anchor="w", pady=6)
+
+    def springs(self, o):
+        c = tk.Canvas(self.size, width=140, height=110, bg="white",
+                      highlightthickness=1, highlightbackground="#999")
+        c.pack(anchor="w")
+        c.create_rectangle(6, 6, 134, 104, outline="#444")
+        c.create_rectangle(50, 38, 90, 72, fill="#c8d4e8", outline="#444")
+        struts = {"w": (6, 55, 50, 55), "e": (90, 55, 134, 55),
+                  "n": (70, 6, 70, 38), "s": (70, 72, 70, 104)}
+
+        def draw():
+            c.delete("strut")
+            anchors = self.app.obj(self.name).get("anchors", "nw")
+            for k, xy in struts.items():
+                on = k in anchors
+                c.create_line(*xy, width=3 if on else 1,
+                              fill="#d01010" if on else "#999",
+                              dash=() if on else (3, 3), tags="strut")
+                c.create_line(*xy, width=14, fill="", tags=("strut", k))
+
+        def click(e):
+            for item in c.find_overlapping(e.x - 2, e.y - 2, e.x + 2, e.y + 2):
+                for k in struts:
+                    if k in c.gettags(item):
+                        o = self.app.obj(self.name)
+                        a = o.get("anchors", "nw")
+                        a = a.replace(k, "") if k in a else a + k
+                        self.app.set_anchors(self.name, a)
+                        draw()
+                        return
+        c.bind("<Button-1>", click)
+        draw()
+
+    def show_controller(self, a):
+        app, ctl = self.app, self.app.doc["controller"]
+        self.head.configure(text=ctl["classname"])
+        self.sub.configure(text="the Controller (like IB's File's Owner)")
+        self.row(a, "class name", "ident", ctl["classname"],
+                 app.set_classname)
+        ttk.Label(a, text="def awakeFromNib(self):", font=MONO).grid(
+            row=a.grid_size()[1], column=0, columnspan=2, sticky="w",
+            pady=(10, 2))
+        t = self.code_text(a, 4)
+        t.insert("1.0", ctl.get("awake", "pass"))
+        t.bind("<FocusOut>", lambda e: self.save_awake(t))
+        self.awake_text = t
+
+        ttk.Label(a, text="Actions", font=("Helvetica", 12, "bold")) \
+            .grid(row=a.grid_size()[1], column=0, columnspan=2, sticky="w",
+                  pady=(12, 2))
+        lb = tk.Listbox(a, height=5, exportselection=False, font=MONO)
+        lb.grid(row=a.grid_size()[1], column=0, columnspan=2, sticky="ew")
+        for name in ctl["actions"]:
+            lb.insert("end", name + ":")
+        bf = ttk.Frame(a)
+        bf.grid(row=a.grid_size()[1], column=0, columnspan=2, sticky="w",
+                pady=2)
+        self.sig = ttk.Label(a, text="", font=MONO)
+        self.sig.grid(row=a.grid_size()[1], column=0, columnspan=2,
+                      sticky="w", pady=(6, 2))
+        body = self.code_text(a, 9)
+        body.configure(state="disabled")
+        body.bind("<FocusOut>", lambda e: self.save_body())
+        self.body_text, self.action_list = body, lb
+
+        def pick(e=None):
+            self.save_body()
+            sel = lb.curselection()
+            if not sel:
+                return
+            self.cur_action = lb.get(sel[0])[:-1]
+            body.configure(state="normal")
+            body.delete("1.0", "end")
+            body.insert("1.0", app.doc["controller"]["actions"]
+                        .get(self.cur_action, ""))
+            body.edit_reset()
+            self.sig.configure(text="def %s(self, sender):" % self.cur_action)
+        lb.bind("<<ListboxSelect>>", pick)
+
+        def add():
+            name = app.ask_action_name()
+            if name:
+                app.add_action(name)
+                lb.insert("end", name + ":")
+                lb.selection_clear(0, "end")
+                lb.selection_set("end")
+                pick()
+
+        def rename():
+            if not self.cur_action:
+                return
+            self.save_body()
+            name = app.ask_action_name(self.cur_action)
+            if name and app.rename_action(self.cur_action, name):
+                i = lb.curselection()[0]
+                lb.delete(i)
+                lb.insert(i, name + ":")
+                lb.selection_set(i)
+                self.cur_action = name
+                self.sig.configure(text="def %s(self, sender):" % name)
+                self.show_connections()
+
+        def remove():
+            if not self.cur_action:
+                return
+            app.remove_action(self.cur_action)
+            lb.delete(lb.curselection()[0])
+            self.cur_action = None
+            body.delete("1.0", "end")
+            body.configure(state="disabled")
+            self.sig.configure(text="")
+            self.show_connections()
+        for text, cmd in (("Add…", add), ("Rename…", rename),
+                          ("Remove", remove)):
+            ttk.Button(bf, text=text, command=cmd).pack(side="left", padx=1)
+        if ctl["actions"]:
+            lb.selection_set(0)
+            pick()
+
+        outlets = [c for c in app.doc["connections"]
+                   if c.get("kind") == "outlet"]
+        ttk.Label(a, text="Outlets", font=("Helvetica", 12, "bold")) \
+            .grid(row=a.grid_size()[1], column=0, columnspan=2, sticky="w",
+                  pady=(12, 2))
+        self.note(a, "\n".join("self.%s → %s" % (c["action"], c["dst"])
+                               for c in outlets) or
+                  "None yet: Control-drag from the Controller icon to an "
+                  "object to make one.")
+        self.note(a, "In actions, sender is the object that sent the "
+                  "action; self.ui is the Interface, whose objects are "
+                  "attributes (self.ui.label1), and self.ui.value_of(w) / "
+                  "self.ui.set_value(w, v) get and set any object's value.  "
+                  "print() goes to the test console.")
+        ttk.Label(self.size, text="A non-visual object: it lives in the "
+                  "objects tray, not in the window.", wraplength=270,
+                  foreground="#555").pack(anchor="w")
+
+    def code_text(self, parent, height):
+        t = tk.Text(parent, width=34, height=height, wrap="none", undo=True,
+                    font=MONO)
+        t.grid(row=parent.grid_size()[1], column=0, columnspan=2,
+               sticky="ew")
+        t.bind("<Tab>", lambda e: (t.insert("insert", "    "), "break")[1])
+        return t
+
+    def save_awake(self, t):
+        if t.winfo_exists():
+            self.app.set_awake(t.get("1.0", "end-1c"))
+
+    def save_body(self):
+        t = self.body_text
+        if self.name == "controller" and self.awake_text \
+                and self.awake_text.winfo_exists():
+            self.save_awake(self.awake_text)
+        if t is None or not t.winfo_exists() or not self.cur_action:
+            return
+        self.app.set_action_body(self.cur_action, t.get("1.0", "end-1c"))
+
+    def show_connections(self):
+        f = self.conn
+        for c in f.winfo_children():
+            c.destroy()
+        app = self.app
+        if self.name:
+            conns = [c for c in app.doc["connections"]
+                     if self.name in (c["src"], c["dst"])]
+        else:
+            conns = list(app.doc["connections"])
+        ttk.Label(f, text="Connections", font=("Helvetica", 12, "bold")) \
+            .pack(anchor="w")
+        lb = tk.Listbox(f, height=10, font=MONO, exportselection=False)
+        lb.pack(fill="both", expand=True, pady=4)
+        for c in conns:
+            lb.insert("end", app.describe(c, self.name))
+        bf = ttk.Frame(f)
+        bf.pack(anchor="w")
+
+        def disconnect():
+            for i in reversed(lb.curselection()):
+                app.disconnect(conns[i])
+
+        def goto(e=None):
+            sel = lb.curselection()
+            if sel:
+                c = conns[sel[0]]
+                other = c["dst"] if c["src"] == self.name else c["src"]
+                app.select([other if self.name else c["src"]])
+        ttk.Button(bf, text="Disconnect", command=disconnect).pack(side="left")
+        ttk.Button(bf, text="Select Other End", command=goto).pack(side="left")
+        lb.bind("<Double-Button-1>", goto)
+        lb.bind("<<ListboxSelect>>", lambda e: app.flash_connection(
+            conns[lb.curselection()[0]]) if lb.curselection() else None)
+        ttk.Label(f, wraplength=270, foreground="#555", justify="left",
+                  text="Control-drag (or right-drag, or drag in Connect "
+                  "mode) from a control to its target.  The target's "
+                  "actions pop up when you let go.").pack(anchor="w", pady=6)
+
+
+# ---------------------------------------------------------------- the application
+
+class App:
+    def __init__(self, root, path=None):
+        self.root = root
+        self.doc = new_doc()
+        self.path = None
+        self.dirty = False
+        self.sel = []
+        self.widgets, self.items, self.handles, self.handle_of = {}, {}, {}, {}
+        self.undo_stack, self.redo_stack = [], []
+        self.clip = None
+        self.drag = None
+        self.inline = None
+        self.test = None
+        self.console = None
+        self.flash = None
+        self.last_nudge = 0
+        self.ns = SimpleNamespace()
+        self.snap = tk.BooleanVar(value=True)
+        self.show_all = tk.BooleanVar(value=False)
+        self.mode = tk.StringVar(value="edit")
+        root.geometry("1300x820")
+        root.minsize(900, 560)
+        self.default_bg = tk.Frame(root).cget("bg")
+        self.build_ui()
+        self.build_menus()
+        self.bind_keys()
+        root.protocol("WM_DELETE_WINDOW", self.quit)
+        set_window_icon(root)
+        if MAC:
+            root.createcommand("tk::mac::Quit", self.quit)
+            # documents opened via the app bundle / Finder
+            root.createcommand("::tk::mac::OpenDocument", self.open_document)
+        if path and os.path.exists(path):
+            self.load(path)
+        else:
+            if path:
+                self.path = os.path.abspath(path)
+            self.redraw_all()
+            self.select([])
+        self.update_title()
+
+    # -- layout
+
+    def build_ui(self):
+        r = self.root
+        bar = ttk.Frame(r, padding=(6, 4))
+        bar.pack(side="top", fill="x")
+        ttk.Label(bar, text="Mode:").pack(side="left")
+        for text, val in (("Select", "edit"), ("Connect", "connect")):
+            ttk.Radiobutton(bar, text=text, value=val, variable=self.mode,
+                            command=self.mode_changed).pack(side="left",
+                                                            padx=2)
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
+                                                   padx=8)
+        ttk.Checkbutton(bar, text="Snap to grid", variable=self.snap,
+                        command=self.draw_form).pack(side="left")
+        ttk.Checkbutton(bar, text="Show all connections",
+                        variable=self.show_all,
+                        command=self.draw_connections).pack(side="left",
+                                                            padx=8)
+        ttk.Button(bar, text="Generate Code…",
+                   command=self.generate_code).pack(side="right")
+        ttk.Button(bar, text="Show Code", command=self.show_code) \
+            .pack(side="right", padx=4)
+        ttk.Button(bar, text="▶ Test Interface",
+                   command=self.test_interface).pack(side="right", padx=4)
+
+        self.statusbar = ttk.Label(r, anchor="w", padding=(8, 2))
+        self.statusbar.pack(side="bottom", fill="x")
+
+        pw = ttk.PanedWindow(r, orient="horizontal")
+        pw.pack(fill="both", expand=True)
+        self.palette = Palette(pw, self)
+        mid = ttk.Frame(pw)
+        self.canvas = c = tk.Canvas(mid, bg=WORKSPACE, highlightthickness=0,
+                                    takefocus=1)
+        xs = ttk.Scrollbar(mid, orient="horizontal", command=c.xview)
+        ys = ttk.Scrollbar(mid, orient="vertical", command=c.yview)
+        c.configure(xscrollcommand=xs.set, yscrollcommand=ys.set)
+        c.grid(row=0, column=0, sticky="nsew")
+        ys.grid(row=0, column=1, sticky="ns")
+        xs.grid(row=1, column=0, sticky="ew")
+        mid.rowconfigure(0, weight=1)
+        mid.columnconfigure(0, weight=1)
+        self.inspector = Inspector(pw, self)
+        pw.add(self.palette, weight=0)
+        pw.add(mid, weight=1)
+        pw.add(self.inspector, weight=0)
+
+        self.src_box = Outline(c, "#5a5a5a")
+        self.dst_box = Outline(c, "black", 3)
+        for binder in (c.bind, lambda s, f: r.bind_class("Design", s, f)):
+            binder("<ButtonPress-1>", self.press)
+            binder("<Shift-ButtonPress-1>",
+                   lambda e: self.press(e, shift=True))
+            binder("<Control-ButtonPress-1>",
+                   lambda e: self.press(e, connect=True))
+            binder("<B1-Motion>", self.motion)
+            binder("<ButtonRelease-1>", self.release)
+            binder("<Double-Button-1>", self.double)
+            for b in (2, 3):
+                binder("<ButtonPress-%d>" % b,
+                       lambda e: self.press(e, connect=True))
+                binder("<B%d-Motion>" % b, self.motion)
+                binder("<ButtonRelease-%d>" % b, self.release)
+        r.bind_class("Handle", "<ButtonPress-1>", self.handle_press)
+        r.bind_class("Handle", "<B1-Motion>", self.motion)
+        r.bind_class("Handle", "<ButtonRelease-1>", self.release)
+        for seq in ("<Delete>", "<BackSpace>"):
+            c.bind(seq, lambda e: self.delete_selection())
+        for key, dx, dy in (("Left", -1, 0), ("Right", 1, 0),
+                            ("Up", 0, -1), ("Down", 0, 1)):
+            c.bind("<%s>" % key, lambda e, dx=dx, dy=dy: self.nudge(dx, dy))
+            c.bind("<Shift-%s>" % key,
+                   lambda e, dx=dx, dy=dy: self.nudge(dx * GRID, dy * GRID))
+        c.bind("<Escape>", lambda e: self.escape())
+        for seq in ("<MouseWheel>", "<Shift-MouseWheel>", "<Button-4>",
+                    "<Button-5>"):
+            r.bind_all(seq, self.wheel)
+
+    def build_menus(self):
+        m = tk.Menu(self.root)
+        acc = lambda k: "%s+%s" % (MODKEY, k)
+        fm = tk.Menu(m, tearoff=0)
+        fm.add_command(label="New", accelerator=acc("N"), command=self.new)
+        fm.add_command(label="Open…", accelerator=acc("O"), command=self.open)
+        fm.add_command(label="Save", accelerator=acc("S"), command=self.save)
+        fm.add_command(label="Save As…", accelerator=acc("Shift+S"),
+                       command=self.save_as)
+        fm.add_separator()
+        fm.add_command(label="Test Interface", accelerator=acc("R"),
+                       command=self.test_interface)
+        fm.add_command(label="Show Code", accelerator=acc("Shift+G"),
+                       command=self.show_code)
+        fm.add_command(label="Generate Code…", accelerator=acc("G"),
+                       command=self.generate_code)
+        if not MAC:
+            fm.add_separator()
+            fm.add_command(label="Quit", accelerator=acc("Q"),
+                           command=self.quit)
+        m.add_cascade(label="File", menu=fm)
+        em = tk.Menu(m, tearoff=0)
+        em.add_command(label="Undo", accelerator=acc("Z"),
+                       command=lambda: self.menu_edit("undo"))
+        em.add_command(label="Redo", accelerator=acc("Shift+Z"),
+                       command=lambda: self.menu_edit("redo"))
+        em.add_separator()
+        for label, op, key in (("Cut", "cut", "X"), ("Copy", "copy", "C"),
+                               ("Paste", "paste", "V"),
+                               ("Duplicate", "duplicate", "D"),
+                               ("Select All", "selectall", "A")):
+            em.add_command(label=label, accelerator=acc(key),
+                           command=lambda op=op: self.menu_edit(op))
+        em.add_command(label="Delete", accelerator="Delete",
+                       command=self.delete_selection)
+        m.add_cascade(label="Edit", menu=em)
+        lm = tk.Menu(m, tearoff=0)
+        for label, how in (("Align Left Edges", "left"),
+                           ("Align Right Edges", "right"),
+                           ("Align Top Edges", "top"),
+                           ("Align Bottom Edges", "bottom"),
+                           ("Align Centres Horizontally", "hcentre"),
+                           ("Align Centres Vertically", "vcentre")):
+            lm.add_command(label=label, command=lambda h=how: self.align(h))
+        lm.add_separator()
+        lm.add_command(label="Centre Horizontally in Window",
+                       command=lambda: self.align("winh"))
+        lm.add_command(label="Centre Vertically in Window",
+                       command=lambda: self.align("winv"))
+        lm.add_command(label="Same Width", command=lambda: self.align("width"))
+        lm.add_command(label="Same Height",
+                       command=lambda: self.align("height"))
+        lm.add_command(label="Size to Default",
+                       command=lambda: self.align("default"))
+        lm.add_separator()
+        lm.add_command(label="Bring to Front", accelerator=acc("F"),
+                       command=lambda: self.restack_sel(True))
+        lm.add_command(label="Send to Back", accelerator=acc("B"),
+                       command=lambda: self.restack_sel(False))
+        lm.add_separator()
+        lm.add_checkbutton(label="Snap to Grid", variable=self.snap,
+                           command=self.draw_form)
+        lm.add_checkbutton(label="Show All Connections",
+                           variable=self.show_all,
+                           command=self.draw_connections)
+        m.add_cascade(label="Layout", menu=lm)
+        hm = tk.Menu(m, tearoff=0)
+        hm.add_command(label="tkinterface Help", command=self.help)
+        m.add_cascade(label="Help", menu=hm)
+        self.root.configure(menu=m)
+
+    def bind_keys(self):
+        r = self.root
+        keys = {"n": self.new, "o": self.open, "s": self.save,
+                "S": self.save_as, "r": self.test_interface,
+                "g": self.generate_code, "G": self.show_code}
+        if not MAC:
+            keys["q"] = self.quit
+        for k, f in keys.items():
+            r.bind_all("<%s-%s>" % (MOD, k), lambda e, f=f: f())
+        for k, op in (("z", "undo"), ("Z", "redo"), ("x", "cut"),
+                      ("c", "copy"), ("v", "paste"), ("d", "duplicate"),
+                      ("a", "selectall"), ("f", "front"), ("b", "back")):
+            r.bind_all("<%s-%s>" % (MOD, k), lambda e, op=op: self.key_edit(op))
+
+    def typing(self):
+        """Is the keyboard focus in a text field (rather than the design)?"""
+        f = self.root.focus_get()
+        return f is not None and f.winfo_class() in (
+            "Entry", "TEntry", "Text", "TCombobox", "Spinbox", "TSpinbox")
+
+    def key_edit(self, op):
+        if self.typing():
+            return        # the text field's own bindings handle it
+        self.edit_op(op)
+
+    def menu_edit(self, op):
+        f = self.root.focus_get()
+        if self.typing():
+            ev = {"cut": "<<Cut>>", "copy": "<<Copy>>", "paste": "<<Paste>>",
+                  "selectall": "<<SelectAll>>", "undo": "<<Undo>>",
+                  "redo": "<<Redo>>"}.get(op)
+            if ev:
+                f.event_generate(ev)
+                return
+        self.edit_op(op)
+
+    def edit_op(self, op):
+        {"undo": self.undo, "redo": self.redo, "cut": self.cut,
+         "copy": self.copy, "paste": self.paste, "duplicate": self.duplicate,
+         "selectall": self.select_all,
+         "front": lambda: self.restack_sel(True),
+         "back": lambda: self.restack_sel(False)}[op]()
+
+    def status(self, text, error=False):
+        self.statusbar.configure(text=text,
+                                 foreground="#b00000" if error else "")
+
+    def update_title(self):
+        name = os.path.basename(self.path) if self.path else "Untitled"
+        self.root.title("tkinterface — %s%s" % (name, " •" if self.dirty
+                                                   else ""))
+
+    def mode_changed(self):
+        if self.mode.get() == "connect":
+            self.status("Connect mode: drag from a control to its target, or "
+                        "from the Controller to an object.")
+            self.canvas.configure(cursor="crosshair")
+        else:
+            self.status("")
+            self.canvas.configure(cursor="")
+
+    # -- the model
+
+    def obj(self, name):
+        if name == "controller":
+            return {"type": "Controller", "name": "controller"}
+        for o in self.doc["objects"]:
+            if o["name"] == name:
+                return o
+        return None
+
+    def type_of(self, name):
+        o = self.obj(name)
+        return o["type"] if o else None
+
+    def visible(self):
+        return [o for o in self.doc["objects"] if is_visual(o)]
+
+    def is_visible(self, name):
+        o = self.obj(name)
+        return bool(o) and o["type"] in TYPES and is_visual(o)
+
+    def tray_names(self):
+        return ["controller"] + [o["name"] for o in self.doc["objects"]
+                                 if not is_visual(o)]
+
+    def tray_y(self):
+        return FY + self.doc["window"]["height"] + 44
+
+    def icon_rect(self, name):
+        i = self.tray_names().index(name)
+        x = FX + 10 + i * SLOT + (SLOT - 40) / 2
+        y = self.tray_y() + 22
+        return (x, y, x + 40, y + 40)
+
+    def rect(self, name):
+        """name's rectangle in canvas coordinates."""
+        o = self.obj(name)
+        if o and o["type"] in TYPES and is_visual(o):
+            return (FX + o["x"], FY + o["y"], FX + o["x"] + o["w"],
+                    FY + o["y"] + o["h"])
+        return self.icon_rect(name)
+
+    def hit_test(self, cx, cy, exclude=None):
+        for o in reversed(self.visible()):
+            pad = 3 if min(o["w"], o["h"]) < 8 else 0
+            x0, y0, x1, y1 = self.rect(o["name"])
+            if o["name"] != exclude and x0 - pad <= cx <= x1 + pad \
+                    and y0 - pad <= cy <= y1 + pad:
+                return o["name"]
+        for name in self.tray_names():
+            x0, y0, x1, y1 = self.icon_rect(name)
+            if name != exclude and x0 - 14 <= cx <= x1 + 14 \
+                    and y0 - 4 <= cy <= y1 + 18:
+                return name
+        return None
+
+    def next_name(self, t):
+        base = t.lower()
+        taken = {o["name"] for o in self.doc["objects"]}
+        n = 1
+        while "%s%d" % (base, n) in taken:
+            n += 1
+        return "%s%d" % (base, n)
+
+    def snapv(self, v):
+        return int(round(v / GRID) * GRID) if self.snap.get() else int(v)
+
+    # -- undo
+
+    def snapshot(self):
+        return json.dumps(self.doc)
+
+    def push_undo(self, snap=None):
+        self.undo_stack.append(snap or self.snapshot())
+        del self.undo_stack[:-200]
+        self.redo_stack.clear()
+        self.dirty = True
+        self.update_title()
+
+    def restore(self, snap):
+        self.doc = json.loads(snap)
+        self.redraw_all()
+        self.select([n for n in self.sel if self.obj(n)], commit=False)
+        self.dirty = True
+        self.update_title()
+
+    def undo(self):
+        if not self.undo_stack:
+            self.status("Nothing to undo.")
+            return
+        self.end_inline_edit()
+        self.redo_stack.append(self.snapshot())
+        self.restore(self.undo_stack.pop())
+
+    def redo(self):
+        if not self.redo_stack:
+            self.status("Nothing to redo.")
+            return
+        self.undo_stack.append(self.snapshot())
+        self.restore(self.redo_stack.pop())
+
+    # -- drawing
+
+    def redraw_all(self):
+        self.src_box.hide()
+        self.dst_box.hide()
+        for n in list(self.handles):
+            self.drop_handles(n)
+        for w in self.widgets.values():
+            w.destroy()
+        self.widgets, self.items = {}, {}
+        self.canvas.delete("all")
+        self.ns = SimpleNamespace()
+        self.draw_form()
+        for o in self.visible():
+            self.make_widget(o)
+        self.draw_tray()
+        self.draw_connections()
+
+    def draw_form(self):
+        c, win = self.canvas, self.doc["window"]
+        W, H = win["width"], win["height"]
+        c.delete("form")
+        c.create_rectangle(FX + 5, FY - TITLE_H + 5, FX + W + 6, FY + H + 6,
+                           fill="#3a3a3a", outline="", tags="form")
+        c.create_rectangle(FX - 1, FY - TITLE_H, FX + W, FY, fill="black",
+                           outline="black", tags="form")
+        for x in (FX + 4, FX + W - 17):
+            c.create_rectangle(x, FY - TITLE_H + 4, x + 13, FY - 5,
+                               fill="#aaaaaa", outline="#dddddd", tags="form")
+        c.create_text(FX + W / 2, FY - TITLE_H / 2, text=win["title"],
+                      fill="white", font=("Helvetica", 12, "bold"),
+                      tags="form")
+        try:
+            c.create_rectangle(FX - 1, FY, FX + W, FY + H, outline="black",
+                               fill=win["bg"] or self.default_bg, tags="form")
+        except tk.TclError:
+            c.create_rectangle(FX - 1, FY, FX + W, FY + H, outline="black",
+                               fill="#ececec", tags="form")
+        if self.snap.get():
+            for x in range(GRID * 2, W, GRID * 2):
+                c.create_line(FX + x, FY + 1, FX + x, FY + H, fill="#dadada",
+                              tags="form")
+            for y in range(GRID * 2, H, GRID * 2):
+                c.create_line(FX, FY + y, FX + W - 1, FY + y, fill="#dadada",
+                              tags="form")
+        x, y = FX + W, FY + H
+        c.create_rectangle(x, y, x + 12, y + 12, fill="#cfcfcf",
+                           outline="black", tags=("form", "resizer"))
+        for d in (4, 8):
+            c.create_line(x + d, y + 11, x + 11, y + d, tags=("form",
+                                                             "resizer"))
+        c.tag_lower("form")
+        self.update_scrollregion()
+
+    def draw_tray(self):
+        c = self.canvas
+        c.delete("tray")
+        names = self.tray_names()
+        y = self.tray_y()
+        w = max(self.doc["window"]["width"], len(names) * SLOT + 20)
+        c.create_rectangle(FX, y, FX + w, y + 92, fill="#a9a9a9",
+                           outline="#555", tags="tray")
+        c.create_text(FX + 6, y + 4, anchor="nw", text="Objects",
+                      font=("Helvetica", 10, "bold"), fill="#333", tags="tray")
+        for name in names:
+            x0, y0, x1, y1 = self.icon_rect(name)
+            if name in self.sel:
+                c.create_rectangle(x0 - 10, y0 - 4, x1 + 10, y1 + 20,
+                                   fill="#6f8fbf", outline="", tags="tray")
+            if name == "controller":
+                draw_controller_icon(c, x0 + 2, y0 + 2, 36, "tray")
+                label = self.doc["controller"]["classname"]
+            else:
+                draw_timer_icon(c, x0 + 4, y0 + 4, 32, "tray")
+                label = name
+            c.create_text((x0 + x1) / 2, y1 + 9, text=label,
+                          font=("Helvetica", 10), tags="tray")
+        self.update_scrollregion()
+
+    def update_scrollregion(self):
+        win = self.doc["window"]
+        w = max(win["width"], len(self.tray_names()) * SLOT + 20)
+        self.canvas.configure(scrollregion=(0, 0, FX + w + 80,
+                                            self.tray_y() + 140))
+
+    def make_widget(self, o):
+        try:
+            w = make_live(o, self.canvas, self.ns)
+        except Exception as ex:
+            w = tk.Label(self.canvas, text="%s: %s" % (o["name"], ex),
+                         bg="#ffc0c0", anchor="nw", justify="left")
+            self.status("%s can't be built: %s" % (o["name"], ex), error=True)
+        self.set_design_tags(w)
+        self.widgets[o["name"]] = w
+        self.items[o["name"]] = self.canvas.create_window(
+            FX + o["x"], FY + o["y"], window=w, anchor="nw",
+            width=max(o["w"], 1), height=max(o["h"], 1))
+
+    def set_design_tags(self, w):
+        w.bindtags(("Design", "all"))
+        w.configure(takefocus=0) if "takefocus" in w.keys() else None
+        for ch in w.winfo_children():
+            self.set_design_tags(ch)
+
+    def rebuild(self, name):
+        """Re-create name's widget from the model (raises if it can't)."""
+        o = self.obj(name)
+        old = self.widgets.pop(name, None)
+        if old is not None:
+            old.destroy()
+            self.canvas.delete(self.items.pop(name))
+        w = make_live(o, self.canvas, self.ns)
+        self.set_design_tags(w)
+        self.widgets[name] = w
+        self.items[name] = self.canvas.create_window(
+            FX + o["x"], FY + o["y"], window=w, anchor="nw",
+            width=max(o["w"], 1), height=max(o["h"], 1))
+        self.restack()
+
+    def restack(self):
+        for o in self.visible():
+            w = self.widgets.get(o["name"])
+            if w is not None:
+                tk.Misc.tkraise(w)      # (a Canvas's own lift raises items)
+        for hs in self.handles.values():
+            for f, _ in hs.values():
+                f.lift()
+        for box in (self.src_box, self.dst_box):
+            for f, _ in box.parts:
+                f.lift()
+        if self.inline:
+            self.inline[0].lift()
+
+    def move_widget(self, o):
+        item = self.items.get(o["name"])
+        if item:
+            self.canvas.coords(item, FX + o["x"], FY + o["y"])
+            self.canvas.itemconfigure(item, width=max(o["w"], 1),
+                                      height=max(o["h"], 1))
+
+    def place_handles(self):
+        want = [n for n in self.sel if self.is_visible(n)]
+        for n in list(self.handles):
+            if n not in want:
+                self.drop_handles(n)
+        single = len(want) == 1
+        cursors = {"nw": "top_left_corner", "ne": "top_right_corner",
+                   "sw": "bottom_left_corner", "se": "bottom_right_corner",
+                   "n": "sb_v_double_arrow", "s": "sb_v_double_arrow",
+                   "e": "sb_h_double_arrow", "w": "sb_h_double_arrow"}
+        for n in want:
+            x0, y0, x1, y1 = self.rect(n)
+            xm, ym = (x0 + x1) / 2, (y0 + y1) / 2
+            spots = {"nw": (x0, y0), "n": (xm, y0), "ne": (x1, y0),
+                     "e": (x1, ym), "se": (x1, y1), "s": (xm, y1),
+                     "sw": (x0, y1), "w": (x0, ym)}
+            hs = self.handles.get(n)
+            if hs is None:
+                hs = self.handles[n] = {}
+                for pos in spots:
+                    f = tk.Frame(self.canvas, width=HANDLE, height=HANDLE,
+                                 bd=0, highlightthickness=1,
+                                 highlightbackground="white")
+                    f.bindtags(("Handle", "all"))
+                    self.handle_of[str(f)] = (n, pos)
+                    hs[pos] = (f, self.canvas.create_window(
+                        0, 0, window=f, anchor="nw"))
+            for pos, (f, item) in hs.items():
+                hx, hy = spots[pos]
+                self.canvas.coords(item, hx - HANDLE // 2, hy - HANDLE // 2)
+                f.configure(bg="black" if single else "#666666",
+                            cursor=cursors[pos] if single else "")
+                f.lift()
+
+    def drop_handles(self, n):
+        for f, item in self.handles.pop(n, {}).values():
+            self.handle_of.pop(str(f), None)
+            self.canvas.delete(item)
+            f.destroy()
+
+    def draw_connections(self):
+        c = self.canvas
+        c.delete("conn")
+        if self.show_all.get():
+            conns = self.doc["connections"]
+        else:
+            conns = [k for k in self.doc["connections"]
+                     if k["src"] in self.sel or k["dst"] in self.sel]
+        for k in conns:
+            self.draw_connection(k, "conn")
+        c.tag_raise("conn")
+
+    def draw_connection(self, k, tag, color=None):
+        c = self.canvas
+        if not (self.obj(k["src"]) and self.obj(k["dst"])):
+            return
+        r1, r2 = self.rect(k["src"]), self.rect(k["dst"])
+        p1, p2 = edge_point(r1, centre(r2)), edge_point(r2, centre(r1))
+        outlet = k.get("kind") == "outlet"
+        color = color or ("#1d5e1d" if outlet else "black")
+        c.create_line(*p1, *p2, width=2, fill=color, tags=tag,
+                      dash=(6, 3) if outlet else ())
+        for x, y in (p1, p2):
+            c.create_rectangle(x - 3, y - 3, x + 3, y + 3, fill=color,
+                               outline="white", tags=tag)
+        mx, my = (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2
+        label = ("outlet " if outlet else "") + k["action"] + \
+            ("" if outlet else ":")
+        t = c.create_text(mx, my, text=label, font=("Helvetica", 10),
+                          fill="black", tags=tag)
+        bb = c.bbox(t)
+        c.create_rectangle(bb[0] - 3, bb[1] - 1, bb[2] + 3, bb[3] + 1,
+                           fill="#ffffe0", outline=color, tags=tag)
+        c.tag_raise(t)
+
+    def flash_connection(self, k):
+        self.canvas.delete("flash")
+        self.draw_connection(k, "flash", "#c00000")
+        if self.flash:
+            self.root.after_cancel(self.flash)
+        self.flash = self.root.after(1500,
+                                     lambda: self.canvas.delete("flash"))
+
+    # -- selection
+
+    def select(self, names, commit=True):
+        if commit:
+            self.inspector.commit()
+        self.sel = list(names)
+        self.place_handles()
+        self.draw_tray()
+        self.draw_connections()
+        self.inspector.show(self.sel) if commit else self.inspector_reset()
+        self.restack()
+        if len(self.sel) == 1 and self.is_visible(self.sel[0]):
+            o = self.obj(self.sel[0])
+            self.status("%s %s   x %d  y %d  w %d  h %d" % (
+                o["type"], o["name"], o["x"], o["y"], o["w"], o["h"]))
+
+    def inspector_reset(self):
+        self.inspector.rows = []
+        self.inspector.body_text = self.inspector.awake_text = None
+        self.inspector.show(self.sel)
+
+    def select_all(self):
+        self.select([o["name"] for o in self.visible()])
+
+    def escape(self):
+        if self.drag and self.drag["kind"] == "connect":
+            self.end_connect()
+            self.drag = None
+        else:
+            self.select([])
+
+    # -- mouse
+
+    def cpoint(self, e):
+        c = self.canvas
+        return (c.canvasx(e.x_root - c.winfo_rootx()),
+                c.canvasy(e.y_root - c.winfo_rooty()))
+
+    def press(self, e, connect=False, shift=False):
+        self.end_inline_edit()
+        self.canvas.focus_set()
+        cx, cy = self.cpoint(e)
+        hit = self.hit_test(cx, cy)
+        self.drag = None
+        if connect or self.mode.get() == "connect":
+            if hit:
+                self.start_connect(hit)
+            return
+        if hit is None:
+            if "resizer" in self.canvas.gettags("current") or \
+                    self.on_resizer(cx, cy):
+                win = self.doc["window"]
+                self.drag = {"kind": "window", "start": (cx, cy),
+                             "orig": (win["width"], win["height"]),
+                             "snap": self.snapshot(), "moved": False}
+                return
+            if not shift and self.sel:
+                self.select([])
+            self.drag = {"kind": "band", "start": (cx, cy),
+                         "base": list(self.sel)}
+            return
+        if shift:
+            self.select([n for n in self.sel if n != hit] if hit in self.sel
+                        else self.sel + [hit])
+            return
+        if hit not in self.sel:
+            self.select([hit])
+        if self.is_visible(hit):
+            self.drag = {"kind": "move", "start": (cx, cy), "primary": hit,
+                         "orig": {n: (self.obj(n)["x"], self.obj(n)["y"])
+                                  for n in self.sel if self.is_visible(n)},
+                         "snap": self.snapshot(), "moved": False}
+
+    def on_resizer(self, cx, cy):
+        win = self.doc["window"]
+        x, y = FX + win["width"], FY + win["height"]
+        return x - 2 <= cx <= x + 14 and y - 2 <= cy <= y + 14
+
+    def handle_press(self, e):
+        self.end_inline_edit()
+        n, pos = self.handle_of.get(str(e.widget), (None, None))
+        if n is None or len(self.sel) != 1:
+            return
+        o = self.obj(n)
+        self.drag = {"kind": "resize", "name": n, "pos": pos,
+                     "start": self.cpoint(e),
+                     "orig": (o["x"], o["y"], o["w"], o["h"]),
+                     "snap": self.snapshot(), "moved": False}
+
+    def motion(self, e):
+        d = self.drag
+        if not d:
+            return
+        cx, cy = self.cpoint(e)
+        dx, dy = cx - d["start"][0], cy - d["start"][1]
+        kind = d["kind"]
+        if kind in ("move", "resize", "window") and not d["moved"]:
+            if abs(dx) + abs(dy) < 3:
+                return
+            d["moved"] = True
+            self.push_undo(d["snap"])
+        if kind == "move":
+            px, py = d["orig"][d["primary"]]
+            ddx, ddy = self.snapv(px + dx) - px, self.snapv(py + dy) - py
+            for n, (x, y) in d["orig"].items():
+                o = self.obj(n)
+                o["x"], o["y"] = x + ddx, y + ddy
+                self.move_widget(o)
+            self.place_handles()
+            self.draw_connections()
+            o = self.obj(d["primary"])
+            self.status("x %d  y %d" % (o["x"], o["y"]))
+        elif kind == "resize":
+            o, pos = self.obj(d["name"]), d["pos"]
+            x, y, w, h = d["orig"]
+            left, top, right, bottom = x, y, x + w, y + h
+            if "w" in pos:
+                left = min(self.snapv(x + dx), right - 2)
+            if "e" in pos:
+                right = max(self.snapv(x + w + dx), left + 2)
+            if "n" in pos:
+                top = min(self.snapv(y + dy), bottom - 2)
+            if "s" in pos:
+                bottom = max(self.snapv(y + h + dy), top + 2)
+            o["x"], o["y"], o["w"], o["h"] = left, top, right - left, \
+                bottom - top
+            self.move_widget(o)
+            self.place_handles()
+            self.draw_connections()
+            self.status("w %d  h %d" % (o["w"], o["h"]))
+        elif kind == "window":
+            win = self.doc["window"]
+            win["width"] = max(120, self.snapv(d["orig"][0] + dx))
+            win["height"] = max(60, self.snapv(d["orig"][1] + dy))
+            self.draw_form()
+            self.draw_tray()
+            self.draw_connections()
+            self.status("window %d × %d" % (win["width"], win["height"]))
+        elif kind == "band":
+            self.canvas.delete("band")
+            self.canvas.create_rectangle(*d["start"], cx, cy, outline="white",
+                                         dash=(4, 2), tags="band")
+            x0, x1 = sorted((d["start"][0], cx))
+            y0, y1 = sorted((d["start"][1], cy))
+            inside = [o["name"] for o in self.visible()
+                      if self.rect(o["name"])[0] < x1
+                      and self.rect(o["name"])[2] > x0
+                      and self.rect(o["name"])[1] < y1
+                      and self.rect(o["name"])[3] > y0]
+            d["now"] = d["base"] + [n for n in inside if n not in d["base"]]
+        elif kind == "connect":
+            self.connect_motion(cx, cy)
+
+    def release(self, e):
+        d, self.drag = self.drag, None
+        if not d:
+            return
+        if d["kind"] == "band":
+            self.canvas.delete("band")
+            if "now" in d:
+                self.select(d["now"])
+        elif d["kind"] in ("move", "resize") and d["moved"]:
+            self.select(self.sel)
+        elif d["kind"] == "window" and d["moved"]:
+            self.select(self.sel)
+        elif d["kind"] == "connect":
+            self.finish_connect(d, e)
+
+    def double(self, e):
+        cx, cy = self.cpoint(e)
+        hit = self.hit_test(cx, cy)
+        if hit == "controller":
+            self.inspector.nb.select(0)
+            return
+        if not hit or not self.is_visible(hit):
+            return
+        o = self.obj(hit)
+        keys = [p["key"] for p in TYPES[o["type"]]["props"]]
+        key = "text" if "text" in keys else \
+            "value" if o["type"] in ("Entry", "Spinbox", "Combobox") else None
+        if not key:
+            return
+        self.drag = None
+        ent = tk.Entry(self.canvas, relief="solid", bd=1)
+        ent.insert(0, props_of(o)[key])
+        ent.select_range(0, "end")
+        x0, y0, x1, y1 = self.rect(hit)
+        item = self.canvas.create_window(x0, y0, window=ent, anchor="nw",
+                                         width=max(x1 - x0, 80),
+                                         height=max(y1 - y0, 24))
+        self.inline = (ent, item, hit, key)
+        ent.focus_set()
+        ent.bind("<Return>", lambda e: (self.end_inline_edit(), "break")[1])
+        ent.bind("<Escape>", lambda e: self.end_inline_edit(False))
+        ent.bind("<FocusOut>", lambda e: self.end_inline_edit())
+
+    def end_inline_edit(self, keep=True):
+        if not self.inline:
+            return
+        ent, item, name, key = self.inline
+        self.inline = None
+        text = ent.get()
+        self.canvas.delete(item)
+        ent.destroy()
+        if keep and self.obj(name) and text != props_of(self.obj(name))[key]:
+            self.set_prop(name, key, text)
+            self.select(self.sel, commit=False)
+        self.canvas.focus_set()
+
+    def wheel(self, e):
+        w = self.root.winfo_containing(e.x_root, e.y_root)
+        if w is None:
+            return
+        s = str(w)
+        if s.startswith(str(self.canvas)):
+            target = self.canvas
+        elif s.startswith(str(self.inspector.attr.canvas)) and \
+                w.winfo_class() not in ("Text", "Listbox", "TCombobox"):
+            target = self.inspector.attr.canvas
+        else:
+            return
+        if e.num == 4:
+            n = -1
+        elif e.num == 5:
+            n = 1
+        elif abs(e.delta) >= 120:
+            n = -int(e.delta / 120)
+        else:
+            n = -1 if e.delta > 0 else 1
+        if e.state & 1:
+            target.xview_scroll(n, "units")
+        else:
+            target.yview_scroll(n, "units")
+
+    # -- connecting
+
+    def start_connect(self, src):
+        t = self.type_of(src)
+        if src != "controller" and not TYPES[t].get("source"):
+            self.status("A %s sends no actions.  Drag from a control (button, "
+                        "slider, field, timer …), or from the Controller to "
+                        "make an outlet." % t, error=True)
+            return
+        self.drag = {"kind": "connect", "src": src, "dst": None,
+                     "start": centre(self.rect(src))}
+        self.src_box.show(self.rect(src))
+        self.status("Drag to the target and let go…")
+
+    def valid_target(self, src, dst):
+        if dst is None or dst == src:
+            return False
+        if src == "controller":
+            return True
+        return dst == "controller" or bool(TYPES[self.type_of(dst)]["actions"])
+
+    def connect_motion(self, cx, cy):
+        d = self.drag
+        c = self.canvas
+        c.delete("rubber")
+        dst = self.hit_test(cx, cy, exclude=d["src"])
+        if not self.valid_target(d["src"], dst):
+            dst = None
+        d["dst"] = dst
+        if dst:
+            self.dst_box.show(self.rect(dst))
+            end = edge_point(self.rect(dst), centre(self.rect(d["src"])))
+        else:
+            self.dst_box.hide()
+            end = (cx, cy)
+        start = edge_point(self.rect(d["src"]), end)
+        c.create_line(*start, *end, width=2, fill="#202020", tags="rubber")
+        for x, y in (start, end):
+            c.create_rectangle(x - 3, y - 3, x + 3, y + 3, fill="black",
+                               outline="white", tags="rubber")
+        c.tag_raise("rubber")
+
+    def end_connect(self):
+        self.canvas.delete("rubber")
+        self.src_box.hide()
+        self.dst_box.hide()
+
+    def finish_connect(self, d, e):
+        src, dst = d["src"], d.get("dst")
+        if not dst:
+            self.end_connect()
+            self.status("")
+            return
+        if src == "controller":
+            self.end_connect()
+            self.make_outlet(dst)
+            return
+        m = tk.Menu(self.root, tearoff=0)
+        if dst == "controller":
+            m.add_command(label="Actions of %s"
+                          % self.doc["controller"]["classname"],
+                          state="disabled")
+            for a in self.doc["controller"]["actions"]:
+                m.add_command(label="   %s:" % a, command=lambda a=a:
+                              self.connect(src, dst, a))
+            m.add_separator()
+            m.add_command(label="New Action…",
+                          command=lambda: self.new_action_connect(src))
+            m.add_command(label="quit:   — close the window",
+                          command=lambda: self.connect(src, dst, "quit"))
+        else:
+            m.add_command(label="Actions of %s" % dst, state="disabled")
+            for a in TYPES[self.type_of(dst)]["actions"]:
+                m.add_command(label="   %s:   — %s" % (a, ACTION_HELP[a]),
+                              command=lambda a=a: self.connect(src, dst, a))
+        m.bind("<Unmap>", lambda ev: self.root.after(50, self.end_connect))
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+        self.root.after(50, self.end_connect) if MAC else None
+
+    def new_action_connect(self, src):
+        name = self.ask_action_name()
+        if name:
+            self.add_action(name, checkpoint=True)
+            self.connect(src, "controller", name, checkpoint=False)
+
+    def ask_action_name(self, initial=""):
+        while True:
+            name = simpledialog.askstring(
+                "Action", "Name of the action method:",
+                initialvalue=initial, parent=self.root)
+            if name is None:
+                return None
+            name = name.strip().rstrip(":")
+            if not valid_ident(name):
+                messagebox.showerror("Action", "%r isn't a valid Python "
+                                     "name." % name, parent=self.root)
+            elif name in self.doc["controller"]["actions"] and \
+                    name != initial:
+                messagebox.showerror("Action", "There is already an action "
+                                     "called %s." % name, parent=self.root)
+            elif name in ("awakeFromNib", "ui", "quit") or \
+                    name.startswith("__") or name in self.outlet_names():
+                messagebox.showerror("Action", "%s is already used by the "
+                                     "Controller." % name, parent=self.root)
+            else:
+                return name
+            initial = name
+
+    def outlet_names(self):
+        return [c["action"] for c in self.doc["connections"]
+                if c.get("kind") == "outlet"]
+
+    def make_outlet(self, dst):
+        name = dst
+        while True:
+            name = simpledialog.askstring(
+                "Outlet", "Make a Controller outlet (attribute) that refers "
+                "to %s.\n\nOutlet name:" % dst, initialvalue=name,
+                parent=self.root)
+            if name is None:
+                return
+            name = name.strip()
+            if not valid_ident(name) or name in ("ui", "awakeFromNib") or \
+                    name in self.doc["controller"]["actions"]:
+                messagebox.showerror("Outlet", "%r can't be used as an "
+                                     "outlet name." % name, parent=self.root)
+                continue
+            break
+        self.push_undo()
+        self.doc["connections"] = [c for c in self.doc["connections"]
+                                   if not (c.get("kind") == "outlet"
+                                           and c["action"] == name)]
+        self.doc["connections"].append({"src": "controller", "dst": dst,
+                                        "action": name, "kind": "outlet"})
+        self.after_connect("controller", "Outlet %s now refers to %s."
+                           % (name, dst))
+
+    def connect(self, src, dst, action, checkpoint=True):
+        self.end_connect()
+        k = {"src": src, "dst": dst, "action": action, "kind": "action"}
+        if k in self.doc["connections"]:
+            self.status("Already connected.")
+            return
+        if checkpoint:
+            self.push_undo()
+        self.doc["connections"].append(k)
+        self.after_connect(src, "Connected: %s → %s %s:" % (src, dst, action))
+
+    def after_connect(self, src, msg):
+        self.select([src])
+        self.inspector.nb.select(2)
+        self.status(msg)
+
+    def disconnect(self, k):
+        self.push_undo()
+        self.doc["connections"].remove(k)
+        self.select(self.sel)
+        self.inspector.nb.select(2)
+
+    def describe(self, k, me):
+        if k.get("kind") == "outlet":
+            return "outlet %s → %s" % (k["action"], k["dst"])
+        if me == k["src"]:
+            return "→ %s  %s:" % (k["dst"], k["action"])
+        if me == k["dst"]:
+            return "← %s  %s:" % (k["src"], k["action"])
+        return "%s → %s  %s:" % (k["src"], k["dst"], k["action"])
+
+    # -- changing things
+
+    def drop(self, t, xr, yr):
+        w = self.root.winfo_containing(xr, yr)
+        if w is None or not str(w).startswith(str(self.canvas)):
+            self.status("Drop objects onto the window.")
+            return
+        c = self.canvas
+        cx, cy = c.canvasx(xr - c.winfo_rootx()), c.canvasy(yr - c.winfo_rooty())
+        if TYPES[t].get("nonvisual"):
+            self.add_object(t)
+            return
+        win = self.doc["window"]
+        dw, dh = TYPES[t]["size"]
+        x = min(max(cx - FX - dw / 2, 0), max(win["width"] - dw, 0))
+        y = min(max(cy - FY - dh / 2, 0), max(win["height"] - dh, 0))
+        self.add_object(t, self.snapv(x), self.snapv(y))
+
+    def add_object(self, t, x=None, y=None):
+        self.push_undo()
+        dw, dh = TYPES[t].get("size", (0, 0))
+        if x is None:
+            k = len(self.doc["objects"]) % 8
+            x, y = self.snapv(16 + k * 16), self.snapv(16 + k * 16)
+        o = {"type": t, "name": self.next_name(t), "x": x, "y": y,
+             "w": dw, "h": dh, "anchors": "nw",
+             "props": {p["key"]: p["default"] for p in TYPES[t]["props"]}}
+        if t == "Radiobutton":
+            o["props"]["text"] = "Option %s" % o["name"][len("radiobutton"):]
+        self.doc["objects"].append(o)
+        if is_visual(o):
+            self.make_widget(o)
+        self.draw_tray()
+        self.select([o["name"]])
+        self.canvas.focus_set()
+        self.status("Added %s." % o["name"])
+
+    def set_prop(self, name, key, value):
+        o = self.obj(name)
+        snap = self.snapshot()
+        old = copy.deepcopy(o["props"])
+        if key == "group" and not valid_ident(value):
+            self.status("A group name must be a Python name.", error=True)
+            return False
+        o["props"][key] = value
+        if o["type"] == "Radiobutton" and key == "value" and value:
+            for other in self.doc["objects"]:
+                if other is not o and other["type"] == "Radiobutton" and \
+                        props_of(other)["group"] == props_of(o)["group"]:
+                    other["props"]["value"] = False
+        if is_visual(o):
+            try:
+                self.rebuild(name)
+            except Exception as ex:
+                o["props"] = old
+                self.rebuild(name)
+                self.status("%s: %s" % (key, ex), error=True)
+                return False
+            self.place_handles()
+        self.push_undo(snap)
+        self.status("")
+        return True
+
+    def set_geom(self, name, key, value):
+        o = self.obj(name)
+        if key in ("w", "h") and value < 1:
+            return False
+        self.push_undo()
+        o[key] = value
+        self.move_widget(o)
+        self.place_handles()
+        self.draw_connections()
+
+    def set_anchors(self, name, anchors):
+        self.push_undo()
+        self.obj(name)["anchors"] = "".join(k for k in "nsew" if k in anchors)
+
+    def set_window(self, key, value):
+        win = self.doc["window"]
+        if key in ("width", "height") and value < 40:
+            return False
+        if key == "bg" and value:
+            try:
+                self.root.winfo_rgb(value)
+            except tk.TclError:
+                self.status("Unknown colour %r." % value, error=True)
+                return False
+        self.push_undo()
+        win[key] = value
+        self.draw_form()
+        self.draw_tray()
+        self.draw_connections()
+
+    def name_problem(self, new, old=None):
+        if not valid_ident(new):
+            return "%r isn't a valid Python name." % new
+        if new in RESERVED or new.endswith(("_var", "_action")):
+            return "%s is reserved." % new
+        if new == "controller" or (new != old and self.obj(new)):
+            return "There is already an object called %s." % new
+        return None
+
+    def rename(self, old, new):
+        if new == old:
+            return True
+        problem = self.name_problem(new, old)
+        if problem:
+            self.status(problem, error=True)
+            return False
+        self.push_undo()
+        self.obj(old)["name"] = new
+        for k in self.doc["connections"]:
+            for end in ("src", "dst"):
+                if k[end] == old:
+                    k[end] = new
+        self.sel = [new if n == old else n for n in self.sel]
+        self.inspector.name = new
+        self.inspector.head.configure(text=new)
+        if old in self.widgets:
+            self.drop_handles(old)
+            self.widgets[new] = self.widgets.pop(old)
+            self.items[new] = self.items.pop(old)
+            setattr(self.ns, new, getattr(self.ns, old, None))
+        self.place_handles()
+        self.draw_tray()
+        self.draw_connections()
+        return True
+
+    def set_classname(self, v):
+        if not valid_ident(v):
+            self.status("%r isn't a valid class name." % v, error=True)
+            return False
+        if v in ("Interface", "Timer"):
+            self.status("%s is used by the generated code." % v, error=True)
+            return False
+        self.push_undo()
+        self.doc["controller"]["classname"] = v
+        self.inspector.head.configure(text=v)
+        self.draw_tray()
+
+    def set_awake(self, body):
+        if body != self.doc["controller"].get("awake", "pass"):
+            self.push_undo()
+            self.doc["controller"]["awake"] = body
+
+    def add_action(self, name, checkpoint=True):
+        if checkpoint:
+            self.push_undo()
+        self.doc["controller"]["actions"][name] = default_action_body(name)
+
+    def set_action_body(self, name, body):
+        acts = self.doc["controller"]["actions"]
+        if name in acts and acts[name] != body:
+            self.push_undo()
+            acts[name] = body
+
+    def rename_action(self, old, new):
+        if old == new:
+            return False
+        self.push_undo()
+        acts = self.doc["controller"]["actions"]
+        self.doc["controller"]["actions"] = {
+            (new if k == old else k): v for k, v in acts.items()}
+        for k in self.doc["connections"]:
+            if k["dst"] == "controller" and k["action"] == old:
+                k["action"] = new
+        self.draw_connections()
+        return True
+
+    def remove_action(self, name):
+        used = [k for k in self.doc["connections"]
+                if k["dst"] == "controller" and k["action"] == name]
+        if used and not messagebox.askyesno(
+                "Remove Action", "%s is connected to %d control(s).  Remove "
+                "it and its connections?" % (name, len(used)),
+                parent=self.root):
+            return
+        self.push_undo()
+        del self.doc["controller"]["actions"][name]
+        for k in used:
+            self.doc["connections"].remove(k)
+        self.draw_connections()
+
+    def delete_selection(self):
+        names = [n for n in self.sel if n != "controller"]
+        if not names:
+            return
+        self.push_undo()
+        self.remove_objects(names)
+        self.select([])
+
+    def remove_objects(self, names):
+        for n in names:
+            self.drop_handles(n)
+            w = self.widgets.pop(n, None)
+            if w is not None:
+                w.destroy()
+                self.canvas.delete(self.items.pop(n))
+        self.doc["objects"] = [o for o in self.doc["objects"]
+                               if o["name"] not in names]
+        self.doc["connections"] = [k for k in self.doc["connections"]
+                                   if k["src"] not in names
+                                   and k["dst"] not in names]
+        self.sel = [n for n in self.sel if n not in names]
+        self.draw_tray()
+        self.draw_connections()
+
+    def nudge(self, dx, dy):
+        objs = [self.obj(n) for n in self.sel if self.is_visible(n)]
+        if not objs:
+            return
+        if time.time() - self.last_nudge > 1.0:
+            self.push_undo()
+        self.last_nudge = time.time()
+        for o in objs:
+            o["x"] += dx
+            o["y"] += dy
+            self.move_widget(o)
+        self.place_handles()
+        self.draw_connections()
+        self.select(self.sel, commit=False)
+
+    def copy(self):
+        names = [n for n in self.sel if n != "controller"]
+        if not names:
+            return
+        self.clip = {"objects": [copy.deepcopy(self.obj(n)) for n in names],
+                     "connections": [copy.deepcopy(k) for k in
+                                     self.doc["connections"]
+                                     if k["src"] in names + ["controller"]
+                                     and k["dst"] in names + ["controller"]
+                                     and k.get("kind") != "outlet"]}
+        self.status("Copied %d object(s)." % len(names))
+
+    def cut(self):
+        self.copy()
+        self.delete_selection()
+
+    def paste(self, offset=16):
+        if not self.clip:
+            return
+        self.push_undo()
+        rename = {}
+        new = []
+        for o in copy.deepcopy(self.clip["objects"]):
+            old = o["name"]
+            o["name"] = self.next_name(o["type"]) if self.obj(old) else old
+            rename[old] = o["name"]
+            if is_visual(o) and any(
+                    (p["x"], p["y"]) == (o["x"], o["y"])
+                    for p in self.visible()):
+                o["x"] += offset
+                o["y"] += offset
+            self.doc["objects"].append(o)
+            new.append(o)
+        rename["controller"] = "controller"
+        for k in self.clip["connections"]:
+            k = dict(k, src=rename[k["src"]], dst=rename[k["dst"]])
+            if k not in self.doc["connections"]:
+                self.doc["connections"].append(k)
+        for o in new:
+            if is_visual(o):
+                self.make_widget(o)
+        self.restack()
+        self.draw_tray()
+        self.select([o["name"] for o in new])
+
+    def duplicate(self):
+        saved = self.clip
+        self.copy()
+        self.paste()
+        self.clip = saved
+
+    def restack_sel(self, front):
+        names = set(self.sel)
+        if not names:
+            return
+        self.push_undo()
+        objs = self.doc["objects"]
+        chosen = [o for o in objs if o["name"] in names]
+        rest = [o for o in objs if o["name"] not in names]
+        self.doc["objects"] = rest + chosen if front else chosen + rest
+        self.restack()
+        self.status("Brought to front." if front else "Sent to back.")
+
+    def align(self, how):
+        objs = [self.obj(n) for n in self.sel if self.is_visible(n)]
+        need = 1 if how in ("winh", "winv", "default") else 2
+        if len(objs) < need:
+            self.status("Select %s object%s first."
+                        % ("an" if need == 1 else "two or more",
+                           "" if need == 1 else "s"), error=True)
+            return
+        self.push_undo()
+        W, H = self.doc["window"]["width"], self.doc["window"]["height"]
+        first = self.obj(self.sel[0]) if self.is_visible(self.sel[0]) \
+            else objs[0]
+        for o in objs:
+            if how == "left":
+                o["x"] = min(p["x"] for p in objs)
+            elif how == "right":
+                o["x"] = max(p["x"] + p["w"] for p in objs) - o["w"]
+            elif how == "top":
+                o["y"] = min(p["y"] for p in objs)
+            elif how == "bottom":
+                o["y"] = max(p["y"] + p["h"] for p in objs) - o["h"]
+            elif how == "hcentre":
+                o["x"] = first["x"] + (first["w"] - o["w"]) // 2
+            elif how == "vcentre":
+                o["y"] = first["y"] + (first["h"] - o["h"]) // 2
+            elif how == "winh":
+                o["x"] = (W - o["w"]) // 2
+            elif how == "winv":
+                o["y"] = (H - o["h"]) // 2
+            elif how == "width":
+                o["w"] = first["w"]
+            elif how == "height":
+                o["h"] = first["h"]
+            elif how == "default":
+                o["w"], o["h"] = TYPES[o["type"]]["size"]
+            self.move_widget(o)
+        self.select(self.sel)
+
+    # -- files
+
+    def ask_save_changes(self):
+        """False if the user cancels."""
+        if not self.dirty:
+            return True
+        r = messagebox.askyesnocancel(
+            "tkinterface", "Save the changes to %s?"
+            % (os.path.basename(self.path) if self.path else "this interface"),
+            parent=self.root)
+        if r is None:
+            return False
+        return self.save() if r else True
+
+    def new(self):
+        if not self.ask_save_changes():
+            return
+        self.stop_test()
+        self.doc, self.path, self.dirty = new_doc(), None, False
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.sel = []
+        self.redraw_all()
+        self.select([], commit=False)
+        self.update_title()
+
+    def open(self):
+        if not self.ask_save_changes():
+            return
+        p = filedialog.askopenfilename(
+            parent=self.root, filetypes=[("tkinterface", "*.tkif"),
+                                         ("All files", "*")])
+        if p:
+            self.load(p)
+
+    def open_document(self, *paths):
+        if paths and self.ask_save_changes():
+            self.load(paths[0])
+
+    def load(self, path):
+        try:
+            with open(path) as f:
+                doc = json.load(f)
+            if doc.get("format") != "tkinterface":
+                raise ValueError("not a tkinterface document")
+        except (OSError, ValueError) as ex:
+            messagebox.showerror("Open", "Can't open %s:\n%s" % (path, ex),
+                                 parent=self.root)
+            return
+        base = new_doc()
+        for k in ("window", "controller"):
+            base[k].update(doc.get(k, {}))
+        base["objects"] = [o for o in doc.get("objects", [])
+                           if o.get("type") in TYPES]
+        base["connections"] = doc.get("connections", [])
+        self.stop_test()
+        self.doc, self.path, self.dirty = base, os.path.abspath(path), False
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.sel = []
+        self.redraw_all()
+        self.select([], commit=False)
+        self.update_title()
+        self.status("Opened %s." % path)
+
+    def save(self):
+        if not self.path:
+            return self.save_as()
+        self.inspector.commit()
+        try:
+            with open(self.path, "w") as f:
+                json.dump(self.doc, f, indent=1)
+                f.write("\n")
+        except OSError as ex:
+            messagebox.showerror("Save", str(ex), parent=self.root)
+            return False
+        self.dirty = False
+        self.update_title()
+        self.status("Saved %s." % self.path)
+        return True
+
+    def save_as(self):
+        p = filedialog.asksaveasfilename(
+            parent=self.root, defaultextension=".tkif",
+            initialfile=os.path.basename(self.path) if self.path
+            else "untitled.tkif", filetypes=[("tkinterface", "*.tkif")])
+        if not p:
+            return False
+        self.path = os.path.abspath(p)
+        return self.save()
+
+    def quit(self):
+        self.inspector.commit()
+        if self.ask_save_changes():
+            self.root.destroy()
+
+    # -- code
+
+    def code(self):
+        self.inspector.commit()
+        return generate(self.doc, self.path or "")
+
+    def generate_code(self):
+        code = self.code()
+        base = os.path.splitext(self.path)[0] if self.path else "untitled"
+        p = filedialog.asksaveasfilename(
+            parent=self.root, defaultextension=".py",
+            initialdir=os.path.dirname(base) or None,
+            initialfile=os.path.basename(base) + ".py",
+            filetypes=[("Python", "*.py"), ("All files", "*")])
+        if not p:
+            return
+        try:
+            with open(p, "w") as f:
+                f.write(code)
+            os.chmod(p, 0o755)
+        except OSError as ex:
+            messagebox.showerror("Generate Code", str(ex), parent=self.root)
+            return
+        self.status("Wrote %s." % p)
+
+    def show_code(self, line=None):
+        code = self.code()
+        top = tk.Toplevel(self.root)
+        top.title("Generated code — %s" % self.doc["window"]["title"])
+        top.geometry("780x700")
+        bar = ttk.Frame(top, padding=4)
+        bar.pack(fill="x")
+        t = tk.Text(top, font=MONO, wrap="none", undo=False)
+        ys = ttk.Scrollbar(top, command=t.yview)
+        t.configure(yscrollcommand=ys.set)
+        ys.pack(side="right", fill="y")
+        t.pack(fill="both", expand=True)
+        t.insert("1.0", code)
+        highlight(t)
+        t.configure(state="disabled")
+
+        def copy_all():
+            top.clipboard_clear()
+            top.clipboard_append(code)
+            self.status("Code copied to the clipboard.")
+        ttk.Button(bar, text="Copy", command=copy_all).pack(side="left")
+        ttk.Button(bar, text="Save As…", command=self.generate_code) \
+            .pack(side="left", padx=4)
+        ttk.Button(bar, text="Close", command=top.destroy).pack(side="right")
+        if line:
+            t.tag_add("error", "%d.0" % line, "%d.end" % line)
+            t.tag_configure("error", background="#ffc8c8")
+            t.see("%d.0" % line)
+
+    # -- testing
+
+    def test_interface(self):
+        self.stop_test()
+        code = self.code()
+        try:
+            compiled = compile(code, "<interface>", "exec")
+        except SyntaxError as ex:
+            messagebox.showerror("Test Interface", "The controller's code "
+                                 "has a syntax error:\n\n%s (line %s)"
+                                 % (ex.msg, ex.lineno), parent=self.root)
+            self.show_code(ex.lineno)
+            return
+        con = self.open_console()
+        con.write("── testing %s ──\n" % self.doc["window"]["title"])
+        ns = {"__name__": "tkinterface_test", "print": con.print}
+        top = tk.Toplevel(self.root)
+        self.test = top
+        self.saved_report = self.root.report_callback_exception
+        self.root.report_callback_exception = \
+            lambda *exc: con.write("".join(traceback.format_exception(*exc)),
+                                   "err")
+        top.bind("<Destroy>", lambda e: self.test_ended()
+                 if e.widget is top else None)
+        try:
+            exec(compiled, ns)
+            ctl = ns[self.doc["controller"]["classname"]]()
+            ns["Interface"](top, ctl)
+            x = self.root.winfo_rootx() + 260
+            top.geometry("+%d+%d" % (x, self.root.winfo_rooty() + 80))
+            top.lift()
+            top.focus_force()
+        except Exception:
+            con.write(traceback.format_exc(), "err")
+            self.stop_test()
+            return
+        self.status("Testing: close the test window to stop.")
+
+    def test_ended(self):
+        if self.test is None:
+            return
+        self.test = None
+        self.root.report_callback_exception = self.saved_report
+        if self.console and self.console.top.winfo_exists():
+            self.console.write("── test ended ──\n\n", "note")
+        self.status("Test ended.")
+
+    def stop_test(self):
+        if self.test is not None and self.test.winfo_exists():
+            self.test.destroy()
+        self.test_ended()
+
+    def open_console(self):
+        if self.console and self.console.top.winfo_exists():
+            self.console.top.deiconify()
+            return self.console
+        self.console = Console(self)
+        return self.console
+
+    def help(self):
+        messagebox.showinfo("tkinterface", __doc__.split("Usage:")[0].strip(),
+                            parent=self.root)
+
+
+class Console:
+    """Where a test's print() output and tracebacks go."""
+
+    def __init__(self, app):
+        self.top = top = tk.Toplevel(app.root)
+        top.title("Test Console")
+        top.geometry("560x260+%d+%d" % (app.root.winfo_rootx() + 260,
+                                         app.root.winfo_rooty() + 520))
+        bar = ttk.Frame(top, padding=3)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Clear",
+                   command=lambda: self.text.delete("1.0", "end")) \
+            .pack(side="left")
+        ttk.Button(bar, text="Stop Test", command=app.stop_test) \
+            .pack(side="left", padx=4)
+        self.text = tk.Text(top, font=MONO, height=10, wrap="word")
+        self.text.pack(fill="both", expand=True)
+        self.text.tag_configure("err", foreground="#c00000")
+        self.text.tag_configure("note", foreground="#777777")
+
+    def write(self, s, tag=None):
+        if self.top.winfo_exists():
+            self.text.insert("end", s, tag)
+            self.text.see("end")
+
+    def print(self, *args, sep=" ", end="\n", file=None, flush=False):
+        self.write(sep.join(str(a) for a in args) + end)
+
+
+def highlight(t):
+    """A little Python syntax colouring for the code viewer."""
+    t.tag_configure("kw", foreground="#8a1a8a")
+    t.tag_configure("str", foreground="#1a6a1a")
+    t.tag_configure("com", foreground="#888888")
+    t.tag_configure("def", foreground="#1a3aa0")
+    text = t.get("1.0", "end-1c")
+    pats = [("str", r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\''),
+            ("com", r"#[^\n]*"),
+            ("kw", r"\b(?:%s)\b" % "|".join(keyword.kwlist)),
+            ("def", r"(?<=\bdef )\w+|(?<=\bclass )\w+")]
+    taken = []
+    for tag, pat in pats:
+        for m in re.finditer(pat, text):
+            if any(a <= m.start() < b for a, b in taken):
+                continue
+            if tag in ("str", "com"):
+                taken.append((m.start(), m.end()))
+            t.tag_add(tag, "1.0+%dc" % m.start(), "1.0+%dc" % m.end())
+
+
+# ------------------------------------------------ icon / macOS app bundle
+
+ICON_NAME = "tkinterface"
+ICON_DOC_EXTS = ["tkif"]
+ICON_DOC_NAME = "tkinterface document"
+ICON_DOC_ROLE = "Editor"
+
+
+def icon_art(x, y):
+    """A small window with a button, a field and a slider, and an
+    Interface Builder connection line from the slider to the field."""
+    if icon_seg(x, y, 0.42, 0.635, 0.69, 0.43) <= 0.014:       # connection
+        return (240, 128, 32)
+    for px, py in ((0.42, 0.635), (0.69, 0.43)):
+        if abs(x - px) <= 0.03 and abs(y - py) <= 0.03:
+            return (240, 128, 32)
+    if icon_rr(x, y, 0.12, 0.17, 0.88, 0.82, 0.03):            # window
+        if not icon_rr(x, y, 0.13, 0.18, 0.87, 0.81, 0.025):
+            return (40, 44, 52)
+        if y < 0.27:                                             # title bar
+            for cx, col in ((0.185, (237, 106, 94)), (0.235, (245, 191, 79)),
+                            (0.285, (98, 197, 84))):
+                if math.hypot(x - cx, y - 0.222) <= 0.017:
+                    return col
+            return (98, 104, 116)
+        if icon_rr(x, y, 0.20, 0.34, 0.50, 0.48, 0.035):         # button
+            if 0.27 < x < 0.43 and abs(y - 0.41) < 0.012:
+                return (235, 242, 255)
+            return (58, 120, 214)
+        if 0.58 <= x <= 0.80 and 0.34 <= y <= 0.48:              # field
+            if 0.59 <= x <= 0.79 and 0.35 <= y <= 0.47:
+                return (255, 255, 255)
+            return (130, 136, 148)
+        if math.hypot(x - 0.42, y - 0.635) <= 0.045:             # knob
+            return (70, 76, 88)
+        if 0.20 <= x <= 0.80 and abs(y - 0.635) <= 0.012:        # track
+            return (150, 156, 168) if x > 0.42 else (58, 120, 214)
+        return (238, 238, 240)
+    t = min(max(y, 0.0), 1.0)
+    return (int(70 - 30 * t), int(86 - 36 * t), int(112 - 40 * t))
+
+
+def icon_rr(x, y, x0, y0, x1, y1, r):
+    """True inside the rounded rectangle (x0,y0)-(x1,y1) with corner radius r."""
+    cx = min(max(x, x0 + r), x1 - r)
+    cy = min(max(y, y0 + r), y1 - r)
+    return math.hypot(x - cx, y - cy) <= r
+
+
+def icon_seg(x, y, x0, y0, x1, y1):
+    """Distance from (x, y) to the segment (x0,y0)-(x1,y1)."""
+    dx, dy = x1 - x0, y1 - y0
+    t = max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) /
+                     (dx * dx + dy * dy)))
+    return math.hypot(x - x0 - t * dx, y - y0 - t * dy)
+
+
+def icon_sample(x, y):
+    """RGB of the icon at (x, y) in the unit square, or None (transparent)."""
+    if not icon_rr(x, y, 0.0, 0.0, 1.0, 1.0, 0.2):
+        return None
+    return icon_art(x, y)
+
+
+def icon_render_png(size):
+    n = 4 if size <= 256 else 2
+    rows = []
+    for py in range(size):
+        row = bytearray([0])                     # PNG filter type 0
+        for px in range(size):
+            ra = ga = ba = aa = 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = icon_sample((px + (sx + 0.5) / n) / size,
+                                    (py + (sy + 0.5) / n) / size)
+                    if c:
+                        ra += c[0]
+                        ga += c[1]
+                        ba += c[2]
+                        aa += 1
+            if aa:
+                row += bytes((ra // aa, ga // aa, ba // aa,
+                              255 * aa // (n * n)))
+            else:
+                row += b"\0\0\0\0"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) +
+            chunk(b"IEND", b""))
+
+
+# ICNS entry types holding PNG data, with the pixel size of each
+ICON_ICNS_TYPES = [(b"icp4", 16), (b"icp5", 32), (b"ic11", 32), (b"ic12", 64),
+                   (b"ic07", 128), (b"ic13", 256), (b"ic08", 256),
+                   (b"ic14", 512), (b"ic09", 512)]
+
+
+def icon_make_icns():
+    """An .icns file written directly (no iconutil needed)."""
+    pngs = {}
+    body = b""
+    for tag, size in ICON_ICNS_TYPES:
+        if size not in pngs:
+            pngs[size] = icon_render_png(size)
+        body += tag + struct.pack(">I", len(pngs[size]) + 8) + pngs[size]
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
+def icon_build_app(dest):
+    """Build a macOS <name>.app bundle (with icon) in dest."""
+    app = os.path.join(dest, ICON_NAME + ".app")
+    if os.path.exists(app):
+        shutil.rmtree(app)
+    macos = os.path.join(app, "Contents", "MacOS")
+    res = os.path.join(app, "Contents", "Resources")
+    os.makedirs(macos)
+    os.makedirs(res)
+    shutil.copy(os.path.abspath(__file__), os.path.join(res, ICON_NAME + ".py"))
+    launcher = os.path.join(macos, ICON_NAME)
+    with open(launcher, "w") as fh:
+        fh.write('#!/bin/sh\nexec "%s" "$(dirname "$0")/../Resources/%s.py" '
+                 '"$@"\n' % (sys.executable, ICON_NAME))
+    os.chmod(launcher, 0o755)
+    with open(os.path.join(res, ICON_NAME + ".icns"), "wb") as fh:
+        fh.write(icon_make_icns())
+    info = {
+        "CFBundleName": ICON_NAME,
+        "CFBundleDisplayName": ICON_NAME,
+        "CFBundleIdentifier": "org.badgerjh." + ICON_NAME,
+        "CFBundleExecutable": ICON_NAME,
+        "CFBundleIconFile": ICON_NAME,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.0",
+        "NSHighResolutionCapable": True,
+    }
+    if ICON_DOC_EXTS:
+        info["CFBundleDocumentTypes"] = [{
+            "CFBundleTypeName": ICON_DOC_NAME,
+            "CFBundleTypeRole": ICON_DOC_ROLE,
+            "CFBundleTypeExtensions": ICON_DOC_EXTS}]
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as fh:
+        plistlib.dump(info, fh)
+    return app
+
+
+def icon_args(args):
+    """Handle --build-app [DIR] and --icon-png SIZE [OUT]; True if handled."""
+    if args[:1] == ["--build-app"]:
+        print(icon_build_app(args[1] if len(args) > 1 else
+                             os.path.dirname(os.path.abspath(__file__))))
+        return True
+    if args[:1] == ["--icon-png"] and len(args) >= 2:
+        with open(args[2] if len(args) > 2 else ICON_NAME + ".png", "wb") as fh:
+            fh.write(icon_render_png(int(args[1])))
+        return True
+    return False
+
+
+def set_window_icon(root):
+    try:
+        root._icon = tk.PhotoImage(data=ICON_PNG)
+        root.iconphoto(True, root._icon)
+    except tk.TclError:
+        pass
+
+
+ICON_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAJCUlEQVR42u2c+29TZRiAv/9gf8JM"
+    "/MHRXRhbt8E21gEDBtvoxsZFmRy5CNtwI+ISr6RoRBcNKgpoVCQgCDi1eCEoXirqgnjDeMMZtcoU"
+    "ouhKNN6i5vV9u3VjrmWn33d6ru+XPIeG3Zr3efq1604rhIFr9qL1ASSEhJEIAowhRIZnSrMNCDst"
+    "vELa8JVjUeZCM9eskp41XGOURVhOdNhFljnyW7o0JIYAYyvISeZ2hJqWrmwkggBja8hRttHyg0iM"
+    "h+sYyFXQIPmdGgKMI1G7S6hp7gwhwDiakJT8Wc2dGgKMK9DSlH9NEAHGVeh7TDBr4TXZSAwBxlWQ"
+    "02w9AUR4WK4lclH5Mxeu0xBgXI2WSn4WEuMBuR5yPP5p45lN60IIMJ4glCyAKA/GM0T/J79DQ4Dx"
+    "FKOPBWY0doQRYDxF+MIAeCAeZFh+ewABxpMEKIAQD8KzhER1sD2MgCoVtRqUz1nGmADN2ghn5B4D"
+    "aIsgIEtF7XLILSyHnDw/YyI0c5q9ijtyL1S+QVX9aphUUAa5k6dCfVMrrGzrZkyAZk0zp9mTAxWH"
+    "SgGUBJriNS5pbWMxJkMzp9mTA6UAAgvWgiyTS2ugtKKGhVgEzZ4cqDhUCiDfX50ygC1tnfBO+yp4"
+    "sX0NdLRtGPn/jTd0wvHHr4hDl8d83Y7VsPLp1qF/WbCuAMiB7QK4va0Lfu5YPgJFkPjY6Rea4bdI"
+    "MM65l5pgXee1o/L7Wka5bw1LNiWAhjUgS6oA9re3jwmAdoLExxLyE9yxsWPoY3TLvzCA/ctZst4A"
+    "FByKKjzIoncHONS+duRjHx5cmnwHuKttbACbO1iyzgBUHGYkgEQEtBM81jZWJAnfc88q6H1gBXRv"
+    "WD/260g63RWwfOcHwDglgPqrQRYOwCYBKDjkALwewHQ8yEI/vLauGQ70PsdYAM2eHKg4FNPrVoMs"
+    "+cXVcHnrKhgcPM9YAM2eHKg45AA4AA7A0wFU1q0CWfKLAxyA5QEEQMWhqJyPFyThAGwSgIJDDoAD"
+    "WAmycAB2CUDeoaiYtxJkyeMALA+AHKg4ND2A906dg23PD1jGk8fOwOkzg2kPu+/4+/Diy2+Yxsef"
+    "9JsVwAqQJZ0AaOgb90ah/IbPLGd26FQ8hHQC2Lm7F7bu2A279z2TcW7r2RaPQH8A8g5NC6Cn91tb"
+    "yL+QYx/+kFYAr795AsxY5gZQixck0RvAqehPtpNPbHj0a3cEoOBQlONBFr0B0HZrxwAINwSg4hAD"
+    "uApk0RsAPfjiADIZgLxDUT4XL0iSV8QBWB4AOlBxyAF4PYBpczWQJa+oyrAA7j/8I5z7BQzFigD+"
+    "OtkLv+5akpJ/zn5qcABVoOKQAzA4gD8i98L5TZek5O/ocZsFMAcvSMIB2CQABYcYwHKQxcgA3PIY"
+    "wJoA5B2KqXiQhQMYv34/cqvpAag45AAMDGAi+fYMYPaVIIveANz+TOC/sQH45cF5E8rPWAAKDk0J"
+    "wM1/CyCh5+/M1yXflgGU4UGWXJ0B2PWvgXRugkoAqR7w/Xl8p2lPBJEDFYeirKYVZEknADtFQOcD"
+    "HD5xVvp8gAP79sO5h5rGiT99awE8sf1uU88HiAeg4NDUABJ3B7uOfmfZGUEkXumMoF33wA+bLhsn"
+    "P7ZnBbx29KjpZwQ5LgAnEzvSk3TLH3x1u2XnBHIAZnB2IH4LH3ervyMfBj96xdKTQpUDKJ21DGTJ"
+    "nTLd/QH0n4DYlvLx8h9piYdh9VnB5EDFIQdwMXBrT7bl012BXU4L5wA8tOVnJoCZV4Asrgwg1Za/"
+    "ba7lW37KABQcihI8yOK6AN7ak3zLP3SzbV8ZRA5UHHIAiS3/YFfyLf/dsK1fGmZAAJeDLK4IgLZ8"
+    "3N6TbvnffGbr6z4agLxDUTIDL0ji+ABwy6dbuVO2/JQBKDgUfjzI4tgAHLrlpwpAxSEGsBRkcWQA"
+    "uK2n3PLx7sBpLw8fCkDeofBX4wVJHBcA3rqTbvm4G9jtV7y0AlBw6KoABgbOwEsvvw4P79wLe/c/"
+    "DR+c/Hj0Dzl4v550y8fHAU5+gwjlAIqrl4AsvimVtgmApDcuXgFz6peOYfPN17tmy08WADlQceiK"
+    "ADb3bIVH1lQm5ftbLnXNlp+ZAAJ4QRJfofUBvNX3TvyWrvecPKv+dp+xANCBikNTAqCzgOjdODLB"
+    "+us36wrgixsvg7cPH4DP+792BAMDZ80KYDHIojeATL4uIHFffzH5fdcVQGOwBbq6N8GORw84gjf6"
+    "3ksjAHmHoqhqMcjilADosQB9jlsDUHFoSgD0wpC127/MCMGl7boD6NnyIDx16KgjeP/kp2YFsAhk"
+    "scODwHvvf1h3AP39X7nujSKHApB36PgA6Mkf+v1/ogDoeQI3vlOocgBTpi8CWewQAEHP+CV7Emjk"
+    "yaCera59q1hyoOIQA2gBWewSQGInINHLrlo3Iv7qjm4IP3vE1e8VPBSAvEPXBODVN4vmADgAtQAK"
+    "K5tBFl9hBQdgeQAVoOKQA+AAOABvB1CxEGTxTeYALA8AHag4FJPxIMskDsDyAMiBikMOgAPgALwd"
+    "QHkTyMIB2CQABYccgNcDKMCDLByAPQJQcSgKpjWCLByATQJQcMgBcADyX+wrrIKGxiUswyJo9uRA"
+    "KYD8aUGQJdc/G3Ly/PD4voMsxGRo5jR7cqDiUORPxQsK5BRMi1+RDd03waFnD8Mrrx5jMgjNmGZN"
+    "M6fZq/pTDiCvrAF8RTMgJ79s6EoxmQdnTTOn2RsQwIIIAowniYi8sgVhBBhPEqYAQjwIzxLCABoC"
+    "dF/CeJKAoMWD8CYisfJKG8IIMJ4iPBJAbmmDhgDjKTRx4cotrY8iwHiCqPj/yi2pDyHAeIJQsgCy"
+    "kBgPx/WQ4yyRbPlK6jQEGFejiYst/IQID8m1RMREy+evy0ZiCDCugpxmCz3L558fRIBxFUGRzprk"
+    "n68hwLgCTcgs/MIQD8/xhITKmlQ8T0OAcSSaMGLhNwoiMR6oYyBXQWHkwm+YnVM8L4IAY2si5Epk"
+    "auEP0HKKamMIMLYilmPUlj9hBEW1WUgIifLgLSc67CJLWLHwB9OOEGYRpkMz14SdFl6hwHCNdOUi"
+    "LMkwIsMzpdkGjHT2HwKQEXh2QboeAAAAAElFTkSuQmCC"
+)
+
+
+def main():
+    if icon_args(sys.argv[1:]):
+        return
+    root = tk.Tk()
+    root.option_add("*tearOff", False)
+    App(root, sys.argv[1] if len(sys.argv) > 1 else None)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
