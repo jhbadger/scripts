@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""
+Tkinter Mandelbrot Set Viewer
+A program that displays the Mandelbrot set with zoom functionality using Tkinter.
+"""
+
+import tkinter as tk
+from tkinter import ttk
+
+class MandelbrotViewer:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Tkinter Mandelbrot Set Viewer")
+        self.root.geometry("800x600")
+        
+        # Mandelbrot parameters
+        self.max_iterations = 50  # Reduced iterations for faster rendering
+        self.zoom_factor = 1.0
+        self.center_x = -0.5
+        self.center_y = 0.0
+        self.zoom_level = 1.0
+        
+        # Canvas setup
+        self.canvas_width = 800
+        self.canvas_height = 600
+        self.canvas = tk.Canvas(root, width=self.canvas_width, height=self.canvas_height, bg='black')
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Bind mouse events
+        self.canvas.bind("<Button-1>", self.on_click)
+        self.canvas.bind("<MouseWheel>", self.on_mousewheel)
+        self.canvas.bind("<Button-4>", self.on_mousewheel)
+        self.canvas.bind("<Button-5>", self.on_mousewheel)
+        self.canvas.bind("<Key-plus>", self.zoom_in)
+        self.canvas.bind("<Key-equal>", self.zoom_in)        
+        self.canvas.bind("<Key-minus>", self.zoom_out)
+        
+        # Make canvas focusable to receive key events
+        self.canvas.focus_set()
+        
+        # Create a frame for controls
+        self.control_frame = ttk.Frame(root)
+        self.control_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Add zoom controls
+        self.zoom_label = ttk.Label(self.control_frame, text="Zoom: 1.0x")
+        self.zoom_label.pack(side=tk.LEFT, padx=10)
+        
+        self.reset_button = ttk.Button(self.control_frame, text="Reset View", command=self.reset_view)
+        self.reset_button.pack(side=tk.RIGHT, padx=10)
+        
+        self.info_label = ttk.Label(self.control_frame, text="Click to zoom in, scroll to zoom out, +/- keys")
+        self.info_label.pack(side=tk.RIGHT, padx=10)
+        
+        # Initial render
+        self.render_mandelbrot()
+        
+    def mandelbrot(self, c, max_iter):
+        """Calculate the Mandelbrot set for a complex number c"""
+        z = 0
+        for n in range(max_iter):
+            if abs(z) > 2:
+                return n
+            z = z*z + c
+        return max_iter
+    
+    def get_color(self, iterations, max_iter):
+        """Map iteration count to a color - simplified for performance"""
+        if iterations == max_iter:
+            return "#000000"  # Black for points inside the set
+        
+        # Use a very simple color mapping for better performance
+        # Simple gradient from blue to red to yellow
+        t = iterations / max_iter
+        
+        if t < 0.25:
+            # Blue to cyan
+            r = 0
+            g = int(255 * t * 4)
+            b = 255
+        elif t < 0.5:
+            # Cyan to green
+            r = 0
+            g = 255
+            b = int(255 * (1 - (t - 0.25) * 4))
+        elif t < 0.75:
+            # Green to yellow
+            r = int(255 * (t - 0.5) * 4)
+            g = 255
+            b = 0
+        else:
+            # Yellow to red
+            r = 255
+            g = int(255 * (1 - (t - 0.75) * 4))
+            b = 0
+        
+        return f"#{r:02x}{g:02x}{b:02x}"
+    
+    def render_mandelbrot(self):
+        """Render the Mandelbrot set on the canvas"""
+        # Clear the canvas
+        self.canvas.delete("all")
+        
+        # Calculate visible area
+        scale = 3.0 / self.zoom_level
+        min_x = self.center_x - scale
+        max_x = self.center_x + scale
+        min_y = self.center_y - scale
+        max_y = self.center_y + scale
+        
+        # Use a much lower resolution for faster rendering
+        render_width = 200  # Much smaller for performance
+        render_height = 150
+        
+        # Precompute some values to avoid recalculation
+        dx = (max_x - min_x) / render_width
+        dy = (max_y - min_y) / render_height
+        
+        # Render pixels
+        pixel_size_x = self.canvas_width // render_width
+        pixel_size_y = self.canvas_height // render_height
+        
+        for x in range(render_width):
+            for y in range(render_height):
+                # Convert pixel coordinates to complex plane coordinates
+                real = min_x + x * dx
+                imag = min_y + y * dy
+                c = complex(real, imag)
+                
+                # Calculate Mandelbrot iterations
+                iterations = self.mandelbrot(c, self.max_iterations)
+                
+                # Get color and draw pixel
+                color = self.get_color(iterations, self.max_iterations)
+                
+                # Draw pixel - scale it up to fill the actual canvas
+                canvas_x = x * pixel_size_x
+                canvas_y = y * pixel_size_y
+                self.canvas.create_rectangle(canvas_x, canvas_y, 
+                                           canvas_x + pixel_size_x, canvas_y + pixel_size_y, 
+                                           fill=color, outline=color)
+        
+        # Update zoom label
+        self.zoom_label.config(text=f"Zoom: {self.zoom_level:.1f}x")
+    
+    def on_click(self, event):
+        """Handle mouse click for zooming"""
+        # Convert click coordinates to complex plane coordinates
+        scale = 3.0 / self.zoom_level
+        min_x = self.center_x - scale
+        max_x = self.center_x + scale
+        min_y = self.center_y - scale
+        max_y = self.center_y + scale
+        
+        click_x = min_x + (max_x - min_x) * event.x / self.canvas_width
+        click_y = min_y + (max_y - min_y) * event.y / self.canvas_height
+        
+        # Update center and zoom
+        self.center_x = click_x
+        self.center_y = click_y
+        self.zoom_level *= 2.0
+        self.zoom_factor *= 2.0
+        
+        # Re-render
+        self.render_mandelbrot()
+    
+    def on_mousewheel(self, event):
+        """Handle mouse wheel for zooming"""
+        # Determine zoom direction
+        if event.num == 4 or event.delta > 0:
+            # Zoom in
+            self.zoom_level *= 1.2
+            self.zoom_factor *= 1.2
+        else:
+            # Zoom out
+            self.zoom_level /= 1.2
+            self.zoom_factor /= 1.2
+        
+        # Re-render
+        self.render_mandelbrot()
+    
+    def zoom_in(self, event):
+        """Handle zoom in with + key"""
+        self.zoom_level *= 1.5
+        self.zoom_factor *= 1.5
+        self.render_mandelbrot()
+    
+    def zoom_out(self, event):
+        """Handle zoom out with - key"""
+        self.zoom_level /= 1.5
+        self.zoom_factor /= 1.5
+        self.render_mandelbrot()
+    
+    def reset_view(self):
+        """Reset the view to the initial state"""
+        self.zoom_level = 1.0
+        self.zoom_factor = 1.0
+        self.center_x = -0.5
+        self.center_y = 0.0
+        self.render_mandelbrot()
+
+def main():
+    root = tk.Tk()
+    app = MandelbrotViewer(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
