@@ -18,6 +18,10 @@ Keys:
   Ctrl-D        disconnect      R  reconnect (when disconnected)
   Ctrl-X, Ctrl-C, Esc   quit
 
+The bottom line has buttons for touch screens (or the mouse): previous and
+next page, the index (page 100), reveal and quit - or reconnect and quit
+when disconnected.
+
 The window can be resized; the text scales with it.
 
 App bundle (macOS):  tkteletext --build-app [DIR]   builds tkteletext.app with an icon
@@ -44,6 +48,11 @@ FLASH_MS = 600         # half-period of flashing text
 POLL_MS = 40
 ASPECT = 0.62          # cell width / height
 STATUS_ROWS = 2
+
+# Touch buttons on the bottom line: (label, action)
+BUTTONS = (("< Prev", "prev"), ("Next >", "next"), ("Index", "index"),
+           ("Reveal", "reveal"), ("Quit", "quit"))
+OFFLINE_BUTTONS = (("Reconnect", "reconnect"), ("Quit", "quit"))
 
 # Teletext colours: black, red, green, yellow, blue, magenta, cyan, white
 PAL = ("#000000", "#ff0000", "#00ff00", "#ffff00",
@@ -163,6 +172,8 @@ class Teletext:
         self.conn_id = 0             # ignore data from superseded connections
         self.dirty = True
         self.resize_job = None
+        self.buttons = []            # (x0, x1, action) of the drawn buttons
+        self.pressed = None          # action of the button being touched
 
         root.title("Teletext")
         root.configure(bg="black")
@@ -179,6 +190,9 @@ class Teletext:
         self.make_fonts()
 
         root.bind("<Key>", self.on_key)
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Configure>", self.on_configure)
         root.protocol("WM_DELETE_WINDOW", self.quit)
 
@@ -328,13 +342,9 @@ class Teletext:
             elif ks.lower() == "q":
                 self.quit()
         elif ks in ("Up", "Prior") or char == "+":
-            n = self.page.current_page()
-            if n >= 0:
-                self.send_page(n + 1)
+            self.step_page(1)
         elif ks in ("Down", "Next") or char == "-":
-            n = self.page.current_page()
-            if n >= 0:
-                self.send_page(n - 1)
+            self.step_page(-1)
         elif ks in ("Return", "KP_Enter") or char == "#":
             self.send([0x5F])                   # Viewdata '#'
         elif ks == "BackSpace":
@@ -342,6 +352,48 @@ class Teletext:
         elif char and 32 <= ord(char) <= 126 and not ctrl:
             self.send([ord(char)])
         return "break"
+
+    def step_page(self, d):
+        n = self.page.current_page()
+        if n >= 0:
+            self.send_page(n + d)
+
+    def button_at(self, x, y):
+        y0 = (H + 1) * self.ch
+        if not y0 <= y < y0 + self.ch:
+            return None
+        return next((a for x0, x1, a in self.buttons if x0 <= x < x1), None)
+
+    def on_press(self, ev):
+        self.pressed = self.button_at(ev.x, ev.y)
+        if self.pressed:
+            self.dirty = True
+
+    def on_drag(self, ev):
+        # sliding a finger off a button cancels it, as on a phone
+        if self.pressed and self.button_at(ev.x, ev.y) != self.pressed:
+            self.pressed = None
+            self.dirty = True
+
+    def on_release(self, ev):
+        action, self.pressed = self.pressed, None
+        if not action:
+            return
+        self.dirty = True
+        if self.button_at(ev.x, ev.y) != action:
+            return
+        if action == "prev":
+            self.step_page(-1)
+        elif action == "next":
+            self.step_page(1)
+        elif action == "index":
+            self.send_page(100)
+        elif action == "reveal":
+            self.reveal = not self.reveal
+        elif action == "reconnect":
+            self.connect()
+        elif action == "quit":
+            self.quit()
 
     def flash(self):
         self.flash_phase = not self.flash_phase
@@ -519,9 +571,21 @@ class Teletext:
         if self.reveal:
             c.create_text((W - 1) * cw, y + ch / 2, text="REVEAL",
                           anchor="e", fill=PAL[3], font=self.font)
-        c.create_text(W * cw / 2, y + ch * 1.5,
-                      text="Up/Dn page  ^R reveal  ^X quit",
-                      fill=PAL[6], font=self.font)
+        buttons = BUTTONS if self.connected else OFFLINE_BUTTONS
+        bw = W * cw / len(buttons)
+        pad = max(1, ch // 10)
+        self.buttons = []
+        for i, (label, action) in enumerate(buttons):
+            x0, x1 = i * bw, (i + 1) * bw
+            self.buttons.append((x0, x1, action))
+            on = action == self.pressed or (action == "reveal" and
+                                            self.reveal)
+            c.create_rectangle(x0 + pad, y + ch + pad, x1 - pad,
+                               y + 2 * ch - pad, outline=PAL[6],
+                               width=max(1, pad // 2),
+                               fill=PAL[6] if on else PAL[0])
+            c.create_text((x0 + x1) / 2, y + ch * 1.5, text=label,
+                          fill=PAL[0] if on else PAL[6], font=self.font)
 
 
 # ------------------------------------------------ icon / macOS app bundle
