@@ -21,6 +21,7 @@ Keys (press ? in the browser for the full list)
   Enter       follow focused item       /  n  N    search    r  reload
   i           toggle images             d          save page   q  quit
   t x [ ] 1-9 new / close / switch tabs (middle-click a link: background tab)
+              right-click an image: save it to ~/Downloads
   B M H       bookmark page / bookmarks / history      l  list links
   R           reader mode (just the article)       C  toggle CSS
 """
@@ -1032,6 +1033,7 @@ R                   reader mode: only the article text; press again to leave
 Tab / Shift-Tab     focus next / previous link or form field
 Enter               activate the focused item
 mouse click         follow a link, edit a field, press a button
+right click         save the image under the pointer to ~/Downloads
                     (hold Shift to select text with the terminal's own selection)
 </pre>
 <p>Typing in a text field and pressing Enter submits its form. Textareas open a
@@ -1115,6 +1117,25 @@ def load_page(url, post=None, referer=None):
     page = make_page(resp)
     page.status = resp.status
     return page
+
+
+def write_download(name, data):
+    """Write data to a fresh file in ~/Downloads; return a status message."""
+    name = re.sub(r"[^\w.\- ]", "_", name) or "download"
+    d = os.path.expanduser("~/Downloads")
+    if not os.path.isdir(d):
+        d = os.getcwd()
+    path, n = os.path.join(d, name), 1
+    while os.path.exists(path):
+        stem, ext = os.path.splitext(name)
+        path = os.path.join(d, "%s-%d%s" % (stem, n, ext))
+        n += 1
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+        return "Saved " + path
+    except OSError as e:
+        return "Save failed: %s" % e
 
 
 def fetch_image(url, referer):
@@ -2872,6 +2893,9 @@ class Browser:
             elif ev[0] == "img":
                 if self.page is not None and ev[1].page is self.page.root:
                     self.layout_due = self.layout_due or time.time() + 0.25
+            elif ev[0] == "msg":
+                self.msg = ev[1]
+                changed = True
             elif ev[0] == "css":
                 if self.page is not None and ev[1] is self.page.root:
                     self.layout_due = self.layout_due or time.time() + 0.05
@@ -3310,6 +3334,16 @@ class Browser:
             c += wd
         return None
 
+    def img_at(self, x, y):
+        li = self.top + y - self.ctop
+        if not self.ctop <= y <= self.rows - 2 or li >= len(self.lines):
+            return None
+        col = x - self.xoff
+        for im, _, _, cols, c in self.lines[li].places:
+            if c <= col < c + cols:
+                return im
+        return None
+
     def handle_mouse(self, b, x, y, kind):
         x -= 1
         y -= 1
@@ -3330,6 +3364,12 @@ class Browser:
                     self.new_tab(self.links[ref], background=True,
                                  referer=self.page.url if self.page else None)
                     self.msg = "Opened in background tab"
+        elif kind == "M" and (b & 3) == 2:                   # right click
+            im = self.img_at(x, y)
+            if im:
+                self.save_image(im)
+            else:
+                self.msg = "Right-click an image to save it"
         elif kind == "M" and (b & 3) == 0:
             if self.ctop == 2 and y == 0:
                 for x0, x1, i in self.tab_ranges:
@@ -3621,21 +3661,24 @@ class Browser:
         name = p.download or os.path.basename(urllib.parse.unquote(urllib.parse.urlsplit(p.url).path)) or "page.html"
         if "." not in name and p.ctype == "text/html":
             name += ".html"
-        name = re.sub(r"[^\w.\- ]", "_", name) or "download"
-        d = os.path.expanduser("~/Downloads")
-        if not os.path.isdir(d):
-            d = os.getcwd()
-        path, n = os.path.join(d, name), 1
-        while os.path.exists(path):
-            stem, ext = os.path.splitext(name)
-            path = os.path.join(d, "%s-%d%s" % (stem, n, ext))
-            n += 1
-        try:
-            with open(path, "wb") as f:
-                f.write(p.raw)
-            self.msg = "Saved " + path
-        except OSError as e:
-            self.msg = "Save failed: %s" % e
+        self.msg = write_download(name, p.raw)
+
+    def save_image(self, im):
+        """Fetch the original image bytes (not our PNG conversion) in the background."""
+        self.msg = "Saving image..."
+
+        def work():
+            try:
+                data = fetch_image(im.url, im.page.url)
+            except Exception as e:
+                self.post(("msg", "Save failed: %s" % e))
+                return
+            name = os.path.basename(urllib.parse.unquote(urllib.parse.urlsplit(im.url).path)) or "image"
+            info = sniff_image(data)
+            if info and not os.path.splitext(name)[1]:
+                name += "." + info[0]
+            self.post(("msg", write_download(name, data)))
+        threading.Thread(target=work, daemon=True).start()
 
     # -- prompts and menus -------------------------------------------------------
 
