@@ -51,6 +51,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unicodedata
 import webbrowser
@@ -665,6 +666,16 @@ HEADINGS = {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
 SKIP = {'script', 'style', 'head', 'title'}
 BOLD = HEADINGS | {'b', 'strong', 'th', 'dt'}
 ITAL = {'i', 'em', 'cite', 'var', 'dfn'}
+VOID = {'br', 'img', 'hr', 'meta', 'link', 'input', 'col', 'wbr', 'area', 'base', 'source'}
+MONO_TAGS = {'code', 'tt', 'kbd', 'samp'}
+TABLE_MAXW = 90
+# syntax classes in code listings -> marker letter (\x16<letter> ... \x17); 'g' is the
+# line-number/marker gutter, which is dimmed and left out when copying
+SYNTAX = {'kw': 'k', 'comment': 'c', 'string': 's', 'coprompt': 'p'}
+MONO_CLASSES = {'ic', 'commandname', 'methodname', 'constant', 'keystroke', 'literal',
+                'filename', 'code', 'tt'}
+# <table class="...code..."> is a code listing laid out one row per line
+CODE_TABLE_RE = re.compile(r'(?:^|[\s_-])(?:processed)?code(?:listing)?(?:$|[\s_-])', re.I)
 # inline style markers inside text: \x01/\x02 bold on/off, \x03/\x04 italic on/off,
 # \x05 non-breaking space
 
@@ -682,6 +693,16 @@ class Extractor(HTMLParser):
         self.lists = []
         self.prefix = self.align = None
         self.kind = 'p'
+        self.mono = 0           # inline monospace nesting (code, tt, kbd, ...)
+        self.tagstack = []      # (tag, opened-mono) for inline monospace bookkeeping
+        self.code = None        # while inside a table-as-code-listing: rows of [gutter, text]
+        self.cell = 0
+        self.code_cell = None   # index of the code-table cell being collected
+        self.code_syn = []      # open syntax-class spans inside the current code cell
+        self.tab = None         # rows of an ordinary table being collected
+        self.tab_depth = 0
+        self.tab_cell = None    # text pieces of the cell being collected
+        self.tab_head = False
 
     def flush(self):
         text = ''.join(self.buf)
@@ -690,9 +711,16 @@ class Extractor(HTMLParser):
             self.buf.append('\x01')
         if self.ital:
             self.buf.append('\x03')
+        if self.mono:
+            self.buf.append('\x14')
         if self.cur_link is not None:
             self.buf.append('\x06%d\x07' % self.cur_link)
-        if not re.sub(r'\x06\d+\x07|[\x01-\x05\x08\x10-\x13\s]', '', text):
+        if self.tab_cell is not None:
+            self.tab_cell.append(text)
+            self.prefix = self.align = None
+            self.heading = 0
+            return
+        if not re.sub(r'\x06\d+\x07|\x16[a-z]|[\x01-\x05\x08\x10-\x15\x17\s]', '', text):
             return
         indent = self.bq * 4 + len(self.lists) * 3
         if self.prefix:
@@ -737,10 +765,54 @@ class Extractor(HTMLParser):
         if tag == 'math':
             self.mstack = [N('math', a)]
             return
+        if self.code is not None:
+            self.code_start(tag, a)
+            return
+        if tag == 'table' and CODE_TABLE_RE.search(a.get('class', '')):
+            self.flush()
+            if a.get('id'):
+                self.anchors.append(a['id'])
+            self.code = []
+            self.pre += 1
+            return
+        if tag == 'table':
+            if self.tab_depth == 0:
+                self.flush()
+                self.tab = []
+                if a.get('id'):
+                    self.anchors.append(a['id'])
+            self.tab_depth += 1
+            return
+        if self.tab is not None and self.tab_depth == 1:
+            if tag == 'thead':
+                self.tab_head = True
+            elif tag == 'tbody' or tag == 'tfoot':
+                self.tab_head = False
+            elif tag == 'tr':
+                self.tab_cell = None
+                self.tab.append({'cells': [], 'head': self.tab_head})
+                return
+            elif tag in ('td', 'th') and self.tab:
+                self.flush()
+                self.buf = []
+                self.tab_cell = []
+                try:
+                    span = max(1, int(a.get('colspan', 1)))
+                except ValueError:
+                    span = 1
+                self.tab[-1]['cells'].append(['', span, tag == 'th'])
+                return
         if tag in BLOCK:
             self.flush()
         if a.get('id'):
             self.anchors.append(a['id'])
+        if tag not in VOID:
+            mono = not self.pre and (tag in MONO_TAGS or bool(
+                MONO_CLASSES & set(a.get('class', '').split())))
+            self.tagstack.append((tag, mono))
+            if mono:
+                self.mono += 1
+                self.buf.append('\x14')
         if tag == 'br':
             self.buf.append('\n')
         elif tag in ('img', 'image'):
@@ -809,6 +881,34 @@ class Extractor(HTMLParser):
                         del self.mstack[i:]
                         break
             return
+        if self.code is not None:
+            self.code_end(tag)
+            return
+        if self.tab is not None:
+            if tag == 'table':
+                self.tab_depth -= 1
+                if self.tab_depth == 0:
+                    rows, self.tab, self.tab_cell = self.tab, None, None
+                    self.buf = []
+                    self.emit_table(rows)
+                return
+            if self.tab_depth == 1 and tag in ('td', 'th'):
+                if self.tab_cell is not None and self.tab and self.tab[-1]['cells']:
+                    parts = self.tab_cell + [''.join(self.buf)]
+                    self.buf = []
+                    self.tab[-1]['cells'][-1][0] = ' '.join(' '.join(parts).split())
+                self.tab_cell = None
+                return
+            if self.tab_depth == 1 and tag in ('tr', 'tbody', 'thead', 'tfoot'):
+                return
+        for i in range(len(self.tagstack) - 1, -1, -1):
+            if self.tagstack[i][0] == tag:
+                for _, mono in self.tagstack[i:]:
+                    if mono and self.mono:
+                        self.mono -= 1
+                        self.buf.append('\x15')
+                del self.tagstack[i:]
+                break
         if tag in BOLD and self.bold:
             self.bold -= 1
             if not self.bold:
@@ -837,11 +937,165 @@ class Extractor(HTMLParser):
         elif tag in ('ul', 'ol') and self.lists:
             self.lists.pop()
 
+    def emit_table(self, rows):
+        """Lay an ordinary table out as aligned monospace columns."""
+        def clean_cell(t):
+            return ' '.join(re.sub(r'[\x01-\x04\x10-\x15]', '', t).replace('\x05', ' ').split())
+
+        def vis(t):
+            return len(STRIP_RE.sub('', t))
+
+        grid, titles = [], {}
+        for r in rows:
+            cells = [(clean_cell(t), s, th) for t, s, th in r['cells']]
+            if not cells:
+                continue
+            head = r['head'] or all(th for _, _, th in cells)
+            if len(cells) == 1 and cells[0][1] > 1:
+                titles[len(grid)] = cells[0][0]
+                grid.append(None)
+                continue
+            row = []
+            for t, s, _ in cells:
+                row.append(t)
+                row.extend([''] * (s - 1))
+            grid.append((row, head))
+        body = [g for g in grid if g]
+        if not body:
+            return
+        ncol = max(len(row) for row, _ in body)
+        keep = [j for j in range(ncol)
+                if any(j < len(row) and row[j] for row, _ in body)]
+        if not keep:
+            return
+        grid = [None if g is None else ([g[0][j] if j < len(g[0]) else '' for j in keep], g[1])
+                for g in grid]
+        body = [g for g in grid if g]
+        ncol = len(keep)
+        width = [0] * ncol
+        for row, _ in body:
+            for j, t in enumerate(row):
+                width[j] = max(width[j], vis(t))
+        sep = ' │ '
+        total = sum(width) + len(sep) * (ncol - 1)
+        wrapped = total > TABLE_MAXW
+        if wrapped:
+            floor = [min(w, 10) for w in width]
+            while sum(width) + len(sep) * (ncol - 1) > TABLE_MAXW:
+                j = max(range(ncol), key=lambda k: width[k] - floor[k])
+                if width[j] <= floor[j]:
+                    break
+                width[j] -= 1
+            total = sum(width) + len(sep) * (ncol - 1)
+        lines = []
+        for i, g in enumerate(grid):
+            if g is None:
+                title = titles[i]
+                lines.append(' ' * max(0, (total - len(title)) // 2) + '\x01' + title + '\x02')
+                continue
+            row, head = g
+            row = row + [''] * (ncol - len(row))
+            cols = []
+            for j, t in enumerate(row):
+                if vis(t) > width[j]:
+                    t = STRIP_RE.sub('', t)
+                    parts = textwrap.wrap(t, width[j], break_long_words=True) or ['']
+                else:
+                    parts = [t]
+                cols.append(parts)
+            for k in range(max(len(c) for c in cols)):
+                out = []
+                for j, c in enumerate(cols):
+                    t = c[k] if k < len(c) else ''
+                    pad = ' ' * (width[j] - vis(t)) if j < ncol - 1 else ''
+                    out.append(('\x01' + t + '\x02' if head and t else t) + pad)
+                lines.append(sep.join(out).rstrip(' '))
+            if head and (i + 1 >= len(grid) or grid[i + 1] is None or not grid[i + 1][1]):
+                lines.append('─┼─'.join('─' * w for w in width))
+        if lines and lines[-1].startswith('─'):
+            lines.pop()
+        self.emit_anchors()
+        self.blocks.append(('p', '\n'.join(lines), self.bq * 4 + len(self.lists) * 3,
+                            None, 2, None, 0))
+
+    def code_start(self, tag, a):
+        """Tags inside a table that is really a code listing (one row per line)."""
+        if tag == 'tr':
+            self.code.append(['', ''])
+            return
+        if self.code_cell == 1 and tag not in VOID:
+            syn = next((SYNTAX[c] for c in a.get('class', '').split() if c in SYNTAX), None)
+            self.code_syn.append((tag, syn))
+            if syn:
+                self.buf.append('\x16' + syn)
+        if tag in ('td', 'th') and self.code:
+            self.code_cell = 0 if 'codeinfo' in a.get('class', '') else 1
+            self.buf = []
+            self.code_syn = []
+        elif tag == 'br' and self.code_cell is not None:
+            self.buf.append('\n')
+        elif self.code_cell is not None and tag in ('em', 'i', 'cite', 'var', 'dfn'):
+            self.buf.append('\x03')
+        elif self.code_cell is not None and tag in ('b', 'strong'):
+            self.buf.append('\x01')
+        elif tag == 'a' and a.get('href') is not None and self.code_cell is not None:
+            self.cur_link = len(self.links)
+            self.links.append(a['href'])
+            self.buf.append('\x06%d\x07' % self.cur_link)
+
+    def code_end(self, tag):
+        if tag not in ('td', 'th') and self.code_cell == 1:
+            for i in range(len(self.code_syn) - 1, -1, -1):
+                if self.code_syn[i][0] == tag:
+                    self.buf.extend('\x17' for _, s in self.code_syn[i:] if s)
+                    del self.code_syn[i:]
+                    break
+        if tag in ('td', 'th') and self.code_cell is not None:
+            if self.code:
+                if self.code_cell == 1:
+                    self.buf.extend('\x17' for _, s in self.code_syn if s)
+                self.code[-1][self.code_cell] = ''.join(self.buf)
+            self.buf, self.code_cell, self.code_syn = [], None, []
+        elif self.code_cell is not None and tag in ('em', 'i', 'cite', 'var', 'dfn'):
+            self.buf.append('\x04')
+        elif self.code_cell is not None and tag in ('b', 'strong'):
+            self.buf.append('\x02')
+        elif tag == 'a' and self.cur_link is not None:
+            self.buf.append('\x08')
+            self.cur_link = None
+        elif tag == 'table':
+            rows, self.code = self.code, None
+            self.pre = max(0, self.pre - 1)
+            self.buf, self.code_cell = [], None
+            self.emit_code(rows)
+
+    def emit_code(self, rows):
+        gutters = [STRIP_RE.sub('', g).strip() for g, _ in rows]
+        width = max((len(g) for g in gutters), default=0)
+        lines = []
+        for g, (_, text) in zip(gutters, rows):
+            if width:
+                text = '\x16g' + g.rjust(width) + '  \x17' + text
+            lines.append(text)
+        while lines and not STRIP_RE.sub('', lines[-1]).strip():
+            lines.pop()
+        while lines and not STRIP_RE.sub('', lines[0]).strip():
+            lines.pop(0)
+        if not lines:
+            return
+        self.emit_anchors()
+        self.blocks.append(('p', '\n'.join(lines), self.bq * 4 + len(self.lists) * 3,
+                            None, True, None, 0))
+
     def handle_data(self, data):
         if self.skip:
             return
         if self.mstack:
             self.mstack[-1].kids.append(data)
+            return
+        if self.code is not None:
+            if self.code_cell is not None:
+                self.buf.append(data.replace('​', '').replace('\xa0', ' '))
             return
         data = data.replace('\xa0', '\x05')
         if not self.pre:
@@ -1456,13 +1710,16 @@ def sips_scale(data, width):
 THEMES = {
     "Light": dict(bg="#fbfbf9", fg="#1c1c1c", dim="#7a7a7a", link="#0a58ca",
                   code="#eeeeea", hit="#ffe58a", cur="#ffad33", sel="#6fa3e8",
-                  rule="#c8c8c0"),
+                  rule="#c8c8c0", kw="#a626a4", com="#6a737d", str="#237a3b",
+                  prm="#b35900", gut="#a0a4b4"),
     "Sepia": dict(bg="#f3ead3", fg="#43382a", dim="#8a7b66", link="#8b3a0f",
                   code="#e9dfc4", hit="#f3d77a", cur="#e8a33c", sel="#c9a45c",
-                  rule="#cdbf9d"),
+                  rule="#cdbf9d", kw="#8a3b8a", com="#8a7b66", str="#4d6b2a",
+                  prm="#a34a14", gut="#ab9d83"),
     "Dark": dict(bg="#1d1f23", fg="#d6d6d6", dim="#8a8f98", link="#7db4ff",
                  code="#2a2d33", hit="#6b5b1a", cur="#a6741a", sel="#4f7cc0",
-                 rule="#3c4048"),
+                 rule="#3c4048", kw="#c792ea", com="#7f8a99", str="#a3d68c",
+                 prm="#f0a560", gut="#5f6572"),
 }
 SERIF = ("Iowan Old Style", "Charter", "Georgia", "Palatino", "Palatino Linotype",
          "Book Antiqua", "Cambria", "Times New Roman", "DejaVu Serif",
@@ -1474,8 +1731,8 @@ MATH = ("STIX Two Math", "Cambria Math", "Latin Modern Math", "STIXGeneral",
         "XITS Math")
 HSCALE = {1: 1.7, 2: 1.4, 3: 1.2, 4: 1.1, 5: 1.0, 6: 0.95}
 MEASURES = {"Narrow": 56, "Medium": 70, "Wide": 88}
-MARK_RE = re.compile(r'(\x06\d+\x07|[\x01-\x05\x08\x10-\x13])')
-STRIP_RE = re.compile(r'\x06\d+\x07|[\x01-\x05\x08\x10-\x13]')
+MARK_RE = re.compile(r'(\x06\d+\x07|\x16[a-z]|[\x01-\x05\x08\x10-\x15\x17])')
+STRIP_RE = re.compile(r'\x06\d+\x07|\x16[a-z]|[\x01-\x05\x08\x10-\x15\x17]')
 DEFAULT_PREFS = {"theme": "Light", "family": "", "size": 15, "sidebar": True,
                  "measure": "Medium", "geometry": "1100x800", "recent": [], "last": ""}
 
@@ -1859,9 +2116,16 @@ class App:
         except tk.TclError:
             return ""
         out = []
-        for kind, val, _ in t.dump(first, last, text=True, window=True, image=True):
-            if kind == "text":
-                out.append(val)
+        gutter = "syn:g" in t.tag_names(first)
+        for kind, val, _ in t.dump(first, last, text=True, window=True, image=True,
+                                   tag=True):
+            if kind == "tagon" and val == "syn:g":
+                gutter = True
+            elif kind == "tagoff" and val == "syn:g":
+                gutter = False
+            elif kind == "text":
+                if not gutter:
+                    out.append(val)
             elif kind == "window" and val in self.win_math:
                 out.append("\n" + tex_fallback(self.win_math[val]) + "\n")
             elif kind == "image":
@@ -1922,6 +2186,10 @@ class App:
                     selectforeground=th["fg"], inactiveselectbackground=th["sel"],
                     spacing2=round(self.px * 0.22))
         t.tag_configure("link", foreground=th["link"])
+        for letter, key in (("k", "kw"), ("c", "com"), ("s", "str"), ("p", "prm"),
+                            ("g", "gut")):
+            t.tag_configure("syn:" + letter, foreground=th[key])
+        t.tag_raise("link")
         t.tag_configure("dim", foreground=th["dim"])
         t.tag_configure("hit", background=th["hit"])
         t.tag_configure("cur", background=th["cur"])
@@ -2269,11 +2537,22 @@ class App:
         """Yield (string, tags) for text carrying style/link markers."""
         bold = ital = sup = sub = 0
         link = None
+        mono_base = mono
+        syn = []
         for tok in MARK_RE.split(text):
             if not tok:
                 continue
             c = tok[0]
-            if c == "\x06":
+            if c == "\x16":
+                syn.append(tok[1])
+            elif c == "\x17":
+                if syn:
+                    syn.pop()
+            elif c == "\x14":
+                mono = True
+            elif c == "\x15":
+                mono = mono_base
+            elif c == "\x06":
                 link = int(tok[1:-1])
             elif c == "\x08":
                 link = None
@@ -2294,7 +2573,7 @@ class App:
             elif c == "\x13":
                 sub = max(0, sub - 1)
             elif c == "\x05":
-                yield "\xa0", self.run_tags(scale, bold or bold_base, ital, mono, sup, sub, link)
+                yield "\xa0", self.run_tags(scale, bold or bold_base, ital, mono, sup, sub, link, syn)
             else:
                 cur = ""
                 style = (False, False)
@@ -2302,15 +2581,15 @@ class App:
                     base, mb, mi = demath(chn)
                     if (mb, mi) != style and cur:
                         yield cur, self.run_tags(scale, bold or bold_base or style[0],
-                                                 ital or style[1], mono, sup, sub, link)
+                                                 ital or style[1], mono, sup, sub, link, syn)
                         cur = ""
                     style = (mb, mi)
                     cur += base
                 if cur:
                     yield cur, self.run_tags(scale, bold or bold_base or style[0],
-                                             ital or style[1], mono, sup, sub, link)
+                                             ital or style[1], mono, sup, sub, link, syn)
 
-    def run_tags(self, scale, bold, ital, mono, sup, sub, link):
+    def run_tags(self, scale, bold, ital, mono, sup, sub, link, syn):
         script = 1 if sup else (-1 if sub else 0)
         tags = [self.ftag(scale, bool(bold), bool(ital), mono, script)]
         if link is not None:
@@ -2320,6 +2599,7 @@ class App:
                 self.text.tag_bind(name, "<Button-1>", lambda e, i=link: self.follow(i))
                 self.ftags.add(name)
             tags += ["link", name]
+        tags += ["syn:" + s for s in syn[-1:]]
         return tuple(tags)
 
     def put_block(self, b, gap, ch):
@@ -2339,7 +2619,7 @@ class App:
         if pre:
             lm1 = lm2 = lm2 + round(self.px * 0.6)
         ptag = self.ptag(lm1, lm2, "center" if align == "center" else "left", sp1, sp3,
-                         tabs, self.theme["code"] if pre else None)
+                         tabs, self.theme["code"] if pre == 1 else None)
         start = t.index("end-1c")
         segs = text.split("\n")
         while segs and not STRIP_RE.sub("", segs[-1]).strip():
