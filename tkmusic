@@ -54,9 +54,11 @@ Keys:
   G                     go to the album the selected track is on
   Ctrl-G                go to the album of the track playing (or click
                         its cover art)
-  Ctrl-D                add the album of the track playing to (or remove
-                        it from) favourites; for any track, right-click
-                        > Add album to favourites
+  Ctrl-D                add the album of the track playing (or the radio
+                        station playing) to favourites, or remove it; for
+                        any track, right-click > Add album to favourites
+The Favourites tab can show all favourites, or just songs, albums or
+radio stations.
   Space                 pause / resume    Ctrl-Left / Ctrl-Right  prev / next
   Delete (queue)        remove from queue
   Right-click           more actions (open web page, copy URL ...)
@@ -100,6 +102,10 @@ POLL_MS = 50
 ART_NP = 96          # cover art size (pixels) under "now playing"
 ART_VIEW = 48        # ... and beside the name of an open album
 PLAYABLE = ("track", "station")
+# the Favourites tab's filter: name -> the kinds of item shown (None: all;
+# artists are only under All)
+FAV_FILTERS = {"All": None, "Songs": ("track",),
+               "Albums": ("album", "item"), "Radio stations": ("station",)}
 KIND_NAMES = {"track": "Track", "station": "Station", "album": "Album",
               "artist": "Artist", "item": "Recording"}
 
@@ -1233,6 +1239,7 @@ class App:
         self.cfg["volume"] = int(self.volume.get())
         self.cfg["source"] = self.source_var.get()
         self.cfg["field"] = self.field_var.get()
+        self.cfg["fav_filter"] = self.fav_filter.get()
         self.cfg["geometry"] = self.root.geometry()
         try:
             tmp = CONFIG + ".tmp"
@@ -1294,6 +1301,16 @@ class App:
         self.nb.add(res, text="Results")
 
         fav = ttk.Frame(self.nb)
+        fbar = ttk.Frame(fav)
+        fbar.pack(fill="x", pady=(4, 2))
+        ttk.Label(fbar, text="Show:").pack(side="left", padx=(4, 6))
+        self.fav_filter = tk.StringVar(value=self.cfg.get("fav_filter",
+                                                          "All"))
+        for name in FAV_FILTERS:
+            ttk.Radiobutton(fbar, text=name, value=name,
+                            variable=self.fav_filter,
+                            command=self.refresh_favourites).pack(
+                side="left", padx=(0, 8))
         self.fav_tree = self.make_tree(fav, ("title", "artist", "kind", "src"),
                                        ("Title", "Artist / tags", "Type",
                                         "Source"), (330, 220, 70, 110))
@@ -1873,20 +1890,33 @@ class App:
         self.bg(lambda: album_of(it), found)
 
     def toggle_playing_album_favourite(self):
-        self.toggle_album_favourite(self.now_item())
+        """The now-playing favourite button: the station, for radio, else
+        the album of the track."""
+        it = self.now_item()
+        if it is not None and it["kind"] == "station":
+            self.toggle_fav_item(it)
+        else:
+            self.toggle_album_favourite(it)
         return "break"
 
     def update_fav_album_btn(self):
         it = self.now_item()
-        ok = it is not None and it["kind"] == "track" and it["src"] != "URL"
-        fav = ok and it.get("alb") and self.is_favourite(it["alb"])
+        if it is not None and it["kind"] == "station":
+            what, ok, fav = "station", True, self.is_favourite(it)
+        else:
+            ok = it is not None and it["kind"] == "track" and \
+                it["src"] != "URL"
+            what = "album"
+            fav = ok and it.get("alb") and self.is_favourite(it["alb"])
         self.np_fav_album_btn.config(
             state="normal" if ok else "disabled",
-            text="★ Favourite album" if fav else "☆ Favourite album")
+            text=("★" if fav else "☆") + " Favourite " + what)
 
     def refresh_favourites(self):
-        self.fill(self.fav_tree, self.favourites(),
-                  ("title", "artist", "kind", "src"))
+        kinds = FAV_FILTERS.get(self.fav_filter.get())
+        favs = [f for f in self.favourites()
+                if kinds is None or f["kind"] in kinds]
+        self.fill(self.fav_tree, favs, ("title", "artist", "kind", "src"))
 
     # ------------------------------------------------------------ menu
 
