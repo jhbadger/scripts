@@ -34,6 +34,7 @@ filtered on the field; sources that cannot search a field are skipped
 
 Usage:  tkmusic [search words | audio files / playlists]
         tkmusic --build-app [DIR]    build a macOS tkmusic.app (with icon)
+                                     in DIR (default ~/Applications)
         tkmusic --icon-png SIZE [OUT.png]
 
 The app opens audio files and playlists dropped on it or opened from Finder.
@@ -2308,8 +2309,8 @@ def icon_build_app(dest):
 def icon_args(args):
     """Handle --build-app [DIR] and --icon-png SIZE [OUT]; True if handled."""
     if args[:1] == ["--build-app"]:
-        print(icon_build_app(args[1] if len(args) > 1 else
-                             os.path.dirname(os.path.abspath(__file__))))
+        print(icon_build_app(os.path.expanduser(args[1]) if len(args) > 1
+                             else os.path.expanduser("~/Applications")))
         return True
     if args[:1] == ["--icon-png"] and len(args) >= 2:
         with open(args[2] if len(args) > 2 else ICON_NAME + ".png", "wb") as fh:
