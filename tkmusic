@@ -38,12 +38,22 @@ Usage:  tkmusic [search words | audio files / playlists]
 
 The app opens audio files and playlists dropped on it or opened from Finder.
 
+Album art is shown for the track playing and the album open, from the
+source (or a cover image in a local file's folder, or the picture in the
+file itself).  Tk cannot read JPEG, so covers are converted to PNG with
+sips (macOS), ImageMagick, ffmpeg or Pillow, and cached in ~/Library/
+Caches/tkmusic.  "Go to album" finds a track's album at its own source,
+or on YouTube Music for sources without albums (YouTube, SoundCloud).
+
 Keys:
   Return (search box)   search            Ctrl-F or /   go to search box
   Return / double-click play (albums, artists and archive items open)
   BackSpace             back to the previous list
   A                     add to queue      N   play next
   F                     add to / remove from favourites
+  G                     go to the album the selected track is on
+  Ctrl-G                go to the album of the track playing (or click
+                        its cover art)
   Space                 pause / resume    Ctrl-Left / Ctrl-Right  prev / next
   Delete (queue)        remove from queue
   Right-click           more actions (open web page, copy URL ...)
@@ -51,6 +61,7 @@ Keys:
 """
 
 import base64
+import hashlib
 import html
 import json
 import math
@@ -83,6 +94,8 @@ for _d in ("/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/bin"),
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/140.0 Safari/537.36")
 POLL_MS = 50
+ART_NP = 96          # cover art size (pixels) under "now playing"
+ART_VIEW = 48        # ... and beside the name of an open album
 PLAYABLE = ("track", "station")
 KIND_NAMES = {"track": "Track", "station": "Station", "album": "Album",
               "artist": "Artist", "item": "Recording"}
@@ -90,7 +103,7 @@ KIND_NAMES = {"track": "Track", "station": "Station", "album": "Album",
 
 # ---------------------------------------------------------------- helpers
 
-def http(url, data=None, headers=None, timeout=15):
+def http_bytes(url, data=None, headers=None, timeout=15):
     h = {"User-Agent": UA}
     h.update(headers or {})
     if isinstance(data, (dict, list)):
@@ -100,7 +113,11 @@ def http(url, data=None, headers=None, timeout=15):
         data = data.encode()
     req = urllib.request.Request(url, data=data, headers=h)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+        return r.read()
+
+
+def http(url, data=None, headers=None, timeout=15):
+    return http_bytes(url, data, headers, timeout).decode("utf-8", "replace")
 
 
 def http_json(url, data=None, headers=None, timeout=15):
@@ -132,11 +149,18 @@ def parse_time(t):
 
 
 def item(src, kind, title, artist="", album="", dur=None, url="", page="",
-         key="", info="", genre=""):
+         key="", info="", genre="", art="", alb=None):
+    """A search result.  art is a cover image URL (or local file); alb, for
+    a track, is the album item it belongs to, when that is known."""
     return {"src": src, "kind": kind, "title": title or "(untitled)",
             "artist": artist or "", "album": album or "", "dur": dur,
             "url": url, "page": page, "key": key, "info": info,
-            "genre": genre or ""}
+            "genre": genre or "", "art": art or "", "alb": alb}
+
+
+def album_item(src, title, artist="", page="", key="", art="", info=""):
+    return item(src, "album", title, artist, title, None, "", page, key,
+                info=info, art=art)
 
 
 def run_ytdlp_json(args, timeout=40):
@@ -303,6 +327,28 @@ def ytm_rows(d):
         yield r, cols
 
 
+def ytm_thumb(r, size=300):
+    """The (resized) thumbnail URL of a list row or page header."""
+    th = (r.get("thumbnail") or {}).get("musicThumbnailRenderer", {}) \
+        .get("thumbnail", {}).get("thumbnails") or []
+    if not th:
+        return ""
+    return re.sub(r"=w\d+-h\d+", "=w%d-h%d" % (size, size),
+                  th[-1].get("url", ""))
+
+
+def ytm_album_link(r):
+    """(title, browseId) of the album a song row links to, or None."""
+    for c in r.get("flexColumns", [])[1:]:
+        for run in c.get("musicResponsiveListItemFlexColumnRenderer", {}) \
+                .get("text", {}).get("runs", []):
+            bid = run.get("navigationEndpoint", {}) \
+                .get("browseEndpoint", {}).get("browseId", "")
+            if bid.startswith("MPREb"):
+                return run.get("text", ""), bid
+    return None
+
+
 def ytm_songs(text):
     out = []
     for r, cols in ytm_rows(ytm_call("search", {"query": text,
@@ -320,10 +366,16 @@ def ytm_songs(text):
             dur = parse_time(parts.pop())
         artist = parts[0] if parts else ""
         album = parts[1] if len(parts) > 1 else ""
+        art = ytm_thumb(r)
+        link = ytm_album_link(r)
+        alb = album_item("YouTube Music", link[0], artist,
+                         "https://music.youtube.com/browse/" + link[1],
+                         link[1], art) if link else None
         out.append(item("YouTube Music", "track", title, artist, album, dur,
                         "https://music.youtube.com/watch?v=" + vid,
                         "https://music.youtube.com/watch?v=" + vid,
-                        info=cols[2] if len(cols) > 2 else ""))
+                        info=cols[2] if len(cols) > 2 else "", art=art,
+                        alb=alb))
     return out
 
 
@@ -342,10 +394,9 @@ def ytm_albums(text):
         year = parts.pop() if parts and re.fullmatch(r"\d{4}", parts[-1]) \
             else ""
         info = year if kind == "Album" else ("%s %s" % (kind, year)).strip()
-        out.append(item("YouTube Music", "album", cols[0],
-                        " ".join(parts), cols[0], None, "",
-                        "https://music.youtube.com/browse/" + bid, bid,
-                        info=info))
+        out.append(album_item("YouTube Music", cols[0], " ".join(parts),
+                              "https://music.youtube.com/browse/" + bid,
+                              bid, ytm_thumb(r), info))
     return out
 
 
@@ -363,10 +414,13 @@ def ytm_album_tracks(it):
             for v in o:
                 yield from walk(v)
 
+    art = it.get("art", "")
     for h in walk(d):
         runs = h.get("straplineTextOne", {}).get("runs", [])
         artist = "".join(x.get("text", "") for x in runs) or artist
+        art = ytm_thumb(h) or art
         break
+    it["art"] = art
     out = []
     for r, cols in ytm_rows(d):
         vid = (r.get("playlistItemData") or {}).get("videoId")
@@ -380,8 +434,14 @@ def ytm_album_tracks(it):
         url = "https://music.youtube.com/watch?v=" + vid
         out.append(item("YouTube Music", "track", cols[0],
                         (cols[1] if len(cols) > 1 else "") or artist,
-                        it["title"], dur, url, url))
+                        it["title"], dur, url, url, art=art,
+                        alb=album_ref(it)))
     return out
+
+
+def album_ref(it):
+    """A copy of album item it, for its tracks to point back to."""
+    return dict(it, alb=None)
 
 
 def search_ytm(q, cfg):
@@ -404,9 +464,13 @@ def _ytdlp_search(prefix, q, src, n=25):
         if not url:
             continue
         artist = e.get("uploader") or e.get("channel") or ""
+        thumbs = e.get("thumbnails") or []
+        art = thumbs[-1].get("url", "") if thumbs else ""
+        if src == "YouTube" and e.get("id"):
+            art = "https://i.ytimg.com/vi/%s/mqdefault.jpg" % e["id"]
         out.append(item(src, "track", e.get("title"), artist, "",
                         e.get("duration"), url, url,
-                        genre=", ".join(e.get("genres") or [])))
+                        genre=", ".join(e.get("genres") or []), art=art))
     return out
 
 
@@ -428,20 +492,49 @@ def search_bc(q, cfg):
     out = []
     for r in d.get("auto", {}).get("results", []):
         t = r.get("type")
+        art = bc_art(r.get("art_id")) or r.get("img") or ""
         if t == "b":
             tags = ", ".join(r.get("tag_names") or [])
             out.append(item("Bandcamp", "artist", r.get("name"),
                             r.get("name"), "", None, "",
-                            r.get("item_url_root"), info=tags, genre=tags))
+                            r.get("item_url_root"), info=tags, genre=tags,
+                            art=art))
         elif t == "a":
-            out.append(item("Bandcamp", "album", r.get("name"),
-                            r.get("band_name"), r.get("name"), None, "",
-                            r.get("item_url_path")))
+            out.append(album_item("Bandcamp", r.get("name"),
+                                  r.get("band_name"),
+                                  r.get("item_url_path"), art=art))
         elif t == "t":
+            # the album's page is only on the track's own page; it is
+            # looked up when wanted (album_of)
             out.append(item("Bandcamp", "track", r.get("name"),
                             r.get("band_name"), r.get("album_name"), None,
-                            "", r.get("item_url_path")))
+                            "", r.get("item_url_path"), art=art))
     return out
+
+
+def bc_art(art_id, size=2):
+    """Bandcamp cover URL (size 2 is 350 pixels square)."""
+    try:
+        return "https://f4.bcbits.com/img/a%010d_%d.jpg" % (int(art_id), size)
+    except (TypeError, ValueError):
+        return ""
+
+
+def bc_album_ref(d, page, text=""):
+    """The album item of a Bandcamp album or track page, if any."""
+    root = re.match(r"https?://[^/]+", page).group(0)
+    art = bc_art(d.get("art_id"))
+    artist = d.get("artist", "")
+    if d.get("item_type") == "album":
+        title = (d.get("current") or {}).get("title", "")
+        return album_item("Bandcamp", title, artist, page, art=art)
+    u = d.get("album_url")
+    if not u:
+        return None
+    m = re.search(r'class="fromAlbum"[^>]*>\s*([^<]+?)\s*<', text)
+    title = html.unescape(m.group(1)) if m else "Album"
+    return album_item("Bandcamp", title, artist,
+                      u if u.startswith("http") else root + u, art=art)
 
 
 def bc_tralbum(page):
@@ -463,17 +556,19 @@ def bc_expand(it):
         out = bc_discography(text, it)
         if out or d is None:
             return out
-        return bc_tracks(d, page)
+        return bc_tracks(d, page, text)
     d, text = bc_tralbum(it["page"])
-    return bc_tracks(d, it["page"]) if d else []
+    if d and it["kind"] == "album":
+        it["art"] = bc_art(d.get("art_id")) or it.get("art", "")
+    return bc_tracks(d, it["page"], text) if d else []
 
 
-def bc_tracks(d, page):
+def bc_tracks(d, page, text=""):
     root = re.match(r"https?://[^/]+", page).group(0)
     artist = d.get("artist", "")
-    album = (d.get("current") or {}).get("title", "")
-    if d.get("item_type") == "track":
-        album = ""
+    alb = bc_album_ref(d, page, text)
+    album = alb["title"] if alb else ""
+    art = bc_art(d.get("art_id"))
     out = []
     for t in d.get("trackinfo", []):
         url = (t.get("file") or {}).get("mp3-128", "")
@@ -481,7 +576,8 @@ def bc_tracks(d, page):
         tpage = root + link if link else page
         it = item("Bandcamp", "track", t.get("title"),
                   t.get("artist") or artist, album, t.get("duration"),
-                  url, tpage, info="" if url else "not streamable")
+                  url, tpage, info="" if url else "not streamable",
+                  art=art, alb=alb)
         out.append(it)
     return out
 
@@ -512,7 +608,7 @@ def bc_discography(text, it):
             out.append(item("Bandcamp", kind, e.get("title"),
                             e.get("artist") or it["artist"],
                             e.get("title") if kind == "album" else "",
-                            None, "", url))
+                            None, "", url, art=bc_art(e.get("art_id"))))
     return out
 
 
@@ -549,8 +645,12 @@ def search_ia(q, cfg):
         out.append(item("Internet Archive", "item", r.get("title", ident),
                         creator, r.get("title", ident), None, "",
                         "https://archive.org/details/" + ident, ident,
-                        info=(r.get("date") or "")[:10]))
+                        info=(r.get("date") or "")[:10], art=ia_art(ident)))
     return out
+
+
+def ia_art(ident):
+    return "https://archive.org/services/img/" + urllib.parse.quote(ident)
 
 
 IA_FORMATS = ("VBR MP3", "MP3", "128Kbps MP3", "64Kbps MP3", "Ogg Vorbis",
@@ -574,6 +674,8 @@ def ia_expand(it):
         tr = re.match(r"\d+", str(f.get("track", "")))
         return (int(tr.group(0)) if tr else 9999, f["name"])
 
+    it["art"] = it.get("art") or ia_art(ident)
+    alb = album_ref(it)
     out = []
     for f in sorted((f for f in files if f.get("format") == fmt), key=order):
         title = f.get("title") or os.path.splitext(
@@ -583,7 +685,8 @@ def ia_expand(it):
         out.append(item("Internet Archive", "track", title,
                         f.get("creator") or creator,
                         md.get("title", it["title"]),
-                        parse_time(f.get("length")), url, it["page"]))
+                        parse_time(f.get("length")), url, it["page"],
+                        art=it["art"], alb=alb))
     return out
 
 
@@ -620,7 +723,8 @@ def search_radio(q, cfg):
                             r.get("country", ""), None,
                             r.get("url_resolved") or r["url"],
                             r.get("homepage", ""), r["stationuuid"], info,
-                            genre=r.get("tags", "")))
+                            genre=r.get("tags", ""),
+                            art=r.get("favicon") or ""))
     return out
 
 
@@ -657,12 +761,24 @@ class Spotify:
                          headers={"Authorization": "Bearer " + cls.token})
 
 
-def sp_track(t, album=None):
-    album = album or t.get("album", {}).get("name", "")
+def sp_album(a):
+    imgs = a.get("images") or []      # largest first: 640, 300, 64
+    art = (imgs[1] if len(imgs) > 1 else imgs[0])["url"] if imgs else ""
+    return album_item("Spotify", a["name"],
+                      ", ".join(x["name"] for x in a.get("artists", [])),
+                      a.get("external_urls", {}).get("spotify", ""),
+                      a["id"], art, (a.get("release_date") or "")[:4])
+
+
+def sp_track(t, alb=None):
+    if alb is None and t.get("album"):
+        alb = sp_album(t["album"])
     return item("Spotify", "track", t["name"],
-                ", ".join(a["name"] for a in t.get("artists", [])), album,
+                ", ".join(a["name"] for a in t.get("artists", [])),
+                alb["title"] if alb else "",
                 t.get("duration_ms", 0) / 1000 or None, "",
-                t.get("external_urls", {}).get("spotify", ""), t["uri"])
+                t.get("external_urls", {}).get("spotify", ""), t["uri"],
+                art=alb["art"] if alb else "", alb=alb)
 
 
 def search_spotify(q, cfg):
@@ -673,19 +789,14 @@ def search_spotify(q, cfg):
     d = Spotify.get(cfg, "search?" + urllib.parse.urlencode(
         {"q": text, "type": types, "limit": 20}))
     out = [sp_track(t) for t in d.get("tracks", {}).get("items", []) if t]
-    for a in d.get("albums", {}).get("items", []):
-        if a:
-            out.append(item("Spotify", "album", a["name"],
-                            ", ".join(x["name"] for x in a["artists"]),
-                            a["name"], None, "",
-                            a.get("external_urls", {}).get("spotify", ""),
-                            a["id"], info=(a.get("release_date") or "")[:4]))
+    out += [sp_album(a) for a in d.get("albums", {}).get("items", []) if a]
     return out
 
 
 def sp_expand(it, cfg):
     d = Spotify.get(cfg, "albums/%s/tracks?limit=50" % it["key"])
-    return [sp_track(t, it["title"]) for t in d.get("items", []) if t]
+    alb = album_ref(it)
+    return [sp_track(t, alb) for t in d.get("items", []) if t]
 
 
 def url_items(q):
@@ -768,6 +879,146 @@ def run_search(name, fn, q, cfg):
         if FIELD_SUPPORT[name].get(field) == "filter":
             results = [it for it in results if field_match(it, field, value)]
     return results
+
+
+# ---------------------------------------------------------------- albums
+
+def album_of(it):
+    """The album item a track is on (looked up if need be), or raise."""
+    if it["kind"] in ("album", "item"):
+        return it
+    if it.get("alb"):
+        return it["alb"]
+    if it["kind"] != "track" or it["src"] in ("URL",):
+        raise RuntimeError("%s is not on an album" % it["title"])
+    if it["src"] == "Bandcamp" and it["page"]:
+        d, text = bc_tralbum(it["page"])
+        alb = d and bc_album_ref(d, it["page"], text)
+        if alb:
+            return alb
+        raise RuntimeError("%s is a single, not on an album" % it["title"])
+    # anything else: find it on YouTube Music
+    if it["album"]:
+        for a in ytm_albums("%s %s" % (it["artist"], it["album"])):
+            if words_in(it["album"], a["title"]):
+                return a
+    for s in ytm_songs("%s %s" % (it["artist"], it["title"])):
+        if s.get("alb") and (words_in(s["title"], it["title"]) or
+                             words_in(it["title"], s["title"])):
+            return s["alb"]
+    raise RuntimeError("could not find an album for %s" % it["title"])
+
+
+AUDIO_EXTS = (
+    ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav", ".aif",
+    ".aiff", ".wma", ".alac")
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+
+
+def folder_art(d):
+    """A cover image in folder d, if it has one."""
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return ""
+    pics = [n for n in names if n.lower().endswith(IMAGE_EXTS)]
+    for want in ("cover", "folder", "front", "album"):
+        for n in pics:
+            if os.path.splitext(n)[0].lower() == want:
+                return os.path.join(d, n)
+    return os.path.join(d, pics[0]) if pics else ""
+
+
+def file_item(path):
+    path = os.path.abspath(path)
+    d = os.path.dirname(path)
+    # no cover in the folder: try the picture embedded in the file
+    art = folder_art(d) or path
+    alb = album_item("File", os.path.basename(d) or d, "", "", d, art)
+    return item("File", "track", os.path.basename(path), "", d, None, path,
+                "", art=art, alb=alb)
+
+
+def folder_tracks(it):
+    d = it["key"]
+    names = sorted(n for n in os.listdir(d)
+                   if n.lower().endswith(AUDIO_EXTS))
+    return [file_item(os.path.join(d, n)) for n in names]
+
+
+# ---------------------------------------------------------------- art
+
+ART_DIR = os.path.expanduser("~/Library/Caches/tkmusic/art"
+                             if sys.platform == "darwin"
+                             else "~/.cache/tkmusic/art")
+
+
+def art_convert(src, dst, size):
+    """Scale image (or audio file with a picture) src into PNG dst."""
+    is_audio = not src.lower().endswith(IMAGE_EXTS + (".ico", ".svg")) \
+        and os.path.splitext(src)[1].lower() in AUDIO_EXTS
+    cmds = []
+    ff = shutil.which("ffmpeg")
+    ffcmd = [ff, "-v", "error", "-y", "-i", src, "-an", "-frames:v", "1",
+             "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease" %
+             (size, size), "-f", "image2", "-c:v", "png", dst] if ff else None
+    if is_audio:
+        cmds = [ffcmd] if ff else []
+    else:
+        if sys.platform == "darwin" and shutil.which("sips"):
+            cmds.append(["sips", "-s", "format", "png", "-Z", str(size), src,
+                         "--out", dst])
+        mg = shutil.which("magick")
+        if mg:
+            cmds.append([mg, src + "[0]", "-resize", "%dx%d" % (size, size),
+                         "png:" + dst])
+        if ff:
+            cmds.append(ffcmd)
+    for cmd in cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0 and os.path.exists(dst) and \
+                os.path.getsize(dst) > 0:
+            return True
+    if is_audio:
+        return False
+    try:
+        from PIL import Image
+        im = Image.open(src)
+        im.thumbnail((size, size))
+        im.convert("RGBA").save(dst, "PNG")
+        return True
+    except Exception:       # noqa: BLE001 - no Pillow, or not an image
+        return False
+
+
+def art_file(url, size):
+    """A cached PNG, at most size pixels square, of the image at url (a URL
+    or a local file); None if it cannot be had."""
+    name = hashlib.sha1(url.encode()).hexdigest()[:20]
+    dst = os.path.join(ART_DIR, "%s_%d.png" % (name, size))
+    if os.path.exists(dst):
+        return dst
+    os.makedirs(ART_DIR, exist_ok=True)
+    tmp = dst + ".%d.tmp" % threading.get_ident()
+    src = url
+    try:
+        if re.match(r"https?://", url):
+            src = tmp + ".src"
+            with open(src, "wb") as f:
+                f.write(http_bytes(url, timeout=20))
+        elif not os.path.exists(url):
+            return None
+        if not art_convert(src, tmp, size):
+            return None
+        os.replace(tmp, dst)
+        return dst
+    finally:
+        for p in (tmp, tmp + ".src"):
+            if os.path.exists(p):
+                os.remove(p)
 
 
 # ---------------------------------------------------------------- player
@@ -935,6 +1186,9 @@ class App:
         self.pending = set()
         self.skip_note = ""
         self.started = 0
+        self.art_mem = {}            # (url, size) -> PhotoImage
+        self.view_art = ""           # cover of the album being shown
+        self.np_art_url = ""
 
         root.title("tkmusic")
         set_window_icon(root)
@@ -1023,6 +1277,7 @@ class App:
         self.back_btn = ttk.Button(bar, text="◀ Back", width=7,
                                    command=self.go_back, state="disabled")
         self.back_btn.pack(side="left")
+        self.view_art_label = ttk.Label(bar)      # packed when there is art
         self.view_label = ttk.Label(bar, text="", font=("Helvetica", 13,
                                                         "bold"))
         self.view_label.pack(side="left", padx=8)
@@ -1059,11 +1314,26 @@ class App:
         # now playing / transport
         np = ttk.Frame(root, padding=(8, 6, 8, 2))
         np.pack(fill="x")
-        self.np_title = ttk.Label(np, text="Nothing playing",
+        # the app icon stands in for missing cover art
+        try:
+            self.art_blank = tk.PhotoImage(data=ICON_PNG).zoom(3) \
+                .subsample(128 * 3 // ART_NP)
+        except tk.TclError:
+            self.art_blank = tk.PhotoImage(width=ART_NP, height=ART_NP)
+        self.np_art = ttk.Label(np, image=self.art_blank, cursor="hand2")
+        self.np_art.pack(side="left", padx=(0, 10))
+        self.np_art.bind("<Button-1>", lambda e: self.go_to_playing_album())
+        txt = ttk.Frame(np)
+        txt.pack(side="left", fill="x", expand=True)
+        self.np_title = ttk.Label(txt, text="Nothing playing",
                                   font=("Helvetica", 16, "bold"))
         self.np_title.pack(anchor="w")
-        self.np_sub = ttk.Label(np, text="", font=("Helvetica", 13))
+        self.np_sub = ttk.Label(txt, text="", font=("Helvetica", 13))
         self.np_sub.pack(anchor="w")
+        self.np_album_btn = ttk.Button(txt, text="Go to album ▸",
+                                       command=self.go_to_playing_album,
+                                       state="disabled")
+        self.np_album_btn.pack(anchor="w", pady=(4, 0))
 
         tr = ttk.Frame(root, padding=(8, 2, 8, 4))
         tr.pack(fill="x")
@@ -1097,6 +1367,8 @@ class App:
             root.bind(seq, self.focus_search)
         for seq in ("<Control-q>", "<Command-q>"):
             root.bind(seq, lambda e: self.quit())
+        for seq in ("<Control-g>", "<Command-g>"):
+            root.bind(seq, lambda e: self.go_to_playing_album() or "break")
         root.bind("<Control-Right>", lambda e: self.next())
         root.bind("<Control-Left>", lambda e: self.prev())
         root.bind("<space>", self.key_space)
@@ -1124,7 +1396,8 @@ class App:
         t.bind("<Button-2>", lambda e: self.popup(t, e))
         t.bind("<Control-Button-1>", lambda e: self.popup(t, e))
         for k, fn in (("a", self.add_queue), ("n", self.play_next),
-                      ("f", self.toggle_favourite)):
+                      ("f", self.toggle_favourite),
+                      ("g", self.go_to_selected_album)):
             t.bind("<KeyPress-%s>" % k, lambda e, fn=fn: fn(t))
             t.bind("<KeyPress-%s>" % k.upper(), lambda e, fn=fn: fn(t))
         return t
@@ -1266,11 +1539,20 @@ class App:
             msg = "%d results" % n
         self.status(msg + ("  -  " + extra if extra else ""))
 
-    def show_items(self, title, items):
+    def show_items(self, title, items, art=""):
         self.view_title = title
         self.view_items = items
         self.view_label.config(text=title)
         self.back_btn.config(state="normal" if self.history else "disabled")
+        self.view_art = art
+        self.view_art_label.pack_forget()
+        if art:
+            def show(img):
+                if img is not None and self.view_art == art:
+                    self.view_art_label.config(image=img)
+                    self.view_art_label.pack(side="left", padx=(8, 0),
+                                             before=self.view_label)
+            self.load_art(art, ART_VIEW, show)
         self.fill(self.tree, items, ("title", "artist", "album", "len",
                                      "kind", "src"))
 
@@ -1343,6 +1625,8 @@ class App:
                 return sp_expand(it, cfg)
             if it["src"] == "YouTube Music":
                 return ytm_album_tracks(it)
+            if it["src"] == "File":
+                return folder_tracks(it)
             return []
 
         def done(items):
@@ -1351,11 +1635,13 @@ class App:
                 return
             self.search_id += 1
             self.pending = set()
-            self.history.append((self.view_title, self.view_items))
+            self.history.append((self.view_title, self.view_items,
+                                 self.view_art))
             title = it["title"]
             if it["artist"] and it["artist"] != it["title"]:
                 title += " - " + it["artist"]
-            self.show_items(title, items)
+            art = it.get("art") if it["kind"] != "artist" else ""
+            self.show_items(title, items, art or "")
             self.status("%d items" % len(items))
             if then:
                 then(items)
@@ -1363,11 +1649,101 @@ class App:
 
     def go_back(self):
         if self.history:
-            title, items = self.history.pop()
+            title, items, art = self.history.pop()
             self.search_id += 1
             self.pending = set()
-            self.show_items(title, items)
+            self.show_items(title, items, art)
         return "break"
+
+    # ------------------------------------------------------------ albums
+
+    def go_to_album(self, it):
+        """Show the album a track is on, with that track selected."""
+        if it is None:
+            return
+        if it["kind"] in ("station", "artist"):
+            self.status("%s is not on an album" % it["title"])
+            return
+        if it["kind"] != "track":
+            self.open_item(it)
+            return
+        self.status("Finding the album of %s ..." % it["title"])
+
+        def found(alb):
+            self.open_item(alb, lambda items: self.select_track(items, it))
+        self.bg(lambda: album_of(it), found)
+
+    def select_track(self, items, it):
+        """Select it (or the item with its title) in the results list."""
+        def same(x):
+            return x["title"] == it["title"] or (
+                (x["url"] or x["page"]) and
+                (x["url"] or x["page"]) == (it["url"] or it["page"]))
+        hits = [i for i, x in enumerate(items) if same(x)] or \
+            [i for i, x in enumerate(items) if words_in(it["title"],
+                                                         x["title"])]
+        for i in hits[:1]:
+            iid = "%s-%d" % (str(self.tree), i)
+            if self.tree.exists(iid):
+                self.tree.selection_set(iid)
+                self.tree.focus(iid)
+                self.tree.see(iid)
+                self.tree.focus_set()
+
+    def go_to_selected_album(self, tree):
+        sel = self.selected(tree)
+        if sel:
+            self.go_to_album(sel[0])
+        return "break"
+
+    def now_item(self):
+        if self.current is not None:
+            return self.current
+        if 0 <= self.qpos < len(self.queue):
+            return self.queue[self.qpos]
+        return None
+
+    def go_to_playing_album(self):
+        self.go_to_album(self.now_item())
+
+    def load_art(self, url, size, done):
+        """done(PhotoImage) on the UI thread once url's art is loaded
+        (done(None) if it cannot be)."""
+        if not url:
+            done(None)
+            return
+        key = (url, size)
+        if key in self.art_mem:
+            done(self.art_mem[key])
+            return
+
+        def ok(path):
+            img = None
+            if path:
+                try:
+                    img = tk.PhotoImage(file=path)
+                except tk.TclError:
+                    img = None
+            if img is not None:
+                if len(self.art_mem) > 300:
+                    self.art_mem.clear()
+                self.art_mem[key] = img
+            done(img)
+        self.bg(lambda: art_file(url, size), ok, lambda e: done(None))
+
+    def show_np_art(self, it):
+        url = it.get("art") or (it.get("alb") or {}).get("art", "") \
+            if it else ""
+        self.np_art_url = url
+        self.np_art.config(image=self.art_blank)
+        self.np_album_btn.config(
+            state="normal" if it and it["kind"] == "track" and
+            it["src"] != "URL" else "disabled")
+
+        def show(img):
+            if img is not None and self.np_art_url == url:
+                self.np_art.config(image=img)
+        self.load_art(url, ART_NP, show)
 
     def play_all(self):
         items = [x for x in self.view_items if x["kind"] == "track"]
@@ -1483,10 +1859,16 @@ class App:
             m.add_command(label="Play", command=lambda: self.activate(tree))
             m.add_command(label="Remove from queue",
                           command=self.queue_remove)
+            if it["kind"] == "track" and it["src"] != "URL":
+                m.add_command(label="Go to album   (G)",
+                              command=lambda: self.go_to_album(it))
         else:
             if it["kind"] in PLAYABLE:
                 m.add_command(label="Play",
                               command=lambda: self.activate(tree))
+                if it["kind"] == "track" and it["src"] != "URL":
+                    m.add_command(label="Go to album   (G)",
+                                  command=lambda: self.go_to_album(it))
             else:
                 m.add_command(label="Open",
                               command=lambda: self.open_item(it))
@@ -1537,6 +1919,7 @@ class App:
         self.pause_btn.config(text="❚❚")
         self.np_title.config(text=it["title"])
         self.np_sub.config(text=self.sub_text(it, "loading ..."))
+        self.show_np_art(it)
         self.pos.set(0)
         self.pos_label.config(text="")
         self.dur_label.config(text=fmt_time(it["dur"]))
@@ -1681,9 +2064,7 @@ class App:
         self.player.command("set_property", "volume", int(self.volume.get()))
 
     def open_files(self, paths):
-        items = [item("File", "track", os.path.basename(p), "",
-                      os.path.dirname(os.path.abspath(p)), None,
-                      os.path.abspath(p), "") for p in paths]
+        items = [file_item(p) for p in paths]
         if not items:
             return
         if self.current is None:
