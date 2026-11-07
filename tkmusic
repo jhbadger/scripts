@@ -54,6 +54,9 @@ Keys:
   G                     go to the album the selected track is on
   Ctrl-G                go to the album of the track playing (or click
                         its cover art)
+  Ctrl-D                add the album of the track playing to (or remove
+                        it from) favourites; for any track, right-click
+                        > Add album to favourites
   Space                 pause / resume    Ctrl-Left / Ctrl-Right  prev / next
   Delete (queue)        remove from queue
   Right-click           more actions (open web page, copy URL ...)
@@ -1330,10 +1333,16 @@ class App:
         self.np_title.pack(anchor="w")
         self.np_sub = ttk.Label(txt, text="", font=("Helvetica", 13))
         self.np_sub.pack(anchor="w")
-        self.np_album_btn = ttk.Button(txt, text="Go to album ▸",
+        btns = ttk.Frame(txt)
+        btns.pack(anchor="w", pady=(4, 0))
+        self.np_album_btn = ttk.Button(btns, text="Go to album ▸",
                                        command=self.go_to_playing_album,
                                        state="disabled")
-        self.np_album_btn.pack(anchor="w", pady=(4, 0))
+        self.np_album_btn.pack(side="left")
+        self.np_fav_album_btn = ttk.Button(
+            btns, text="☆ Favourite album", state="disabled",
+            command=self.toggle_playing_album_favourite)
+        self.np_fav_album_btn.pack(side="left", padx=(6, 0))
 
         tr = ttk.Frame(root, padding=(8, 2, 8, 4))
         tr.pack(fill="x")
@@ -1369,6 +1378,8 @@ class App:
             root.bind(seq, lambda e: self.quit())
         for seq in ("<Control-g>", "<Command-g>"):
             root.bind(seq, lambda e: self.go_to_playing_album() or "break")
+        for seq in ("<Control-d>", "<Command-d>"):
+            root.bind(seq, lambda e: self.toggle_playing_album_favourite())
         root.bind("<Control-Right>", lambda e: self.next())
         root.bind("<Control-Left>", lambda e: self.prev())
         root.bind("<space>", self.key_space)
@@ -1739,6 +1750,7 @@ class App:
         self.np_album_btn.config(
             state="normal" if it and it["kind"] == "track" and
             it["src"] != "URL" else "disabled")
+        self.update_fav_album_btn()
 
         def show(img):
             if img is not None and self.np_art_url == url:
@@ -1823,21 +1835,54 @@ class App:
         return (it["src"], it["kind"], it["page"] or it["url"], it["title"])
 
     def toggle_favourite(self, tree):
+        for it in self.selected(tree):
+            self.toggle_fav_item(it)
+        return "break"
+
+    def is_favourite(self, it):
+        return it is not None and self.fav_key(it) in [
+            self.fav_key(f) for f in self.favourites()]
+
+    def toggle_fav_item(self, it):
         favs = self.favourites()
         keys = [self.fav_key(f) for f in favs]
-        for it in self.selected(tree):
-            k = self.fav_key(it)
-            if k in keys:
-                del favs[keys.index(k)]
-                keys.remove(k)
-                self.status("Removed %s from favourites" % it["title"])
-            else:
-                favs.append(dict(it))
-                keys.append(k)
-                self.status("Added %s to favourites" % it["title"])
+        k = self.fav_key(it)
+        if k in keys:
+            del favs[keys.index(k)]
+            self.status("Removed %s from favourites" % it["title"])
+        else:
+            favs.append(dict(it))
+            self.status("Added %s to favourites" % it["title"])
         self.refresh_favourites()
         self.save_config()
+        self.update_fav_album_btn()
+
+    def toggle_album_favourite(self, it):
+        """Add (or remove) the whole album a track is on to favourites."""
+        if it is None or it["kind"] != "track" or it["src"] == "URL":
+            return
+        if it.get("alb"):
+            self.toggle_fav_item(album_ref(it["alb"]))
+            return
+        self.status("Finding the album of %s ..." % it["title"])
+
+        def found(alb):
+            alb = album_ref(alb)
+            it["alb"] = alb          # remembered for next time
+            self.toggle_fav_item(alb)
+        self.bg(lambda: album_of(it), found)
+
+    def toggle_playing_album_favourite(self):
+        self.toggle_album_favourite(self.now_item())
         return "break"
+
+    def update_fav_album_btn(self):
+        it = self.now_item()
+        ok = it is not None and it["kind"] == "track" and it["src"] != "URL"
+        fav = ok and it.get("alb") and self.is_favourite(it["alb"])
+        self.np_fav_album_btn.config(
+            state="normal" if ok else "disabled",
+            text="★ Favourite album" if fav else "☆ Favourite album")
 
     def refresh_favourites(self):
         self.fill(self.fav_tree, self.favourites(),
@@ -1859,16 +1904,12 @@ class App:
             m.add_command(label="Play", command=lambda: self.activate(tree))
             m.add_command(label="Remove from queue",
                           command=self.queue_remove)
-            if it["kind"] == "track" and it["src"] != "URL":
-                m.add_command(label="Go to album   (G)",
-                              command=lambda: self.go_to_album(it))
+            self.album_menu_items(m, it)
         else:
             if it["kind"] in PLAYABLE:
                 m.add_command(label="Play",
                               command=lambda: self.activate(tree))
-                if it["kind"] == "track" and it["src"] != "URL":
-                    m.add_command(label="Go to album   (G)",
-                                  command=lambda: self.go_to_album(it))
+                self.album_menu_items(m, it)
             else:
                 m.add_command(label="Open",
                               command=lambda: self.open_item(it))
@@ -1895,6 +1936,16 @@ class App:
             it["page"] or it["url"]))
         m.tk_popup(event.x_root, event.y_root)
         return "break"
+
+    def album_menu_items(self, m, it):
+        if it["kind"] != "track" or it["src"] == "URL":
+            return
+        m.add_command(label="Go to album   (G)",
+                      command=lambda: self.go_to_album(it))
+        fav = it.get("alb") and self.is_favourite(it["alb"])
+        m.add_command(label=("Remove album from" if fav else "Add album to") +
+                      " favourites",
+                      command=lambda: self.toggle_album_favourite(it))
 
     def copy(self, text):
         self.root.clipboard_clear()
