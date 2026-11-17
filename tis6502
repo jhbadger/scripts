@@ -2467,6 +2467,28 @@ class TIS6502TUI:
                     self.stdscr.addnstr(y, 1, f"  {tname}: {'PASS' if ok else 'FAIL'} ({ticks}t)", left_w - 2)
                     y += 1
 
+        # Active Node Debugger Display (A, X, Y, PC, SP, Flags, ZP $10-$17)
+        if y + 4 < h - 3:
+            y += 1
+            anode = self.machine.nodes[self.active_node]
+            self.stdscr.addnstr(y, 1, f"DEBUGGER [NODE {self.active_node} - {anode.state}]:", left_inner, curses.A_BOLD)
+            y += 1
+            regs_line = f"A:${anode.A:02X} ({anode.A:3d})  X:${anode.X:02X} ({anode.X:3d})  Y:${anode.Y:02X} ({anode.Y:3d})"
+            for wline in (textwrap.wrap(regs_line, width=left_inner) or [""]):
+                if y < h - 3:
+                    self.stdscr.addnstr(y, 1, wline, left_inner, curses.A_BOLD)
+                    y += 1
+            meta_line = f"PC:${anode.PC:04X}  SP:${anode.SP:02X}  P:{anode.status_flags_str()}  CYC:{anode.cycles}"
+            for wline in (textwrap.wrap(meta_line, width=left_inner) or [""]):
+                if y < h - 3:
+                    self.stdscr.addnstr(y, 1, wline, left_inner)
+                    y += 1
+            zp = " ".join(f"{anode.mem[a]:02X}" for a in range(0x10, 0x18))
+            for wline in (textwrap.wrap(f"ZP $10-$17: {zp}", width=left_inner) or [""]):
+                if y < h - 3:
+                    self.stdscr.addnstr(y, 1, wline, left_inner, curses.A_DIM)
+                    y += 1
+
         # Right Area: 2x2 Node Grid
         grid_x = left_w + 1
         grid_w = max(20, w - grid_x - 1)
@@ -2486,7 +2508,7 @@ class TIS6502TUI:
 
             reg = f"A:{node.A:02X} X:{node.X:02X} Y:{node.Y:02X} PC:{node.PC:04X} {node.status_flags_str()}"
             if ny + 1 < h - 2 and nx < w - 2:
-                self.stdscr.addnstr(ny + 1, nx, reg, min(col_w, w - nx - 1), curses.A_DIM)
+                self.stdscr.addnstr(ny + 1, nx, reg, min(col_w, w - nx - 1), curses.A_BOLD if is_act else curses.A_NORMAL)
 
             if node.error_msg:
                 if ny + 2 < h - 2 and nx < w - 2:
