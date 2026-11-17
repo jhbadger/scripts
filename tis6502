@@ -23,6 +23,7 @@ import argparse
 import curses
 import re
 import sys
+import textwrap
 import time
 import unittest
 from dataclasses import dataclass, field
@@ -1402,6 +1403,816 @@ PUZZLES: List[Puzzle] = [
             3: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
         },
     ),
+    Puzzle(
+        number=7,
+        title="BITWISE COMPLEMENT",
+        description=[
+            "Read each byte from IN.A (Node 0 UP).",
+            "Invert all 8 bits (ones' complement: X XOR $FF).",
+            "Write the result to OUT.A (Node 2 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Bytes", {"IN.A": [0x00, 0xFF, 0xAA, 0x0F, 0x55]}, {"OUT.A": [0xFF, 0x00, 0x55, 0xF0, 0xAA]}),
+            TestCase("More", {"IN.A": [0x01, 0x80, 0x3C]}, {"OUT.A": [0xFE, 0x7F, 0xC3]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Invert bits with EOR #$FF\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: "LOOP:\n    LDA UP\n    EOR #$FF\n    STA DOWN\n    JMP LOOP\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=8,
+        title="CLAMP TO RANGE",
+        description=[
+            "Read each byte from IN.A (Node 0 UP).",
+            "Clamp value to [20, 200] ($14 to $C8).",
+            "Write clamped value to OUT.A (Node 2 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Clamp", {"IN.A": [0, 19, 20, 100, 200, 201, 255]}, {"OUT.A": [20, 20, 20, 100, 200, 200, 200]}),
+            TestCase("Edges", {"IN.A": [5, 50, 250]}, {"OUT.A": [20, 50, 200]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Clamp A to [$14, $C8]\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    CMP #20\n"
+                "    BCS CHK_HI\n"
+                "    LDA #20\n"
+                "    JMP SEND\n"
+                "CHK_HI:\n"
+                "    CMP #201\n"
+                "    BCC SEND\n"
+                "    LDA #200\n"
+                "SEND:\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=9,
+        title="POPULATION COUNT",
+        description=[
+            "Read each byte from IN.A (Node 0 UP).",
+            "Count how many 1-bits are set in the byte (0..8).",
+            "Write the bit count to OUT.A (Node 2 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Bits", {"IN.A": [0x00, 0xFF, 0xAA, 0x01, 0x7F, 0x13]}, {"OUT.A": [0, 8, 4, 1, 7, 3]}),
+            TestCase("More", {"IN.A": [0x80, 0x0F, 0x55]}, {"OUT.A": [1, 4, 4]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Shift 8 times, add Carry\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    LDX #8\n"
+                "    LDY #0\n"
+                "BIT_LP:\n"
+                "    LSR A\n"
+                "    BCC NO_BIT\n"
+                "    INY\n"
+                "NO_BIT:\n"
+                "    DEX\n"
+                "    BNE BIT_LP\n"
+                "    STY DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=10,
+        title="BIT REVERSAL",
+        description=[
+            "Read each byte from IN.A (Node 0 UP).",
+            "Reverse the order of its 8 bits (b7..b0 -> b0..b7).",
+            "Write the reversed byte to OUT.A (Node 2 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Rev", {"IN.A": [0x01, 0x80, 0xAA, 0x0F, 0xB3, 0x00]}, {"OUT.A": [0x80, 0x01, 0x55, 0xF0, 0xCD, 0x00]}),
+            TestCase("More", {"IN.A": [0x12, 0xFF, 0x40]}, {"OUT.A": [0x48, 0xFF, 0x02]}),
+        ],
+        starter_code={
+            0: "; NODE 0: LSR input into C, ROL $10\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    LDX #8\n"
+                "    LDY #0\n"
+                "    STY $10\n"
+                "REV_LP:\n"
+                "    LSR A\n"
+                "    ROL $10\n"
+                "    DEX\n"
+                "    BNE REV_LP\n"
+                "    LDA $10\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=11,
+        title="DELTA ENCODER",
+        description=[
+            "Read a stream of bytes X[i] from IN.A (Node 0 UP).",
+            "Output X[i] - X[i-1] (mod 256) to OUT.A (Node 2 DOWN).",
+            "Assume X[-1] = 0.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Ramp", {"IN.A": [10, 15, 12, 12, 20]}, {"OUT.A": [10, 5, 253, 0, 8]}),
+            TestCase("Wrap", {"IN.A": [250, 5, 0]}, {"OUT.A": [250, 11, 251]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Keep previous value in $10\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "    LDA #0\n"
+                "    STA $10\n"
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    TAX\n"
+                "    SEC\n"
+                "    SBC $10\n"
+                "    STA DOWN\n"
+                "    STX $10\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=12,
+        title="DELTA DECODER",
+        description=[
+            "Read delta-encoded bytes D[i] from IN.A (Node 0 UP).",
+            "Output running prefix sum Y[i] = Y[i-1] + D[i] (mod 256).",
+            "Assume Y[-1] = 0.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Ramp", {"IN.A": [10, 5, 253, 0, 8]}, {"OUT.A": [10, 15, 12, 12, 20]}),
+            TestCase("Wrap", {"IN.A": [250, 11, 251]}, {"OUT.A": [250, 5, 0]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Keep running sum in $10\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "    LDA #0\n"
+                "    STA $10\n"
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    CLC\n"
+                "    ADC $10\n"
+                "    STA $10\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=13,
+        title="PAIRWISE MAX",
+        description=[
+            "Read A from IN.A (Node 0 UP) and B from IN.B (Node 1 UP).",
+            "Output max(A, B) to OUT.A (Node 2 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0), "IN.B": (1, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Pairs", {"IN.A": [3, 50, 10, 0, 255], "IN.B": [9, 20, 10, 1, 128]}, {"OUT.A": [9, 50, 10, 1, 255]}),
+            TestCase("More", {"IN.A": [100, 42], "IN.B": [99, 43]}, {"OUT.A": [100, 43]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Compare UP with RIGHT\n",
+            1: "LOOP:\n    LDA UP\n    STA LEFT\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    STA $10\n"
+                "    LDA RIGHT\n"
+                "    CMP $10\n"
+                "    BCS B_WIN\n"
+                "    LDA $10\n"
+                "B_WIN:\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "LOOP:\n    LDA UP\n    STA LEFT\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=14,
+        title="MOVING AVERAGE",
+        description=[
+            "Read X[i] from IN.A (Node 0 UP). Assume X[-1] = 0.",
+            "Output floor((X[i] + X[i-1]) / 2) to OUT.A (Node 2 DOWN).",
+            "Hint: CLC, ADC $10, then ROR A shifts the 9-bit sum right!",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Avg", {"IN.A": [10, 20, 30, 250, 250]}, {"OUT.A": [5, 15, 25, 140, 250]}),
+            TestCase("Odd", {"IN.A": [5, 6, 1]}, {"OUT.A": [2, 5, 3]}),
+        ],
+        starter_code={
+            0: "; NODE 0: 9-bit average using ADC + ROR A\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "    LDA #0\n"
+                "    STA $10\n"
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    TAX\n"
+                "    CLC\n"
+                "    ADC $10\n"
+                "    ROR A\n"
+                "    STA DOWN\n"
+                "    STX $10\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=15,
+        title="PARITY SPLITTER",
+        description=[
+            "Read bytes from IN.A (Node 0 UP).",
+            "Route even numbers to OUT.A (Node 2 DOWN).",
+            "Route odd numbers to OUT.B (Node 3 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2), "OUT.B": (3, 2)},
+        tests=[
+            TestCase("Split", {"IN.A": [1, 2, 3, 4, 0, 255, 100]}, {"OUT.A": [2, 4, 0, 100], "OUT.B": [1, 3, 255]}),
+            TestCase("More", {"IN.A": [10, 11, 12, 13]}, {"OUT.A": [10, 12], "OUT.B": [11, 13]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Test bit 0 with AND #1\n",
+            1: "; NODE 1: Forward LEFT to DOWN\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    TAX\n"
+                "    AND #$01\n"
+                "    BNE ODD\n"
+                "    STX DOWN\n"
+                "    JMP LOOP\n"
+                "ODD:\n"
+                "    STX RIGHT\n"
+                "    JMP LOOP\n"
+            ),
+            1: "LOOP:\n    LDA LEFT\n    STA DOWN\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+        },
+    ),
+    Puzzle(
+        number=16,
+        title="PACKET LENGTH",
+        description=[
+            "Read 0-terminated packets from IN.A (Node 0 UP).",
+            "For each packet, output the count of non-zero bytes to OUT.A.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Pkts", {"IN.A": [5, 6, 7, 0, 0, 99, 0]}, {"OUT.A": [3, 0, 1]}),
+            TestCase("Long", {"IN.A": [1, 2, 3, 4, 5, 0, 8, 9, 0]}, {"OUT.A": [5, 2]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Count until 0, then emit X\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "RESET:\n"
+                "    LDX #0\n"
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    BEQ DONE\n"
+                "    INX\n"
+                "    JMP LOOP\n"
+                "DONE:\n"
+                "    STX DOWN\n"
+                "    JMP RESET\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=17,
+        title="PACKET MAXIMUM",
+        description=[
+            "Read 0-terminated packets from IN.A (Node 0 UP).",
+            "Output the maximum byte in each packet to OUT.A (0 if empty).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Max", {"IN.A": [3, 9, 2, 0, 0, 42, 10, 100, 0]}, {"OUT.A": [9, 0, 100]}),
+            TestCase("More", {"IN.A": [255, 1, 0, 7, 7, 0]}, {"OUT.A": [255, 7]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Track max in $10\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "RESET:\n"
+                "    LDA #0\n"
+                "    STA $10\n"
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    BEQ EMIT\n"
+                "    CMP $10\n"
+                "    BCC LOOP\n"
+                "    STA $10\n"
+                "    JMP LOOP\n"
+                "EMIT:\n"
+                "    LDA $10\n"
+                "    STA DOWN\n"
+                "    JMP RESET\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=18,
+        title="RUN-LENGTH DECODER",
+        description=[
+            "Read (COUNT, VALUE) pairs from IN.A (Node 0 UP).",
+            "Write VALUE repeated COUNT times to OUT.A (Node 2 DOWN).",
+            "COUNT may be 0 (emit nothing for that pair).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("RLE", {"IN.A": [3, 10, 0, 99, 2, 5, 1, 42]}, {"OUT.A": [10, 10, 10, 5, 5, 42]}),
+            TestCase("More", {"IN.A": [4, 7, 1, 8]}, {"OUT.A": [7, 7, 7, 7, 8]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Read count -> X, value -> A\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDX UP\n"
+                "    LDA UP\n"
+                "    CPX #0\n"
+                "    BEQ LOOP\n"
+                "EMIT:\n"
+                "    STA DOWN\n"
+                "    DEX\n"
+                "    BNE EMIT\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=19,
+        title="RUN-LENGTH ENCODER",
+        description=[
+            "Read a 0-terminated stream of non-zero bytes from IN.A.",
+            "Emit (COUNT, VALUE) pairs for consecutive runs to OUT.A.",
+            "When 0 is read, flush the final run (if any) and reset.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Runs", {"IN.A": [5, 5, 5, 2, 9, 9, 0]}, {"OUT.A": [3, 5, 1, 2, 2, 9]}),
+            TestCase("Reset", {"IN.A": [7, 0, 8, 8, 0]}, {"OUT.A": [1, 7, 2, 8]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Track cur val ($10) and count ($11)\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "RESET:\n"
+                "    LDA #0\n"
+                "    STA $11\n"
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    BEQ FLUSH\n"
+                "    LDX $11\n"
+                "    BEQ NEW_RUN\n"
+                "    CMP $10\n"
+                "    BNE CHANGED\n"
+                "    INC $11\n"
+                "    JMP LOOP\n"
+                "NEW_RUN:\n"
+                "    STA $10\n"
+                "    LDA #1\n"
+                "    STA $11\n"
+                "    JMP LOOP\n"
+                "CHANGED:\n"
+                "    TAY\n"
+                "    LDA $11\n"
+                "    STA DOWN\n"
+                "    LDA $10\n"
+                "    STA DOWN\n"
+                "    STY $10\n"
+                "    LDA #1\n"
+                "    STA $11\n"
+                "    JMP LOOP\n"
+                "FLUSH:\n"
+                "    LDA $11\n"
+                "    BEQ RESET\n"
+                "    STA DOWN\n"
+                "    LDA $10\n"
+                "    STA DOWN\n"
+                "    JMP RESET\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=20,
+        title="ASCII UPPERCASE",
+        description=[
+            "Read ASCII bytes from IN.A (Node 0 UP).",
+            "Convert lowercase 'a'..'z' ($61..$7A) to 'A'..'Z' ($41..$5A).",
+            "Leave all other bytes unchanged. Output to OUT.A (Node 2 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Text", {"IN.A": [ord(c) for c in "Hi 6502!"]}, {"OUT.A": [ord(c) for c in "HI 6502!"]}),
+            TestCase("Bounds", {"IN.A": [0x60, 0x61, 0x7A, 0x7B]}, {"OUT.A": [0x60, 0x41, 0x5A, 0x7B]}),
+        ],
+        starter_code={
+            0: "; NODE 0: If 'a' <= A <= 'z', AND #$DF\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    CMP #$61\n"
+                "    BCC SEND\n"
+                "    CMP #$7B\n"
+                "    BCS SEND\n"
+                "    AND #$DF\n"
+                "SEND:\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=21,
+        title="8-BIT MULTIPLIER",
+        description=[
+            "Read A from IN.A (Node 0 UP) and B from IN.B (Node 1 UP).",
+            "Compute (A * B) mod 256 using shift-and-add.",
+            "Write the product to OUT.A (Node 2 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0), "IN.B": (1, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Mult", {"IN.A": [6, 12, 0, 255, 16], "IN.B": [7, 10, 99, 2, 16]}, {"OUT.A": [42, 120, 0, 254, 0]}),
+            TestCase("More", {"IN.A": [13, 15], "IN.B": [17, 15]}, {"OUT.A": [221, 225]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Multiply UP by RIGHT\n",
+            1: "LOOP:\n    LDA UP\n    STA LEFT\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    STA $10\n"
+                "    LDA RIGHT\n"
+                "    STA $11\n"
+                "    LDA #0\n"
+                "    LDX #8\n"
+                "MUL_LP:\n"
+                "    LSR $11\n"
+                "    BCC NO_ADD\n"
+                "    CLC\n"
+                "    ADC $10\n"
+                "NO_ADD:\n"
+                "    ASL $10\n"
+                "    DEX\n"
+                "    BNE MUL_LP\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "LOOP:\n    LDA UP\n    STA LEFT\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=22,
+        title="DIVIDE BY 10",
+        description=[
+            "Read byte N from IN.A (Node 0 UP).",
+            "Output quotient (N // 10) to OUT.A (Node 2 DOWN).",
+            "Output remainder (N % 10) to OUT.B (Node 3 DOWN).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2), "OUT.B": (3, 2)},
+        tests=[
+            TestCase("Div10", {"IN.A": [0, 9, 10, 42, 99, 255]}, {"OUT.A": [0, 0, 1, 4, 9, 25], "OUT.B": [0, 9, 0, 2, 9, 5]}),
+            TestCase("More", {"IN.A": [100, 73]}, {"OUT.A": [10, 7], "OUT.B": [0, 3]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Repeatedly subtract 10\n",
+            1: "LOOP:\n    LDA LEFT\n    STA DOWN\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    LDX #0\n"
+                "DIV_LP:\n"
+                "    CMP #10\n"
+                "    BCC DONE\n"
+                "    SEC\n"
+                "    SBC #10\n"
+                "    INX\n"
+                "    JMP DIV_LP\n"
+                "DONE:\n"
+                "    STX DOWN\n"
+                "    STA RIGHT\n"
+                "    JMP LOOP\n"
+            ),
+            1: "LOOP:\n    LDA LEFT\n    STA DOWN\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+        },
+    ),
+    Puzzle(
+        number=23,
+        title="FIBONACCI STREAM",
+        description=[
+            "Read count N (N >= 1) from IN.A (Node 0 UP).",
+            "Output the first N Fibonacci numbers mod 256 to OUT.A:",
+            "1, 1, 2, 3, 5, 8, 13, ...",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Fib7", {"IN.A": [7]}, {"OUT.A": [1, 1, 2, 3, 5, 8, 13]}),
+            TestCase("Two", {"IN.A": [1, 4]}, {"OUT.A": [1, 1, 1, 2, 3]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Emit N Fibonacci numbers\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDX UP\n"
+                "    LDA #0\n"
+                "    STA $10\n"
+                "    LDA #1\n"
+                "    STA $11\n"
+                "FIB_LP:\n"
+                "    LDA $11\n"
+                "    STA DOWN\n"
+                "    CLC\n"
+                "    ADC $10\n"
+                "    LDY $11\n"
+                "    STY $10\n"
+                "    STA $11\n"
+                "    DEX\n"
+                "    BNE FIB_LP\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=24,
+        title="STACK REVERSER",
+        description=[
+            "Read 0-terminated packets of non-zero bytes from IN.A.",
+            "Output each packet's bytes in REVERSE order to OUT.A.",
+            "Hint: Push bytes with PHA, then pop with PLA until count is 0.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Rev", {"IN.A": [1, 2, 3, 0, 10, 20, 0]}, {"OUT.A": [3, 2, 1, 20, 10]}),
+            TestCase("Empty", {"IN.A": [0, 42, 0]}, {"OUT.A": [42]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Use PHA / PLA hardware stack\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "RESET:\n"
+                "    LDX #0\n"
+                "PUSH_LP:\n"
+                "    LDA UP\n"
+                "    BEQ POP_CHK\n"
+                "    PHA\n"
+                "    INX\n"
+                "    JMP PUSH_LP\n"
+                "POP_CHK:\n"
+                "    CPX #0\n"
+                "    BEQ RESET\n"
+                "POP_LP:\n"
+                "    PLA\n"
+                "    STA DOWN\n"
+                "    DEX\n"
+                "    BNE POP_LP\n"
+                "    JMP RESET\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=25,
+        title="XOR CHECKSUM",
+        description=[
+            "Read 0-terminated packets of bytes from IN.A (Node 0 UP).",
+            "Compute the bitwise XOR of all bytes in each packet.",
+            "When 0 is read, output the checksum to OUT.A and reset.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("XOR", {"IN.A": [0x0F, 0xF0, 0, 0xAA, 0xAA, 0, 0]}, {"OUT.A": [0xFF, 0x00, 0x00]}),
+            TestCase("More", {"IN.A": [1, 2, 4, 0, 42, 0]}, {"OUT.A": [7, 42]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Accumulate XOR in $10\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "RESET:\n"
+                "    LDA #0\n"
+                "    STA $10\n"
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    BEQ EMIT\n"
+                "    EOR $10\n"
+                "    STA $10\n"
+                "    JMP LOOP\n"
+                "EMIT:\n"
+                "    LDA $10\n"
+                "    STA DOWN\n"
+                "    JMP RESET\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=26,
+        title="8-BIT LFSR STEP",
+        description=[
+            "Read an 8-bit state S from IN.A (Node 0 UP).",
+            "Apply 1 Galois LFSR step: shift S right by 1; if shifted-out",
+            "bit was 1, XOR the result with $B8. Output to OUT.A.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("LFSR", {"IN.A": [0x01, 0xB8, 0x02, 0xFF]}, {"OUT.A": [0xB8, 0x5C, 0x01, 0xC7]}),
+            TestCase("Zero", {"IN.A": [0x00, 0x80]}, {"OUT.A": [0x00, 0x40]}),
+        ],
+        starter_code={
+            0: "; NODE 0: LSR A, BCC skip, EOR #$B8\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    LSR A\n"
+                "    BCC NO_TAP\n"
+                "    EOR #$B8\n"
+                "NO_TAP:\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
 ]
 
 
@@ -1601,37 +2412,51 @@ class TIS6502TUI:
         self.stdscr.addnstr(0, 0, title.ljust(w), w - 1, curses.A_REVERSE)
 
         # Left Panel: Puzzle Description & I/O Streams
-        left_w = min(38, max(28, w // 3))
+        left_w = max(28, min(62, w // 3))
+        if w - left_w < 54:
+            left_w = max(24, w - 54)
+        left_inner = max(12, left_w - 2)
+        if left_w < w - 1:
+            for div_y in range(1, h - 2):
+                self.stdscr.addch(div_y, left_w, "|", curses.A_DIM)
+
         y = 2
-        self.stdscr.addnstr(y, 1, "SPECIFICATION:", left_w - 2, curses.A_BOLD)
+        self.stdscr.addnstr(y, 1, "SPECIFICATION:", left_inner, curses.A_BOLD)
         y += 1
         for line in p.description:
-            if y < h - 3:
-                self.stdscr.addnstr(y, 1, line, left_w - 2)
-                y += 1
+            wrapped = textwrap.wrap(line, width=left_inner) or [""]
+            for wline in wrapped:
+                if y < h - 3:
+                    self.stdscr.addnstr(y, 1, wline, left_inner)
+                    y += 1
 
         y += 1
         if y < h - 3:
             tc = p.tests[self.machine.test_idx]
-            self.stdscr.addnstr(y, 1, f"TEST CASE: {tc.name}", left_w - 2, curses.A_BOLD)
+            self.stdscr.addnstr(y, 1, f"TEST CASE: {tc.name}", left_inner, curses.A_BOLD)
             y += 1
 
         for name, ch in self.machine.in_streams.items():
-            if y < h - 3:
-                vals = ",".join(str(v) for v in ch.initial_data[:8])
-                if len(ch.initial_data) > 8:
-                    vals += ",..."
-                self.stdscr.addnstr(y, 1, f"{name} [{ch.index}/{len(ch.initial_data)}]: {vals}", left_w - 2)
-                y += 1
+            vals = ",".join(str(v) for v in ch.initial_data[:8])
+            if len(ch.initial_data) > 8:
+                vals += ",..."
+            for wline in (textwrap.wrap(f"{name} [{ch.index}/{len(ch.initial_data)}]: {vals}", width=left_inner) or [""]):
+                if y < h - 3:
+                    self.stdscr.addnstr(y, 1, wline, left_inner)
+                    y += 1
 
         for name, ch in self.machine.out_streams.items():
-            if y < h - 4:
-                exp = ",".join(str(v) for v in ch.expected[:7])
-                got = ",".join(str(v) for v in ch.received[:7])
-                mark = "OK" if ch.is_satisfied() else ".."
-                self.stdscr.addnstr(y, 1, f"{name} EXP: {exp}", left_w - 2)
-                self.stdscr.addnstr(y + 1, 1, f"{name} GOT [{mark}]: {got}", left_w - 2)
-                y += 2
+            exp = ",".join(str(v) for v in ch.expected[:7])
+            got = ",".join(str(v) for v in ch.received[:7])
+            mark = "OK" if ch.is_satisfied() else ".."
+            for wline in (textwrap.wrap(f"{name} EXP: {exp}", width=left_inner) or [""]):
+                if y < h - 3:
+                    self.stdscr.addnstr(y, 1, wline, left_inner)
+                    y += 1
+            for wline in (textwrap.wrap(f"{name} GOT [{mark}]: {got}", width=left_inner) or [""]):
+                if y < h - 3:
+                    self.stdscr.addnstr(y, 1, wline, left_inner)
+                    y += 1
 
         if self.test_results and y < h - 3:
             y += 1
@@ -1835,7 +2660,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="TIS-6502: 6502 Assembly Coding Puzzle Game")
     parser.add_argument("--test", action="store_true", help="Run built-in unit and puzzle verification tests")
     parser.add_argument("--list", action="store_true", help="List all available puzzles")
-    parser.add_argument("--puzzle", type=int, default=1, help="Puzzle number (1-6) for --solve")
+    parser.add_argument("--puzzle", type=int, default=1, help=f"Puzzle number (1-{len(PUZZLES)}) for --solve")
     parser.add_argument("--solve", action="store_true", help="Run reference solution for --puzzle in CLI")
     args = parser.parse_args()
 
