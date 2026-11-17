@@ -1,0 +1,1879 @@
+#!/usr/bin/env python3
+"""
+TIS-6502: A TIS-100-inspired coding puzzle game using real MOS 6502 assembly.
+
+Each node in a 2x2 grid is an independent 6502 CPU with 64KB of RAM and
+memory-mapped blocking I/O ports to neighboring nodes and external streams:
+  UP    = $E000
+  RIGHT = $E001
+  DOWN  = $E002
+  LEFT  = $E003
+  STAT  = $E004  (bit 0=UP ready, 1=RIGHT ready, 2=DOWN ready, 3=LEFT ready)
+
+Usage:
+  python3 tis6502.py              # Launch interactive curses TUI
+  python3 tis6502.py --test       # Run built-in assembler, CPU & puzzle tests
+  python3 tis6502.py --list       # List all puzzles
+  python3 tis6502.py --puzzle N --solve  # Run reference solution for puzzle N
+"""
+
+from __future__ import annotations
+
+import argparse
+import curses
+import re
+import sys
+import time
+import unittest
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+
+# =============================================================================
+# 1. MOS 6502 OPCODE TABLE & ADDRESSING MODES
+# =============================================================================
+
+# Addressing modes
+IMP = "IMP"  # Implied
+ACC = "ACC"  # Accumulator
+IMM = "IMM"  # Immediate: #$10
+ZP  = "ZP"   # Zero Page: $10
+ZPX = "ZPX"  # Zero Page,X: $10,X
+ZPY = "ZPY"  # Zero Page,Y: $10,Y
+ABS = "ABS"  # Absolute: $1234
+ABX = "ABX"  # Absolute,X: $1234,X
+ABY = "ABY"  # Absolute,Y: $1234,Y
+IND = "IND"  # Indirect: ($1234)
+IZX = "IZX"  # Indexed Indirect: ($10,X)
+IZY = "IZY"  # Indirect Indexed: ($10),Y
+REL = "REL"  # Relative: label
+
+MODE_SIZE: Dict[str, int] = {
+    IMP: 1, ACC: 1,
+    IMM: 2, ZP: 2, ZPX: 2, ZPY: 2, IZX: 2, IZY: 2, REL: 2,
+    ABS: 3, ABX: 3, ABY: 3, IND: 3,
+}
+
+# (mnemonic, mode) -> (opcode, base_cycles)
+OPCODES: Dict[Tuple[str, str], Tuple[int, int]] = {
+    # ADC
+    ("ADC", IMM): (0x69, 2), ("ADC", ZP):  (0x65, 3), ("ADC", ZPX): (0x75, 4),
+    ("ADC", ABS): (0x6D, 4), ("ADC", ABX): (0x7D, 4), ("ADC", ABY): (0x79, 4),
+    ("ADC", IZX): (0x61, 6), ("ADC", IZY): (0x71, 5),
+    # AND
+    ("AND", IMM): (0x29, 2), ("AND", ZP):  (0x25, 3), ("AND", ZPX): (0x35, 4),
+    ("AND", ABS): (0x2D, 4), ("AND", ABX): (0x3D, 4), ("AND", ABY): (0x39, 4),
+    ("AND", IZX): (0x21, 6), ("AND", IZY): (0x31, 5),
+    # ASL
+    ("ASL", ACC): (0x0A, 2), ("ASL", ZP):  (0x06, 5), ("ASL", ZPX): (0x16, 6),
+    ("ASL", ABS): (0x0E, 6), ("ASL", ABX): (0x1E, 7),
+    # Branches
+    ("BCC", REL): (0x90, 2), ("BCS", REL): (0xB0, 2), ("BEQ", REL): (0xF0, 2),
+    ("BMI", REL): (0x30, 2), ("BNE", REL): (0xD0, 2), ("BPL", REL): (0x10, 2),
+    ("BVC", REL): (0x50, 2), ("BVS", REL): (0x70, 2),
+    # BIT
+    ("BIT", ZP):  (0x24, 3), ("BIT", ABS): (0x2C, 4),
+    # BRK
+    ("BRK", IMP): (0x00, 7),
+    # Clear flags
+    ("CLC", IMP): (0x18, 2), ("CLD", IMP): (0xD8, 2),
+    ("CLI", IMP): (0x58, 2), ("CLV", IMP): (0xB8, 2),
+    # CMP
+    ("CMP", IMM): (0xC9, 2), ("CMP", ZP):  (0xC5, 3), ("CMP", ZPX): (0xD5, 4),
+    ("CMP", ABS): (0xCD, 4), ("CMP", ABX): (0xDD, 4), ("CMP", ABY): (0xD9, 4),
+    ("CMP", IZX): (0xC1, 6), ("CMP", IZY): (0xD1, 5),
+    # CPX
+    ("CPX", IMM): (0xE0, 2), ("CPX", ZP):  (0xE4, 3), ("CPX", ABS): (0xEC, 4),
+    # CPY
+    ("CPY", IMM): (0xC0, 2), ("CPY", ZP):  (0xC4, 3), ("CPY", ABS): (0xCC, 4),
+    # DEC / DEX / DEY
+    ("DEC", ZP):  (0xC6, 5), ("DEC", ZPX): (0xD6, 6),
+    ("DEC", ABS): (0xCE, 6), ("DEC", ABX): (0xDE, 7),
+    ("DEX", IMP): (0xCA, 2), ("DEY", IMP): (0x88, 2),
+    # EOR
+    ("EOR", IMM): (0x49, 2), ("EOR", ZP):  (0x45, 3), ("EOR", ZPX): (0x55, 4),
+    ("EOR", ABS): (0x4D, 4), ("EOR", ABX): (0x5D, 4), ("EOR", ABY): (0x59, 4),
+    ("EOR", IZX): (0x41, 6), ("EOR", IZY): (0x51, 5),
+    # INC / INX / INY
+    ("INC", ZP):  (0xE6, 5), ("INC", ZPX): (0xF6, 6),
+    ("INC", ABS): (0xEE, 6), ("INC", ABX): (0xFE, 7),
+    ("INX", IMP): (0xE8, 2), ("INY", IMP): (0xC8, 2),
+    # JMP / JSR / RTS / RTI
+    ("JMP", ABS): (0x4C, 3), ("JMP", IND): (0x6C, 5),
+    ("JSR", ABS): (0x20, 6),
+    ("RTI", IMP): (0x40, 6), ("RTS", IMP): (0x60, 6),
+    # LDA
+    ("LDA", IMM): (0xA9, 2), ("LDA", ZP):  (0xA5, 3), ("LDA", ZPX): (0xB5, 4),
+    ("LDA", ABS): (0xAD, 4), ("LDA", ABX): (0xBD, 4), ("LDA", ABY): (0xB9, 4),
+    ("LDA", IZX): (0xA1, 6), ("LDA", IZY): (0xB1, 5),
+    # LDX
+    ("LDX", IMM): (0xA2, 2), ("LDX", ZP):  (0xA6, 3), ("LDX", ZPY): (0xB6, 4),
+    ("LDX", ABS): (0xAE, 4), ("LDX", ABY): (0xBE, 4),
+    # LDY
+    ("LDY", IMM): (0xA0, 2), ("LDY", ZP):  (0xA4, 3), ("LDY", ZPX): (0xB4, 4),
+    ("LDY", ABS): (0xAC, 4), ("LDY", ABX): (0xBC, 4),
+    # LSR
+    ("LSR", ACC): (0x4A, 2), ("LSR", ZP):  (0x46, 5), ("LSR", ZPX): (0x56, 6),
+    ("LSR", ABS): (0x4E, 6), ("LSR", ABX): (0x5E, 7),
+    # NOP
+    ("NOP", IMP): (0xEA, 2),
+    # ORA
+    ("ORA", IMM): (0x09, 2), ("ORA", ZP):  (0x05, 3), ("ORA", ZPX): (0x15, 4),
+    ("ORA", ABS): (0x0D, 4), ("ORA", ABX): (0x1D, 4), ("ORA", ABY): (0x19, 4),
+    ("ORA", IZX): (0x01, 6), ("ORA", IZY): (0x11, 5),
+    # Stack
+    ("PHA", IMP): (0x48, 3), ("PHP", IMP): (0x08, 3),
+    ("PLA", IMP): (0x68, 4), ("PLP", IMP): (0x28, 4),
+    # ROL
+    ("ROL", ACC): (0x2A, 2), ("ROL", ZP):  (0x26, 5), ("ROL", ZPX): (0x36, 6),
+    ("ROL", ABS): (0x2E, 6), ("ROL", ABX): (0x3E, 7),
+    # ROR
+    ("ROR", ACC): (0x6A, 2), ("ROR", ZP):  (0x66, 5), ("ROR", ZPX): (0x76, 6),
+    ("ROR", ABS): (0x6E, 6), ("ROR", ABX): (0x7E, 7),
+    # SBC
+    ("SBC", IMM): (0xE9, 2), ("SBC", ZP):  (0xE5, 3), ("SBC", ZPX): (0xF5, 4),
+    ("SBC", ABS): (0xED, 4), ("SBC", ABX): (0xFD, 4), ("SBC", ABY): (0xF9, 4),
+    ("SBC", IZX): (0xE1, 6), ("SBC", IZY): (0xF1, 5),
+    # Set flags
+    ("SEC", IMP): (0x38, 2), ("SED", IMP): (0xF8, 2), ("SEI", IMP): (0x78, 2),
+    # STA
+    ("STA", ZP):  (0x85, 3), ("STA", ZPX): (0x95, 4), ("STA", ABS): (0x8D, 4),
+    ("STA", ABX): (0x9D, 5), ("STA", ABY): (0x99, 5), ("STA", IZX): (0x81, 6),
+    ("STA", IZY): (0x91, 6),
+    # STX
+    ("STX", ZP):  (0x86, 3), ("STX", ZPY): (0x96, 4), ("STX", ABS): (0x8E, 4),
+    # STY
+    ("STY", ZP):  (0x84, 3), ("STY", ZPX): (0x94, 4), ("STY", ABS): (0x8C, 4),
+    # Transfers
+    ("TAX", IMP): (0xAA, 2), ("TAY", IMP): (0xA8, 2), ("TSX", IMP): (0xBA, 2),
+    ("TXA", IMP): (0x8A, 2), ("TXS", IMP): (0x9A, 2), ("TYA", IMP): (0x98, 2),
+}
+
+DECODE_TABLE: Dict[int, Tuple[str, str, int]] = {
+    op: (mnem, mode, cyc) for (mnem, mode), (op, cyc) in OPCODES.items()
+}
+
+BRANCH_MNEMONICS = {"BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BVC", "BVS"}
+ACC_MNEMONICS = {"ASL", "LSR", "ROL", "ROR"}
+
+
+# =============================================================================
+# 2. TWO-PASS 6502 ASSEMBLER
+# =============================================================================
+
+DEFAULT_SYMBOLS: Dict[str, int] = {
+    "UP":    0xE000,
+    "RIGHT": 0xE001,
+    "DOWN":  0xE002,
+    "LEFT":  0xE003,
+    "STAT":  0xE004,
+}
+
+
+class AssemblerError(Exception):
+    def __init__(self, line_no: int, message: str):
+        super().__init__(f"Line {line_no}: {message}")
+        self.line_no = line_no
+        self.message = message
+
+
+@dataclass
+class AssembledProgram:
+    origin: int
+    segments: List[Tuple[int, bytes]]
+    line_to_addr: Dict[int, int]
+    addr_to_line: Dict[int, int]
+    symbols: Dict[str, int]
+    instruction_count: int
+    byte_count: int
+
+
+def _strip_comment(line: str) -> str:
+    in_quote = False
+    quote_char = ""
+    for i, ch in enumerate(line):
+        if ch in ('"', "'"):
+            if not in_quote:
+                in_quote = True
+                quote_char = ch
+            elif quote_char == ch:
+                in_quote = False
+        elif ch == ";" and not in_quote:
+            return line[:i]
+    return line
+
+
+def _parse_number(token: str, symbols: Dict[str, int]) -> Optional[int]:
+    token = token.strip()
+    if not token:
+        return None
+    # Low/High byte operators: <SYM, >SYM
+    if token.startswith("<"):
+        val = _parse_number(token[1:], symbols)
+        return (val & 0xFF) if val is not None else None
+    if token.startswith(">"):
+        val = _parse_number(token[1:], symbols)
+        return ((val >> 8) & 0xFF) if val is not None else None
+    # Character literal: 'A'
+    if len(token) == 3 and token[0] == "'" and token[2] == "'":
+        return ord(token[1])
+    # Hex: $1A or 0x1A
+    if token.startswith("$"):
+        try:
+            return int(token[1:], 16)
+        except ValueError:
+            return None
+    if token.lower().startswith("0x"):
+        try:
+            return int(token[2:], 16)
+        except ValueError:
+            return None
+    # Binary: %10101010
+    if token.startswith("%"):
+        try:
+            return int(token[1:], 2)
+        except ValueError:
+            return None
+    # Decimal
+    if re.fullmatch(r"-?\d+", token):
+        return int(token, 10)
+    # Simple + / - expression on symbols or numbers
+    for op in ("+", "-"):
+        if op in token and not token.startswith(op):
+            parts = token.split(op, 1)
+            left = _parse_number(parts[0], symbols)
+            right = _parse_number(parts[1], symbols)
+            if left is not None and right is not None:
+                return left + right if op == "+" else left - right
+    # Symbol lookup (case-insensitive)
+    up = token.upper()
+    if up in symbols:
+        return symbols[up]
+    return None
+
+
+def _split_csv_args(text: str) -> List[str]:
+    args: List[str] = []
+    cur: List[str] = []
+    in_quote = False
+    qchar = ""
+    for ch in text:
+        if ch in ('"', "'"):
+            if not in_quote:
+                in_quote = True
+                qchar = ch
+            elif qchar == ch:
+                in_quote = False
+            cur.append(ch)
+        elif ch == "," and not in_quote:
+            args.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        args.append("".join(cur).strip())
+    return args
+
+
+def _classify_operand(
+    mnem: str, operand: str, symbols: Dict[str, int], pass_num: int
+) -> Tuple[str, Optional[int]]:
+    op = operand.strip()
+    if not op:
+        if (mnem, IMP) in OPCODES:
+            return IMP, None
+        if mnem in ACC_MNEMONICS:
+            return ACC, None
+        raise ValueError(f"Missing operand for {mnem}")
+
+    if op.upper() == "A" and mnem in ACC_MNEMONICS:
+        return ACC, None
+
+    if mnem in BRANCH_MNEMONICS:
+        val = _parse_number(op, symbols)
+        if val is None and pass_num == 2:
+            raise ValueError(f"Undefined branch target '{op}'")
+        return REL, val
+
+    # Immediate: #expr
+    if op.startswith("#"):
+        val = _parse_number(op[1:], symbols)
+        if val is None and pass_num == 2:
+            raise ValueError(f"Undefined immediate value '{op[1:]}'")
+        return IMM, val
+
+    # Indirect forms: ($10,X), ($10),Y, ($1234)
+    if op.startswith("("):
+        m_izx = re.fullmatch(r"\((.+),\s*[Xx]\)", op)
+        if m_izx:
+            val = _parse_number(m_izx.group(1), symbols)
+            if val is None and pass_num == 2:
+                raise ValueError(f"Undefined operand '{m_izx.group(1)}'")
+            return IZX, val
+        m_izy = re.fullmatch(r"\((.+)\),\s*[Yy]", op)
+        if m_izy:
+            val = _parse_number(m_izy.group(1), symbols)
+            if val is None and pass_num == 2:
+                raise ValueError(f"Undefined operand '{m_izy.group(1)}'")
+            return IZY, val
+        m_ind = re.fullmatch(r"\((.+)\)", op)
+        if m_ind:
+            val = _parse_number(m_ind.group(1), symbols)
+            if val is None and pass_num == 2:
+                raise ValueError(f"Undefined operand '{m_ind.group(1)}'")
+            return IND, val
+        raise ValueError(f"Malformed indirect operand '{op}'")
+
+    # Indexed X or Y
+    m_xy = re.fullmatch(r"(.+),\s*([XxYy])", op)
+    if m_xy:
+        expr, idx = m_xy.group(1).strip(), m_xy.group(2).upper()
+        val = _parse_number(expr, symbols)
+        if val is None:
+            if pass_num == 2:
+                raise ValueError(f"Undefined symbol '{expr}'")
+            # Forward reference defaults to 16-bit absolute
+            return (ABX if idx == "X" else ABY), None
+        if 0 <= val <= 0xFF:
+            zp_mode = ZPX if idx == "X" else ZPY
+            if (mnem, zp_mode) in OPCODES:
+                return zp_mode, val
+        return (ABX if idx == "X" else ABY), val
+
+    # Direct ZP or ABS
+    val = _parse_number(op, symbols)
+    if val is None:
+        if pass_num == 2:
+            raise ValueError(f"Undefined symbol '{op}'")
+        return ABS, None
+    if 0 <= val <= 0xFF and (mnem, ZP) in OPCODES and mnem not in ("JMP", "JSR"):
+        return ZP, val
+    return ABS, val
+
+
+def assemble(source: str, default_org: int = 0x0600) -> AssembledProgram:
+    symbols: Dict[str, int] = dict(DEFAULT_SYMBOLS)
+    lines = source.splitlines()
+
+    # Pass 1: collect labels, constants, and compute instruction sizes
+    pc = default_org
+    parsed_lines: List[Tuple[int, str, str, int]] = []  # (line_no, kind, payload, addr)
+
+    for line_no, raw in enumerate(lines, start=1):
+        clean = _strip_comment(raw).strip()
+        if not clean:
+            continue
+
+        # Handle label prefix(es) like "LOOP:" or "LOOP: LDA #$01"
+        while True:
+            m_lbl = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:(.*)$", clean)
+            if not m_lbl:
+                break
+            lbl = m_lbl.group(1).upper()
+            if lbl in symbols and lbl not in DEFAULT_SYMBOLS:
+                raise AssemblerError(line_no, f"Duplicate label '{lbl}'")
+            symbols[lbl] = pc
+            clean = m_lbl.group(2).strip()
+            if not clean:
+                break
+
+        if not clean:
+            continue
+
+        # Constant assignment: NAME = EXPR or NAME EQU EXPR
+        m_eq = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|\bEQU\b)\s*(.+)$", clean, re.IGNORECASE)
+        if m_eq:
+            name = m_eq.group(1).upper()
+            val = _parse_number(m_eq.group(2), symbols)
+            if val is None:
+                raise AssemblerError(line_no, f"Cannot evaluate constant '{m_eq.group(2)}'")
+            symbols[name] = val & 0xFFFF
+            continue
+
+        # Directives
+        parts = clean.split(None, 1)
+        head = parts[0].upper()
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if head in (".ORG", "ORG"):
+            val = _parse_number(rest, symbols)
+            if val is None:
+                raise AssemblerError(line_no, f"Invalid .ORG address '{rest}'")
+            pc = val & 0xFFFF
+            continue
+
+        if head in (".BYTE", ".DB", "DCB"):
+            items = _split_csv_args(rest)
+            size = 0
+            for item in items:
+                if len(item) >= 2 and item[0] == '"' and item[-1] == '"':
+                    size += len(item) - 2
+                else:
+                    size += 1
+            parsed_lines.append((line_no, "BYTE", rest, pc))
+            pc = (pc + size) & 0xFFFF
+            continue
+
+        if head in (".WORD", ".DW"):
+            items = _split_csv_args(rest)
+            parsed_lines.append((line_no, "WORD", rest, pc))
+            pc = (pc + 2 * len(items)) & 0xFFFF
+            continue
+
+        # Instruction
+        try:
+            mode, _ = _classify_operand(head, rest, symbols, pass_num=1)
+        except ValueError as exc:
+            raise AssemblerError(line_no, str(exc)) from exc
+
+        if (head, mode) not in OPCODES:
+            raise AssemblerError(line_no, f"Unsupported instruction/mode: {head} ({mode})")
+
+        parsed_lines.append((line_no, "INSN", f"{head} {rest}".strip(), pc))
+        pc = (pc + MODE_SIZE[mode]) & 0xFFFF
+
+    # Pass 2: emit machine code
+    segments: List[Tuple[int, bytearray]] = []
+    line_to_addr: Dict[int, int] = {}
+    addr_to_line: Dict[int, int] = {}
+    insn_count = 0
+    total_bytes = 0
+
+    def emit_bytes(addr: int, data: bytes) -> None:
+        nonlocal total_bytes
+        total_bytes += len(data)
+        if segments and segments[-1][0] + len(segments[-1][1]) == addr:
+            segments[-1][1].extend(data)
+        else:
+            segments.append((addr, bytearray(data)))
+
+    for line_no, kind, payload, addr in parsed_lines:
+        line_to_addr[line_no] = addr
+        addr_to_line[addr] = line_no
+
+        if kind == "BYTE":
+            out = bytearray()
+            for item in _split_csv_args(payload):
+                if len(item) >= 2 and item[0] == '"' and item[-1] == '"':
+                    out.extend(item[1:-1].encode("ascii", errors="replace"))
+                else:
+                    val = _parse_number(item, symbols)
+                    if val is None:
+                        raise AssemblerError(line_no, f"Undefined byte value '{item}'")
+                    out.append(val & 0xFF)
+            emit_bytes(addr, bytes(out))
+            continue
+
+        if kind == "WORD":
+            out = bytearray()
+            for item in _split_csv_args(payload):
+                val = _parse_number(item, symbols)
+                if val is None:
+                    raise AssemblerError(line_no, f"Undefined word value '{item}'")
+                out.append(val & 0xFF)
+                out.append((val >> 8) & 0xFF)
+            emit_bytes(addr, bytes(out))
+            continue
+
+        # INSN
+        parts = payload.split(None, 1)
+        mnem = parts[0].upper()
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        try:
+            mode, val = _classify_operand(mnem, rest, symbols, pass_num=2)
+        except ValueError as exc:
+            raise AssemblerError(line_no, str(exc)) from exc
+
+        if (mnem, mode) not in OPCODES:
+            raise AssemblerError(line_no, f"Invalid addressing mode {mode} for {mnem}")
+
+        opcode, _ = OPCODES[(mnem, mode)]
+        insn_count += 1
+
+        if mode in (IMP, ACC):
+            emit_bytes(addr, bytes([opcode]))
+        elif mode == REL:
+            assert val is not None
+            offset = val - (addr + 2)
+            if not (-128 <= offset <= 127):
+                raise AssemblerError(line_no, f"Branch target out of range ({offset})")
+            emit_bytes(addr, bytes([opcode, offset & 0xFF]))
+        elif MODE_SIZE[mode] == 2:
+            assert val is not None
+            emit_bytes(addr, bytes([opcode, val & 0xFF]))
+        else:
+            assert val is not None
+            emit_bytes(addr, bytes([opcode, val & 0xFF, (val >> 8) & 0xFF]))
+
+    return AssembledProgram(
+        origin=default_org,
+        segments=[(a, bytes(b)) for a, b in segments],
+        line_to_addr=line_to_addr,
+        addr_to_line=addr_to_line,
+        symbols=symbols,
+        instruction_count=insn_count,
+        byte_count=total_bytes,
+    )
+
+
+# =============================================================================
+# 3. 6502 CPU EMULATOR WITH BLOCKING MEMORY-MAPPED PORT I/O
+# =============================================================================
+
+PORT_UP    = 0xE000
+PORT_RIGHT = 0xE001
+PORT_DOWN  = 0xE002
+PORT_LEFT  = 0xE003
+PORT_STAT  = 0xE004
+
+PORT_NAMES = {0: "UP", 1: "RIGHT", 2: "DOWN", 3: "LEFT"}
+
+FLAG_C = 0x01
+FLAG_Z = 0x02
+FLAG_I = 0x04
+FLAG_D = 0x08
+FLAG_B = 0x10
+FLAG_U = 0x20
+FLAG_V = 0x40
+FLAG_N = 0x80
+
+
+class PortBlocked(Exception):
+    """Raised when a 6502 instruction blocks on a port read or write."""
+    def __init__(self, direction: int, is_write: bool, value: int = 0):
+        self.direction = direction  # 0=UP, 1=RIGHT, 2=DOWN, 3=LEFT
+        self.is_write = is_write
+        self.value = value
+
+
+@dataclass
+class LinkChannel:
+    """Synchronous single-byte TIS-100-style channel between two endpoints."""
+    name: str
+    writer_has_data: bool = False
+    value: int = 0
+    consumed: bool = False
+
+    def reset(self) -> None:
+        self.writer_has_data = False
+        self.value = 0
+        self.consumed = False
+
+
+class InputStreamChannel:
+    """External puzzle input stream feeding a node port."""
+    def __init__(self, name: str, data: List[int]):
+        self.name = name
+        self.initial_data = list(data)
+        self.index = 0
+
+    def has_data(self) -> bool:
+        return self.index < len(self.initial_data)
+
+    def read_byte(self) -> Optional[int]:
+        if self.index < len(self.initial_data):
+            val = self.initial_data[self.index] & 0xFF
+            self.index += 1
+            return val
+        return None
+
+    def reset(self) -> None:
+        self.index = 0
+
+
+class OutputStreamChannel:
+    """External puzzle output stream collecting bytes from a node port."""
+    def __init__(self, name: str, expected: List[int]):
+        self.name = name
+        self.expected = [x & 0xFF for x in expected]
+        self.received: List[int] = []
+
+    def write_byte(self, val: int) -> None:
+        self.received.append(val & 0xFF)
+
+    def is_satisfied(self) -> bool:
+        return self.received == self.expected
+
+    def reset(self) -> None:
+        self.received.clear()
+
+
+class Cpu6502Node:
+    def __init__(self, node_id: int, origin: int = 0x0600):
+        self.node_id = node_id
+        self.origin = origin
+        self.mem = bytearray(65536)
+        self.A = 0
+        self.X = 0
+        self.Y = 0
+        self.SP = 0xFF
+        self.PC = origin
+        self.P = FLAG_U | FLAG_I
+        self.cycles = 0
+        self.halted = False
+        self.state = "IDLE"  # IDLE, RUN, READ, WRITE, HALT, ERR
+        self.blocked_dir: Optional[int] = None
+        self.error_msg: Optional[str] = None
+        self.source: str = ""
+        self.program: Optional[AssembledProgram] = None
+
+        # Port bindings: direction (0..3) -> LinkChannel / InputStreamChannel / OutputStreamChannel
+        self.in_ports: Dict[int, object] = {}
+        self.out_ports: Dict[int, object] = {}
+
+    def load_source(self, source: str) -> None:
+        self.source = source
+        self.error_msg = None
+        if not source.strip():
+            self.program = None
+            self.reset()
+            return
+        try:
+            self.program = assemble(source, default_org=self.origin)
+        except AssemblerError as exc:
+            self.program = None
+            self.error_msg = str(exc)
+            self.state = "ERR"
+            return
+        self.reset()
+
+    def reset(self) -> None:
+        self.mem[:] = b"\x00" * 65536
+        self.A = 0
+        self.X = 0
+        self.Y = 0
+        self.SP = 0xFF
+        self.P = FLAG_U | FLAG_I
+        self.cycles = 0
+        self.halted = False
+        self.blocked_dir = None
+        if self.error_msg:
+            self.state = "ERR"
+            self.PC = self.origin
+            return
+        if self.program and self.program.segments:
+            for addr, data in self.program.segments:
+                self.mem[addr:addr + len(data)] = data
+            self.PC = self.program.origin
+            self.state = "RUN"
+        else:
+            self.PC = self.origin
+            self.state = "IDLE"
+
+    # --- Flag helpers ---
+    def _set_zn(self, val: int) -> int:
+        val &= 0xFF
+        if val == 0:
+            self.P |= FLAG_Z
+        else:
+            self.P &= ~FLAG_Z
+        if val & 0x80:
+            self.P |= FLAG_N
+        else:
+            self.P &= ~FLAG_N
+        return val
+
+    def _set_flag(self, flag: int, cond: bool) -> None:
+        if cond:
+            self.P |= flag
+        else:
+            self.P &= ~flag
+
+    def _get_flag(self, flag: int) -> bool:
+        return bool(self.P & flag)
+
+    # --- Memory & Port I/O ---
+    def _port_status(self) -> int:
+        stat = 0
+        for d in range(4):
+            ch = self.in_ports.get(d)
+            if isinstance(ch, InputStreamChannel) and ch.has_data():
+                stat |= (1 << d)
+            elif isinstance(ch, LinkChannel) and ch.writer_has_data and not ch.consumed:
+                stat |= (1 << d)
+        return stat
+
+    def read(self, addr: int) -> int:
+        addr &= 0xFFFF
+        if PORT_UP <= addr <= PORT_LEFT:
+            d = addr - PORT_UP
+            ch = self.in_ports.get(d)
+            if isinstance(ch, InputStreamChannel):
+                val = ch.read_byte()
+                if val is None:
+                    raise PortBlocked(d, is_write=False)
+                return val
+            if isinstance(ch, LinkChannel):
+                if ch.writer_has_data and not ch.consumed:
+                    ch.consumed = True
+                    return ch.value & 0xFF
+                raise PortBlocked(d, is_write=False)
+            # Unconnected port blocks forever
+            raise PortBlocked(d, is_write=False)
+        if addr == PORT_STAT:
+            return self._port_status()
+        return self.mem[addr]
+
+    def write(self, addr: int, val: int) -> None:
+        addr &= 0xFFFF
+        val &= 0xFF
+        if PORT_UP <= addr <= PORT_LEFT:
+            d = addr - PORT_UP
+            ch = self.out_ports.get(d)
+            if isinstance(ch, OutputStreamChannel):
+                ch.write_byte(val)
+                return
+            if isinstance(ch, LinkChannel):
+                if ch.consumed:
+                    # Handshake completed!
+                    ch.writer_has_data = False
+                    ch.consumed = False
+                    return
+                if not ch.writer_has_data:
+                    ch.value = val
+                    ch.writer_has_data = True
+                    ch.consumed = False
+                raise PortBlocked(d, is_write=True, value=val)
+            # Unconnected port blocks forever
+            raise PortBlocked(d, is_write=True, value=val)
+        self.mem[addr] = val
+
+    def read16(self, addr: int) -> int:
+        lo = self.read(addr)
+        hi = self.read((addr + 1) & 0xFFFF)
+        return lo | (hi << 8)
+
+    def _push(self, val: int) -> None:
+        self.mem[0x0100 + self.SP] = val & 0xFF
+        self.SP = (self.SP - 1) & 0xFF
+
+    def _pop(self) -> int:
+        self.SP = (self.SP + 1) & 0xFF
+        return self.mem[0x0100 + self.SP]
+
+    def _adc(self, val: int) -> None:
+        c = 1 if self._get_flag(FLAG_C) else 0
+        total = self.A + val + c
+        overflow = (~(self.A ^ val) & (self.A ^ total) & 0x80) != 0
+        self._set_flag(FLAG_C, total > 0xFF)
+        self._set_flag(FLAG_V, overflow)
+        self.A = self._set_zn(total)
+
+    def _sbc(self, val: int) -> None:
+        self._adc(val ^ 0xFF)
+
+    def _cmp(self, reg: int, val: int) -> None:
+        diff = reg - val
+        self._set_flag(FLAG_C, reg >= val)
+        self._set_zn(diff)
+
+    def step(self) -> bool:
+        """Execute one 6502 instruction. Returns True if instruction completed."""
+        if self.state in ("IDLE", "HALT", "ERR") or self.halted:
+            return False
+
+        saved_pc = self.PC
+        opcode = self.mem[self.PC]
+        if opcode not in DECODE_TABLE:
+            self.error_msg = f"Illegal opcode ${opcode:02X} at ${self.PC:04X}"
+            self.state = "ERR"
+            return False
+
+        mnem, mode, base_cycles = DECODE_TABLE[opcode]
+        self.PC = (self.PC + 1) & 0xFFFF
+
+        # Resolve effective address
+        eff_addr = 0
+        if mode == IMM:
+            eff_addr = self.PC
+            self.PC = (self.PC + 1) & 0xFFFF
+        elif mode == ZP:
+            eff_addr = self.mem[self.PC]
+            self.PC = (self.PC + 1) & 0xFFFF
+        elif mode == ZPX:
+            eff_addr = (self.mem[self.PC] + self.X) & 0xFF
+            self.PC = (self.PC + 1) & 0xFFFF
+        elif mode == ZPY:
+            eff_addr = (self.mem[self.PC] + self.Y) & 0xFF
+            self.PC = (self.PC + 1) & 0xFFFF
+        elif mode == ABS:
+            lo = self.mem[self.PC]
+            hi = self.mem[(self.PC + 1) & 0xFFFF]
+            eff_addr = lo | (hi << 8)
+            self.PC = (self.PC + 2) & 0xFFFF
+        elif mode == ABX:
+            lo = self.mem[self.PC]
+            hi = self.mem[(self.PC + 1) & 0xFFFF]
+            eff_addr = ((lo | (hi << 8)) + self.X) & 0xFFFF
+            self.PC = (self.PC + 2) & 0xFFFF
+        elif mode == ABY:
+            lo = self.mem[self.PC]
+            hi = self.mem[(self.PC + 1) & 0xFFFF]
+            eff_addr = ((lo | (hi << 8)) + self.Y) & 0xFFFF
+            self.PC = (self.PC + 2) & 0xFFFF
+        elif mode == IND:
+            lo = self.mem[self.PC]
+            hi = self.mem[(self.PC + 1) & 0xFFFF]
+            ptr = lo | (hi << 8)
+            # Classic 6502 page-wrap bug on JMP ($xxFF)
+            hi_ptr = (ptr & 0xFF00) | ((ptr + 1) & 0x00FF)
+            eff_addr = self.mem[ptr] | (self.mem[hi_ptr] << 8)
+            self.PC = (self.PC + 2) & 0xFFFF
+        elif mode == IZX:
+            zp = (self.mem[self.PC] + self.X) & 0xFF
+            self.PC = (self.PC + 1) & 0xFFFF
+            eff_addr = self.mem[zp] | (self.mem[(zp + 1) & 0xFF] << 8)
+        elif mode == IZY:
+            zp = self.mem[self.PC]
+            self.PC = (self.PC + 1) & 0xFFFF
+            base = self.mem[zp] | (self.mem[(zp + 1) & 0xFF] << 8)
+            eff_addr = (base + self.Y) & 0xFFFF
+        elif mode == REL:
+            off = self.mem[self.PC]
+            self.PC = (self.PC + 1) & 0xFFFF
+            if off >= 0x80:
+                off -= 256
+            eff_addr = (self.PC + off) & 0xFFFF
+
+        try:
+            self._exec(mnem, mode, eff_addr)
+            self.cycles += base_cycles
+            self.state = "RUN"
+            self.blocked_dir = None
+            return True
+        except PortBlocked as pb:
+            # Roll back PC so the instruction retries on next tick
+            self.PC = saved_pc
+            self.state = "WRITE" if pb.is_write else "READ"
+            self.blocked_dir = pb.direction
+            return False
+
+    def _exec(self, mnem: str, mode: str, addr: int) -> None:
+        if mnem == "LDA":
+            self.A = self._set_zn(self.read(addr))
+        elif mnem == "LDX":
+            self.X = self._set_zn(self.read(addr))
+        elif mnem == "LDY":
+            self.Y = self._set_zn(self.read(addr))
+        elif mnem == "STA":
+            self.write(addr, self.A)
+        elif mnem == "STX":
+            self.write(addr, self.X)
+        elif mnem == "STY":
+            self.write(addr, self.Y)
+        elif mnem == "TAX":
+            self.X = self._set_zn(self.A)
+        elif mnem == "TAY":
+            self.Y = self._set_zn(self.A)
+        elif mnem == "TXA":
+            self.A = self._set_zn(self.X)
+        elif mnem == "TYA":
+            self.A = self._set_zn(self.Y)
+        elif mnem == "TSX":
+            self.X = self._set_zn(self.SP)
+        elif mnem == "TXS":
+            self.SP = self.X
+        elif mnem == "PHA":
+            self._push(self.A)
+        elif mnem == "PLA":
+            self.A = self._set_zn(self._pop())
+        elif mnem == "PHP":
+            self._push(self.P | FLAG_B | FLAG_U)
+        elif mnem == "PLP":
+            self.P = (self._pop() & ~FLAG_B) | FLAG_U
+        elif mnem == "AND":
+            self.A = self._set_zn(self.A & self.read(addr))
+        elif mnem == "ORA":
+            self.A = self._set_zn(self.A | self.read(addr))
+        elif mnem == "EOR":
+            self.A = self._set_zn(self.A ^ self.read(addr))
+        elif mnem == "BIT":
+            v = self.read(addr)
+            self._set_flag(FLAG_Z, (self.A & v) == 0)
+            self._set_flag(FLAG_V, bool(v & 0x40))
+            self._set_flag(FLAG_N, bool(v & 0x80))
+        elif mnem == "ADC":
+            self._adc(self.read(addr))
+        elif mnem == "SBC":
+            self._sbc(self.read(addr))
+        elif mnem == "CMP":
+            self._cmp(self.A, self.read(addr))
+        elif mnem == "CPX":
+            self._cmp(self.X, self.read(addr))
+        elif mnem == "CPY":
+            self._cmp(self.Y, self.read(addr))
+        elif mnem == "INC":
+            v = self._set_zn(self.read(addr) + 1)
+            self.write(addr, v)
+        elif mnem == "INX":
+            self.X = self._set_zn(self.X + 1)
+        elif mnem == "INY":
+            self.Y = self._set_zn(self.Y + 1)
+        elif mnem == "DEC":
+            v = self._set_zn(self.read(addr) - 1)
+            self.write(addr, v)
+        elif mnem == "DEX":
+            self.X = self._set_zn(self.X - 1)
+        elif mnem == "DEY":
+            self.Y = self._set_zn(self.Y - 1)
+        elif mnem == "ASL":
+            if mode == ACC:
+                self._set_flag(FLAG_C, bool(self.A & 0x80))
+                self.A = self._set_zn(self.A << 1)
+            else:
+                v = self.read(addr)
+                self._set_flag(FLAG_C, bool(v & 0x80))
+                self.write(addr, self._set_zn(v << 1))
+        elif mnem == "LSR":
+            if mode == ACC:
+                self._set_flag(FLAG_C, bool(self.A & 0x01))
+                self.A = self._set_zn(self.A >> 1)
+            else:
+                v = self.read(addr)
+                self._set_flag(FLAG_C, bool(v & 0x01))
+                self.write(addr, self._set_zn(v >> 1))
+        elif mnem == "ROL":
+            c = 1 if self._get_flag(FLAG_C) else 0
+            if mode == ACC:
+                self._set_flag(FLAG_C, bool(self.A & 0x80))
+                self.A = self._set_zn((self.A << 1) | c)
+            else:
+                v = self.read(addr)
+                self._set_flag(FLAG_C, bool(v & 0x80))
+                self.write(addr, self._set_zn((v << 1) | c))
+        elif mnem == "ROR":
+            c = 0x80 if self._get_flag(FLAG_C) else 0
+            if mode == ACC:
+                self._set_flag(FLAG_C, bool(self.A & 0x01))
+                self.A = self._set_zn((self.A >> 1) | c)
+            else:
+                v = self.read(addr)
+                self._set_flag(FLAG_C, bool(v & 0x01))
+                self.write(addr, self._set_zn((v >> 1) | c))
+        elif mnem == "JMP":
+            self.PC = addr
+        elif mnem == "JSR":
+            ret = (self.PC - 1) & 0xFFFF
+            self._push((ret >> 8) & 0xFF)
+            self._push(ret & 0xFF)
+            self.PC = addr
+        elif mnem == "RTS":
+            lo = self._pop()
+            hi = self._pop()
+            self.PC = ((lo | (hi << 8)) + 1) & 0xFFFF
+        elif mnem == "RTI":
+            self.P = (self._pop() & ~FLAG_B) | FLAG_U
+            lo = self._pop()
+            hi = self._pop()
+            self.PC = lo | (hi << 8)
+        elif mnem == "BCC":
+            if not self._get_flag(FLAG_C):
+                self.PC = addr
+                self.cycles += 1
+        elif mnem == "BCS":
+            if self._get_flag(FLAG_C):
+                self.PC = addr
+                self.cycles += 1
+        elif mnem == "BEQ":
+            if self._get_flag(FLAG_Z):
+                self.PC = addr
+                self.cycles += 1
+        elif mnem == "BNE":
+            if not self._get_flag(FLAG_Z):
+                self.PC = addr
+                self.cycles += 1
+        elif mnem == "BMI":
+            if self._get_flag(FLAG_N):
+                self.PC = addr
+                self.cycles += 1
+        elif mnem == "BPL":
+            if not self._get_flag(FLAG_N):
+                self.PC = addr
+                self.cycles += 1
+        elif mnem == "BVC":
+            if not self._get_flag(FLAG_V):
+                self.PC = addr
+                self.cycles += 1
+        elif mnem == "BVS":
+            if self._get_flag(FLAG_V):
+                self.PC = addr
+                self.cycles += 1
+        elif mnem == "CLC":
+            self._set_flag(FLAG_C, False)
+        elif mnem == "SEC":
+            self._set_flag(FLAG_C, True)
+        elif mnem == "CLD":
+            self._set_flag(FLAG_D, False)
+        elif mnem == "SED":
+            self._set_flag(FLAG_D, True)
+        elif mnem == "CLI":
+            self._set_flag(FLAG_I, False)
+        elif mnem == "SEI":
+            self._set_flag(FLAG_I, True)
+        elif mnem == "CLV":
+            self._set_flag(FLAG_V, False)
+        elif mnem == "NOP":
+            pass
+        elif mnem == "BRK":
+            self.halted = True
+            self.state = "HALT"
+
+    def status_flags_str(self) -> str:
+        bits = [
+            ("N", FLAG_N), ("V", FLAG_V), ("-", FLAG_U), ("B", FLAG_B),
+            ("D", FLAG_D), ("I", FLAG_I), ("Z", FLAG_Z), ("C", FLAG_C),
+        ]
+        return "".join(ch if (self.P & fl) else "." for ch, fl in bits)
+
+
+# =============================================================================
+# 4. MULTI-NODE GRID & PUZZLE ENGINE
+# =============================================================================
+
+@dataclass
+class TestCase:
+    name: str
+    inputs: Dict[str, List[int]]   # e.g. {"IN.A": [...], "IN.B": [...]}
+    outputs: Dict[str, List[int]]  # e.g. {"OUT.A": [...]}
+
+
+@dataclass
+class Puzzle:
+    number: int
+    title: str
+    description: List[str]
+    in_map: Dict[str, Tuple[int, int]]   # stream_name -> (node_id, port_dir)
+    out_map: Dict[str, Tuple[int, int]]  # stream_name -> (node_id, port_dir)
+    tests: List[TestCase]
+    starter_code: Dict[int, str]
+    reference_solution: Dict[int, str]
+
+
+class GridMachine:
+    """2x2 Grid of 6502 nodes:
+       [0] <-> [1]
+        ^       ^
+        v       v
+       [2] <-> [3]
+    """
+    def __init__(self, puzzle: Puzzle, test_idx: int = 0):
+        self.puzzle = puzzle
+        self.test_idx = test_idx
+        self.nodes: List[Cpu6502Node] = [Cpu6502Node(i) for i in range(4)]
+        self.links: Dict[Tuple[int, int], LinkChannel] = {}
+        self.in_streams: Dict[str, InputStreamChannel] = {}
+        self.out_streams: Dict[str, OutputStreamChannel] = {}
+        self.ticks = 0
+
+        self._wire_grid()
+        self.load_test(test_idx)
+
+    def _wire_grid(self) -> None:
+        # Bidirectional links: (src, dir) -> (dst, opposite_dir)
+        # Directions: 0=UP, 1=RIGHT, 2=DOWN, 3=LEFT
+        edges = [
+            (0, 1, 1, 3), (1, 3, 0, 1),  # 0 <-> 1
+            (2, 1, 3, 3), (3, 3, 2, 1),  # 2 <-> 3
+            (0, 2, 2, 0), (2, 0, 0, 2),  # 0 <-> 2
+            (1, 2, 3, 0), (3, 0, 1, 2),  # 1 <-> 3
+        ]
+        for src, sdir, dst, ddir in edges:
+            ch = LinkChannel(f"N{src}.{PORT_NAMES[sdir]}->N{dst}")
+            self.links[(src, sdir)] = ch
+            self.nodes[src].out_ports[sdir] = ch
+            self.nodes[dst].in_ports[ddir] = ch
+
+    def load_test(self, test_idx: int) -> None:
+        self.test_idx = test_idx
+        tc = self.puzzle.tests[test_idx]
+        self.in_streams.clear()
+        self.out_streams.clear()
+
+        # Clear external port bindings first (keep internal links)
+        for name, (nid, pdir) in self.puzzle.in_map.items():
+            ch = InputStreamChannel(name, tc.inputs.get(name, []))
+            self.in_streams[name] = ch
+            self.nodes[nid].in_ports[pdir] = ch
+
+        for name, (nid, pdir) in self.puzzle.out_map.items():
+            ch = OutputStreamChannel(name, tc.outputs.get(name, []))
+            self.out_streams[name] = ch
+            self.nodes[nid].out_ports[pdir] = ch
+
+        self.reset()
+
+    def load_code(self, code_map: Dict[int, str]) -> None:
+        for nid, src in code_map.items():
+            self.nodes[nid].load_source(src)
+        self.reset()
+
+    def reset(self) -> None:
+        self.ticks = 0
+        for ch in self.links.values():
+            ch.reset()
+        for ch in self.in_streams.values():
+            ch.reset()
+        for ch in self.out_streams.values():
+            ch.reset()
+        for node in self.nodes:
+            node.reset()
+
+    def step(self) -> None:
+        self.ticks += 1
+        # Step all nodes in parallel (each node advances 1 instruction if unblocked)
+        for node in self.nodes:
+            node.step()
+
+    def has_errors(self) -> bool:
+        return any(n.state == "ERR" for n in self.nodes)
+
+    def is_solved(self) -> bool:
+        if not self.out_streams:
+            return False
+        return all(ch.is_satisfied() for ch in self.out_streams.values())
+
+    def is_over_output(self) -> bool:
+        return any(len(ch.received) > len(ch.expected) for ch in self.out_streams.values())
+
+    def run_until_done(self, max_ticks: int = 5000) -> Tuple[bool, int]:
+        while self.ticks < max_ticks:
+            if self.has_errors() or self.is_over_output():
+                return False, self.ticks
+            if self.is_solved():
+                return True, self.ticks
+            self.step()
+        return self.is_solved(), self.ticks
+
+    def total_metrics(self) -> Tuple[int, int, int]:
+        active_nodes = sum(1 for n in self.nodes if n.program and n.program.instruction_count > 0)
+        total_insns = sum(n.program.instruction_count for n in self.nodes if n.program)
+        total_cycles = sum(n.cycles for n in self.nodes)
+        return total_cycles, active_nodes, total_insns
+
+
+# =============================================================================
+# 5. PUZZLE CAMPAIGN (6 HAND-CRAFTED 6502 PUZZLES)
+# =============================================================================
+
+PUZZLES: List[Puzzle] = [
+    Puzzle(
+        number=1,
+        title="SIGNAL AMPLIFIER",
+        description=[
+            "Read each 8-bit value from IN.A (Node 0 UP).",
+            "Multiply the value by 2 (modulo 256).",
+            "Write the result to OUT.A (Node 2 DOWN).",
+            "Hint: ASL A shifts left by 1 bit (x2).",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Basic", {"IN.A": [1, 5, 12, 50, 127, 200]}, {"OUT.A": [2, 10, 24, 100, 254, 144]}),
+            TestCase("Edges", {"IN.A": [0, 128, 255, 42]}, {"OUT.A": [0, 0, 254, 84]}),
+        ],
+        starter_code={
+            0: "; NODE 0: IN.A is on UP ($E000)\nLOOP:\n    LDA UP\n    ASL A\n    STA DOWN\n    JMP LOOP\n",
+            1: "; NODE 1 (unused)\n",
+            2: "; NODE 2: OUT.A is on DOWN ($E002)\nLOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "; NODE 3 (unused)\n",
+        },
+        reference_solution={
+            0: "LOOP:\n    LDA UP\n    ASL A\n    STA DOWN\n    JMP LOOP\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=2,
+        title="DIFFERENTIAL ENCODER",
+        description=[
+            "Read A from IN.A (Node 0 UP) and B from IN.B (Node 1 UP).",
+            "Compute |A - B| (unsigned absolute difference).",
+            "Write |A - B| to OUT.A (Node 2 DOWN).",
+            "Hint: Route B from Node 1 LEFT -> Node 0 RIGHT.",
+        ],
+        in_map={"IN.A": (0, 0), "IN.B": (1, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Pairs", {"IN.A": [10, 5, 100, 255, 0], "IN.B": [3, 12, 100, 1, 255]}, {"OUT.A": [7, 7, 0, 254, 255]}),
+            TestCase("More", {"IN.A": [42, 19, 200, 88], "IN.B": [99, 19, 50, 120]}, {"OUT.A": [57, 0, 150, 32]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Read IN.A (UP) & B (RIGHT)\nLOOP:\n    LDA UP\n    STA $10\n    ; TODO: subtract RIGHT, negate if < 0\n    JMP LOOP\n",
+            1: "; NODE 1: Forward IN.B to LEFT\nLOOP:\n    LDA UP\n    STA LEFT\n    JMP LOOP\n",
+            2: "; NODE 2: Forward UP to OUT.A (DOWN)\nLOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    SEC\n"
+                "    SBC RIGHT\n"
+                "    BCS POS\n"
+                "    EOR #$FF\n"
+                "    CLC\n"
+                "    ADC #1\n"
+                "POS:\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "LOOP:\n    LDA UP\n    STA LEFT\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=3,
+        title="THRESHOLD ROUTER",
+        description=[
+            "Read bytes from IN.A (Node 0 UP).",
+            "If value >= 100 ($64), send to OUT.B (Node 3 DOWN).",
+            "If value <  100 ($64), send to OUT.A (Node 2 DOWN).",
+            "Hint: Use CMP #$64 then BCS / BCC.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2), "OUT.B": (3, 2)},
+        tests=[
+            TestCase(
+                "Mixed",
+                {"IN.A": [50, 100, 99, 200, 0, 101, 255, 10]},
+                {"OUT.A": [50, 99, 0, 10], "OUT.B": [100, 200, 101, 255]},
+            ),
+            TestCase(
+                "Boundary",
+                {"IN.A": [99, 100, 100, 99]},
+                {"OUT.A": [99, 99], "OUT.B": [100, 100]},
+            ),
+        ],
+        starter_code={
+            0: "; NODE 0: Split <100 DOWN, >=100 RIGHT\n",
+            1: "; NODE 1: Forward LEFT to DOWN\n",
+            2: "; NODE 2: Forward UP to DOWN (OUT.A)\n",
+            3: "; NODE 3: Forward UP to DOWN (OUT.B)\n",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    CMP #$64\n"
+                "    BCS HIGH\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+                "HIGH:\n"
+                "    STA RIGHT\n"
+                "    JMP LOOP\n"
+            ),
+            1: "LOOP:\n    LDA LEFT\n    STA DOWN\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+        },
+    ),
+    Puzzle(
+        number=4,
+        title="PACKET SUMMATION",
+        description=[
+            "Read 0-terminated packets of bytes from IN.A (Node 0 UP).",
+            "Sum all bytes in each packet (modulo 256).",
+            "When 0 is read, output the sum to OUT.A (Node 2 DOWN) and reset.",
+            "Example: [3, 4, 0, 10, 20, 0] -> [7, 30].",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Packets", {"IN.A": [3, 4, 0, 10, 20, 5, 0, 0, 255, 2, 0]}, {"OUT.A": [7, 35, 0, 1]}),
+            TestCase("Single", {"IN.A": [42, 0, 1, 2, 3, 4, 0]}, {"OUT.A": [42, 10]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Accumulate sum in $10\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "RESET:\n"
+                "    LDA #0\n"
+                "    STA $10\n"
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    BEQ EMIT\n"
+                "    CLC\n"
+                "    ADC $10\n"
+                "    STA $10\n"
+                "    JMP LOOP\n"
+                "EMIT:\n"
+                "    LDA $10\n"
+                "    STA DOWN\n"
+                "    JMP RESET\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=5,
+        title="NIBBLE SWAPPER",
+        description=[
+            "Read each byte from IN.A (Node 0 UP).",
+            "Swap the upper 4 bits and lower 4 bits (e.g. $3A -> $A3).",
+            "Write the swapped byte to OUT.A (Node 2 DOWN).",
+            "Hint: 4x ASL on one copy, 4x LSR on another, then ORA.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2)},
+        tests=[
+            TestCase("Hex", {"IN.A": [0x3A, 0x10, 0x0F, 0xAB, 0x00, 0xFF]}, {"OUT.A": [0xA3, 0x01, 0xF0, 0xBA, 0x00, 0xFF]}),
+            TestCase("More", {"IN.A": [0x42, 0x81, 0xCD]}, {"OUT.A": [0x24, 0x18, 0xDC]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Swap nibbles\n",
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    TAX\n"
+                "    ASL A\n"
+                "    ASL A\n"
+                "    ASL A\n"
+                "    ASL A\n"
+                "    STA $10\n"
+                "    TXA\n"
+                "    LSR A\n"
+                "    LSR A\n"
+                "    LSR A\n"
+                "    LSR A\n"
+                "    ORA $10\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "",
+        },
+    ),
+    Puzzle(
+        number=6,
+        title="PAIR SORTER",
+        description=[
+            "Read pairs (X, Y) sequentially from IN.A (Node 0 UP).",
+            "Output min(X, Y) to OUT.A (Node 2 DOWN).",
+            "Output max(X, Y) to OUT.B (Node 3 DOWN).",
+            "Hint: Store X in $10, read Y, compare, route min/max.",
+        ],
+        in_map={"IN.A": (0, 0)},
+        out_map={"OUT.A": (2, 2), "OUT.B": (3, 2)},
+        tests=[
+            TestCase("Pairs", {"IN.A": [10, 3, 5, 20, 7, 7, 255, 0]}, {"OUT.A": [3, 5, 7, 0], "OUT.B": [10, 20, 7, 255]}),
+            TestCase("Sorted", {"IN.A": [1, 2, 100, 50]}, {"OUT.A": [1, 50], "OUT.B": [2, 100]}),
+        ],
+        starter_code={
+            0: "; NODE 0: Read X, Y; send min DOWN, max RIGHT\n",
+            1: "; NODE 1: Forward LEFT to DOWN\n",
+            2: "; NODE 2: Forward UP to DOWN (OUT.A)\n",
+            3: "; NODE 3: Forward UP to DOWN (OUT.B)\n",
+        },
+        reference_solution={
+            0: (
+                "LOOP:\n"
+                "    LDA UP\n"
+                "    STA $10\n"
+                "    LDA UP\n"
+                "    CMP $10\n"
+                "    BCS Y_GE_X\n"
+                "    STA DOWN\n"
+                "    LDA $10\n"
+                "    STA RIGHT\n"
+                "    JMP LOOP\n"
+                "Y_GE_X:\n"
+                "    STA RIGHT\n"
+                "    LDA $10\n"
+                "    STA DOWN\n"
+                "    JMP LOOP\n"
+            ),
+            1: "LOOP:\n    LDA LEFT\n    STA DOWN\n    JMP LOOP\n",
+            2: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+            3: "LOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
+        },
+    ),
+]
+
+
+# =============================================================================
+# 6. CURSES TUI
+# =============================================================================
+
+class TIS6502TUI:
+    def __init__(self, stdscr: "curses._CursesWindow"):
+        self.stdscr = stdscr
+        self.puzzle_idx = 0
+        self.active_node = 0
+        self.code_buffers: Dict[int, List[str]] = {}
+        self.machine: Optional[GridMachine] = None
+        self.running = False
+        self.status_msg = "Press [e] to edit node, [s] step, [r] run, [t] test all, [h] help."
+        self.test_results: Optional[List[Tuple[str, bool, int]]] = None
+        self.load_puzzle(0)
+
+    def load_puzzle(self, idx: int) -> None:
+        self.puzzle_idx = idx % len(PUZZLES)
+        p = PUZZLES[self.puzzle_idx]
+        self.code_buffers = {
+            nid: (p.starter_code.get(nid, "").splitlines() or [""])
+            for nid in range(4)
+        }
+        self.machine = GridMachine(p, test_idx=0)
+        self._apply_code()
+        self.running = False
+        self.test_results = None
+        self.status_msg = f"Loaded Puzzle {p.number}: {p.title}"
+
+    def _apply_code(self) -> None:
+        assert self.machine is not None
+        code_map = {nid: "\n".join(lines) for nid, lines in self.code_buffers.items()}
+        self.machine.load_code(code_map)
+
+    def _run_all_tests(self) -> None:
+        p = PUZZLES[self.puzzle_idx]
+        code_map = {nid: "\n".join(lines) for nid, lines in self.code_buffers.items()}
+        results: List[Tuple[str, bool, int]] = []
+        all_ok = True
+        for i, tc in enumerate(p.tests):
+            gm = GridMachine(p, test_idx=i)
+            gm.load_code(code_map)
+            ok, ticks = gm.run_until_done(max_ticks=5000)
+            results.append((tc.name, ok, ticks))
+            if not ok:
+                all_ok = False
+        self.test_results = results
+        if all_ok:
+            assert self.machine is not None
+            cyc, nodes, insns = self.machine.total_metrics()
+            self.status_msg = f"ALL TESTS PASSED! (Nodes: {nodes}, Insns: {insns})"
+        else:
+            self.status_msg = "Some tests failed. Check output streams and node errors."
+
+    def _edit_active_node(self) -> None:
+        self.running = False
+        lines = list(self.code_buffers[self.active_node])
+        if not lines:
+            lines = [""]
+        row = 0
+        col = len(lines[0])
+        curses.curs_set(1)
+        self.stdscr.nodelay(False)
+
+        while True:
+            self.stdscr.erase()
+            h, w = self.stdscr.getmaxyx()
+            p = PUZZLES[self.puzzle_idx]
+            header = f" EDITING NODE {self.active_node} | Puzzle {p.number}: {p.title} | [ESC] Save & Exit "
+            self.stdscr.addnstr(0, 0, header.ljust(w), w - 1, curses.A_REVERSE)
+            info = " Ports: UP=$E000  RIGHT=$E001  DOWN=$E002  LEFT=$E003  |  Enter=Newline  Backspace=Del "
+            self.stdscr.addnstr(1, 0, info, w - 1, curses.A_DIM)
+
+            max_rows = max(1, h - 4)
+            start_r = max(0, row - max_rows + 1)
+            for idx in range(start_r, min(len(lines), start_r + max_rows)):
+                y = 2 + (idx - start_r)
+                prefix = f"{idx + 1:2d} | "
+                self.stdscr.addnstr(y, 0, prefix + lines[idx], w - 1)
+
+            self.stdscr.addnstr(h - 1, 0, " Press ESC to assemble & return to grid ", w - 1, curses.A_REVERSE)
+            cur_y = 2 + (row - start_r)
+            cur_x = min(w - 2, 5 + col)
+            self.stdscr.move(cur_y, cur_x)
+            self.stdscr.refresh()
+
+            ch = self.stdscr.getch()
+            if ch == 27:  # ESC
+                break
+            elif ch in (curses.KEY_UP,):
+                if row > 0:
+                    row -= 1
+                    col = min(col, len(lines[row]))
+            elif ch in (curses.KEY_DOWN,):
+                if row < len(lines) - 1:
+                    row += 1
+                    col = min(col, len(lines[row]))
+            elif ch in (curses.KEY_LEFT,):
+                if col > 0:
+                    col -= 1
+                elif row > 0:
+                    row -= 1
+                    col = len(lines[row])
+            elif ch in (curses.KEY_RIGHT,):
+                if col < len(lines[row]):
+                    col += 1
+                elif row < len(lines) - 1:
+                    row += 1
+                    col = 0
+            elif ch in (10, 13, curses.KEY_ENTER):
+                cur = lines[row]
+                lines[row] = cur[:col]
+                lines.insert(row + 1, cur[col:])
+                row += 1
+                col = 0
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                if col > 0:
+                    cur = lines[row]
+                    lines[row] = cur[:col - 1] + cur[col:]
+                    col -= 1
+                elif row > 0:
+                    prev_len = len(lines[row - 1])
+                    lines[row - 1] += lines.pop(row)
+                    row -= 1
+                    col = prev_len
+            elif ch == 9:  # Tab -> 4 spaces
+                cur = lines[row]
+                lines[row] = cur[:col] + "    " + cur[col:]
+                col += 4
+            elif 32 <= ch <= 126:
+                cur = lines[row]
+                lines[row] = cur[:col] + chr(ch) + cur[col:]
+                col += 1
+
+        curses.curs_set(0)
+        self.code_buffers[self.active_node] = lines
+        self._apply_code()
+        assert self.machine is not None
+        node = self.machine.nodes[self.active_node]
+        if node.error_msg:
+            self.status_msg = f"Node {self.active_node} asm error: {node.error_msg}"
+        else:
+            self.status_msg = f"Node {self.active_node} assembled OK."
+
+    def _show_help(self) -> None:
+        self.running = False
+        self.stdscr.nodelay(False)
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        help_lines = [
+            "TIS-6502 — REAL 6502 ASSEMBLY PUZZLE GAME",
+            "",
+            "MEMORY-MAPPED BLOCKING PORTS:",
+            "  UP    = $E000    RIGHT = $E001    DOWN = $E002    LEFT = $E003",
+            "  STAT  = $E004    (Bit 0=UP, 1=RIGHT, 2=DOWN, 3=LEFT data ready)",
+            "  Reading an empty port stalls the node until a value arrives.",
+            "  Writing a port stalls the node until the neighbor reads it.",
+            "",
+            "6502 QUICK REFERENCE:",
+            "  LDA/LDX/LDY  STA/STX/STY   (Load/Store A, X, Y)",
+            "  ADC / SBC    CMP/CPX/CPY   (Add/Sub with Carry, Compare)",
+            "  AND / ORA / EOR / BIT      (Bitwise logic)",
+            "  ASL / LSR / ROL / ROR      (Shifts & Rotates)",
+            "  INC/DEC  INX/DEX  INY/DEY  (Increment / Decrement)",
+            "  TAX TAY TXA TYA TSX TXS    (Register transfers)",
+            "  PHA PLA PHP PLP            (Stack $0100-$01FF)",
+            "  JMP JSR RTS RTI            (Jumps & Subroutines)",
+            "  BCC BCS BEQ BNE BMI BPL    (Conditional Branches)",
+            "  CLC SEC CLD SED CLI SEI    (Processor Flags)",
+            "",
+            "KEYBINDINGS:",
+            "  1-4 / Tab : Select Node    e / Enter : Edit Node Code",
+            "  s         : Step All       r         : Run / Pause",
+            "  x         : Reset          t         : Run All Tests",
+            "  n / p     : Next/Prev Puz  l         : Load Reference Solution",
+            "",
+            "Press any key to return...",
+        ]
+        for i, line in enumerate(help_lines[:h - 1]):
+            self.stdscr.addnstr(i, 2, line, w - 4)
+        self.stdscr.refresh()
+        self.stdscr.getch()
+
+    def draw(self) -> None:
+        assert self.machine is not None
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        p = PUZZLES[self.puzzle_idx]
+
+        # Top Bar
+        title = f" TIS-6502 | Puzzle {p.number}/{len(PUZZLES)}: {p.title} | Ticks: {self.machine.ticks} "
+        if self.machine.is_solved():
+            title += "[SOLVED] "
+        self.stdscr.addnstr(0, 0, title.ljust(w), w - 1, curses.A_REVERSE)
+
+        # Left Panel: Puzzle Description & I/O Streams
+        left_w = min(38, max(28, w // 3))
+        y = 2
+        self.stdscr.addnstr(y, 1, "SPECIFICATION:", left_w - 2, curses.A_BOLD)
+        y += 1
+        for line in p.description:
+            if y < h - 3:
+                self.stdscr.addnstr(y, 1, line, left_w - 2)
+                y += 1
+
+        y += 1
+        if y < h - 3:
+            tc = p.tests[self.machine.test_idx]
+            self.stdscr.addnstr(y, 1, f"TEST CASE: {tc.name}", left_w - 2, curses.A_BOLD)
+            y += 1
+
+        for name, ch in self.machine.in_streams.items():
+            if y < h - 3:
+                vals = ",".join(str(v) for v in ch.initial_data[:8])
+                if len(ch.initial_data) > 8:
+                    vals += ",..."
+                self.stdscr.addnstr(y, 1, f"{name} [{ch.index}/{len(ch.initial_data)}]: {vals}", left_w - 2)
+                y += 1
+
+        for name, ch in self.machine.out_streams.items():
+            if y < h - 4:
+                exp = ",".join(str(v) for v in ch.expected[:7])
+                got = ",".join(str(v) for v in ch.received[:7])
+                mark = "OK" if ch.is_satisfied() else ".."
+                self.stdscr.addnstr(y, 1, f"{name} EXP: {exp}", left_w - 2)
+                self.stdscr.addnstr(y + 1, 1, f"{name} GOT [{mark}]: {got}", left_w - 2)
+                y += 2
+
+        if self.test_results and y < h - 3:
+            y += 1
+            self.stdscr.addnstr(y, 1, "SUITE RESULTS:", left_w - 2, curses.A_BOLD)
+            y += 1
+            for tname, ok, ticks in self.test_results:
+                if y < h - 3:
+                    self.stdscr.addnstr(y, 1, f"  {tname}: {'PASS' if ok else 'FAIL'} ({ticks}t)", left_w - 2)
+                    y += 1
+
+        # Right Area: 2x2 Node Grid
+        grid_x = left_w + 1
+        grid_w = max(20, w - grid_x - 1)
+        col_w = max(18, grid_w // 2 - 1)
+        row_h = max(8, (h - 4) // 2)
+
+        for nid in range(4):
+            nx = grid_x + (nid % 2) * (col_w + 1)
+            ny = 2 + (nid // 2) * row_h
+            node = self.machine.nodes[nid]
+            is_act = (nid == self.active_node)
+
+            attr = curses.A_BOLD | curses.A_REVERSE if is_act else curses.A_BOLD
+            hdr = f" NODE {nid} [{node.state}] "
+            if ny < h - 2 and nx < w - 2:
+                self.stdscr.addnstr(ny, nx, hdr.ljust(min(col_w, w - nx - 1)), min(col_w, w - nx - 1), attr)
+
+            reg = f"A:{node.A:02X} X:{node.X:02X} Y:{node.Y:02X} PC:{node.PC:04X} {node.status_flags_str()}"
+            if ny + 1 < h - 2 and nx < w - 2:
+                self.stdscr.addnstr(ny + 1, nx, reg, min(col_w, w - nx - 1), curses.A_DIM)
+
+            if node.error_msg:
+                if ny + 2 < h - 2 and nx < w - 2:
+                    self.stdscr.addnstr(ny + 2, nx, f"ERR: {node.error_msg}", min(col_w, w - nx - 1))
+            else:
+                cur_line = node.program.addr_to_line.get(node.PC) if node.program else None
+                code_lines = self.code_buffers[nid]
+                max_code = max(1, row_h - 3)
+                for li in range(min(len(code_lines), max_code)):
+                    ly = ny + 2 + li
+                    if ly >= h - 2:
+                        break
+                    marker = ">" if cur_line == li + 1 else " "
+                    line_attr = curses.A_REVERSE if cur_line == li + 1 else curses.A_NORMAL
+                    self.stdscr.addnstr(ly, nx, f"{marker}{code_lines[li]}", min(col_w, w - nx - 1), line_attr)
+
+        # Bottom Status & Keys
+        self.stdscr.addnstr(h - 2, 0, f" {self.status_msg} ".ljust(w), w - 1, curses.A_DIM)
+        keys = " [1-4/Tab]Node [e]Edit [s]Step [r]Run/Pause [x]Reset [t]TestAll [l]Solution [n/p]Puzzle [h]Help [q]Quit "
+        self.stdscr.addnstr(h - 1, 0, keys.ljust(w), w - 1, curses.A_REVERSE)
+        self.stdscr.refresh()
+
+    def loop(self) -> None:
+        curses.curs_set(0)
+        while True:
+            self.draw()
+            self.stdscr.nodelay(self.running)
+            if self.running:
+                assert self.machine is not None
+                if self.machine.is_solved():
+                    self.running = False
+                    self.status_msg = f"Test case solved in {self.machine.ticks} ticks! Press [t] to run full suite."
+                    continue
+                if self.machine.has_errors() or self.machine.is_over_output():
+                    self.running = False
+                    self.status_msg = "Execution halted (error or extra output)."
+                    continue
+                self.machine.step()
+                time.sleep(0.03)
+
+            ch = self.stdscr.getch()
+            if ch == -1:
+                continue
+            elif ch in (ord("q"), ord("Q")):
+                break
+            elif ch == 9:  # Tab
+                self.active_node = (self.active_node + 1) % 4
+            elif ch in (ord("1"), ord("2"), ord("3"), ord("4")):
+                self.active_node = ch - ord("1")
+            elif ch in (ord("e"), ord("E"), 10, 13):
+                self._edit_active_node()
+            elif ch in (ord("s"), ord("S")):
+                self.running = False
+                assert self.machine is not None
+                self.machine.step()
+            elif ch in (ord("r"), ord("R")):
+                self.running = not self.running
+            elif ch in (ord("x"), ord("X")):
+                self.running = False
+                assert self.machine is not None
+                self.machine.reset()
+                self.status_msg = "Simulation reset."
+            elif ch in (ord("t"), ord("T")):
+                self.running = False
+                self._run_all_tests()
+            elif ch in (ord("n"), ord("N")):
+                self.load_puzzle(self.puzzle_idx + 1)
+            elif ch in (ord("p"), ord("P")):
+                self.load_puzzle(self.puzzle_idx - 1)
+            elif ch in (ord("l"), ord("L")):
+                p = PUZZLES[self.puzzle_idx]
+                self.code_buffers = {
+                    nid: (p.reference_solution.get(nid, "").splitlines() or [""])
+                    for nid in range(4)
+                }
+                self._apply_code()
+                self.status_msg = "Loaded reference solution. Press [r] or [t] to run!"
+            elif ch in (ord("h"), ord("H"), ord("?")):
+                self._show_help()
+
+
+# =============================================================================
+# 7. AUTOMATED UNIT & PUZZLE VERIFICATION TESTS
+# =============================================================================
+
+class TestTIS6502(unittest.TestCase):
+    def test_assembler_and_cpu_basics(self) -> None:
+        src = """
+        .ORG $0600
+        START:
+            LDA #$10
+            CLC
+            ADC #$25
+            STA $20
+            LDX #3
+        LOOP:
+            DEX
+            BNE LOOP
+            BRK
+        """
+        node = Cpu6502Node(0)
+        node.load_source(src)
+        self.assertIsNone(node.error_msg)
+        for _ in range(50):
+            if node.halted:
+                break
+            node.step()
+        self.assertTrue(node.halted)
+        self.assertEqual(node.A, 0x35)
+        self.assertEqual(node.mem[0x20], 0x35)
+        self.assertEqual(node.X, 0)
+
+    def test_subroutine_and_stack(self) -> None:
+        src = """
+            LDA #$05
+            JSR DOUBLE
+            BRK
+        DOUBLE:
+            ASL A
+            RTS
+        """
+        node = Cpu6502Node(0)
+        node.load_source(src)
+        for _ in range(20):
+            if node.halted:
+                break
+            node.step()
+        self.assertTrue(node.halted)
+        self.assertEqual(node.A, 0x0A)
+
+    def test_indirect_indexed_and_adc_flags(self) -> None:
+        src = """
+            LDA #$42
+            STA $0210
+            LDA #$10
+            STA $30
+            LDA #$02
+            STA $31
+            LDY #$00
+            LDA ($30),Y
+            CLC
+            ADC #$FE
+            BRK
+        """
+        node = Cpu6502Node(0)
+        node.load_source(src)
+        for _ in range(30):
+            if node.halted:
+                break
+            node.step()
+        self.assertTrue(node.halted)
+        self.assertEqual(node.A, 0x40)
+        self.assertTrue(node._get_flag(FLAG_C))
+
+    def test_all_puzzles_reference_solutions(self) -> None:
+        for puzzle in PUZZLES:
+            for i, tc in enumerate(puzzle.tests):
+                with self.subTest(puzzle=puzzle.title, test=tc.name):
+                    gm = GridMachine(puzzle, test_idx=i)
+                    gm.load_code(puzzle.reference_solution)
+                    self.assertFalse(gm.has_errors(), f"Asm error in puzzle {puzzle.number}")
+                    ok, ticks = gm.run_until_done(max_ticks=5000)
+                    self.assertTrue(ok, f"Puzzle {puzzle.number} ({tc.name}) failed after {ticks} ticks")
+
+
+# =============================================================================
+# 8. CLI ENTRY POINT
+# =============================================================================
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="TIS-6502: 6502 Assembly Coding Puzzle Game")
+    parser.add_argument("--test", action="store_true", help="Run built-in unit and puzzle verification tests")
+    parser.add_argument("--list", action="store_true", help="List all available puzzles")
+    parser.add_argument("--puzzle", type=int, default=1, help="Puzzle number (1-6) for --solve")
+    parser.add_argument("--solve", action="store_true", help="Run reference solution for --puzzle in CLI")
+    args = parser.parse_args()
+
+    if args.test:
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestTIS6502)
+        runner = unittest.TextTestRunner(verbosity=2)
+        res = runner.run(suite)
+        return 0 if res.wasSuccessful() else 1
+
+    if args.list:
+        for p in PUZZLES:
+            print(f"{p.number}. {p.title} - {p.description[0]}")
+        return 0
+
+    if args.solve:
+        idx = args.puzzle - 1
+        if not (0 <= idx < len(PUZZLES)):
+            print(f"Invalid puzzle number {args.puzzle}. Choose 1-{len(PUZZLES)}.")
+            return 1
+        p = PUZZLES[idx]
+        print(f"Puzzle {p.number}: {p.title}")
+        for i, tc in enumerate(p.tests):
+            gm = GridMachine(p, test_idx=i)
+            gm.load_code(p.reference_solution)
+            ok, ticks = gm.run_until_done()
+            cyc, nodes, insns = gm.total_metrics()
+            print(f"  Test '{tc.name}': {'PASS' if ok else 'FAIL'} | ticks={ticks}, cycles={cyc}, nodes={nodes}, insns={insns}")
+            for oname, och in gm.out_streams.items():
+                print(f"    {oname}: expected={och.expected} got={och.received}")
+        return 0
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("TIS-6502 requires an interactive terminal for the TUI. Try --test, --list, or --solve.")
+        return 0
+
+    curses.wrapper(lambda stdscr: TIS6502TUI(stdscr).loop())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
