@@ -10,17 +10,27 @@ memory-mapped blocking I/O ports to neighboring nodes and external streams:
   LEFT  = $E003
   STAT  = $E004  (bit 0=UP ready, 1=RIGHT ready, 2=DOWN ready, 3=LEFT ready)
 
+Programs are assembled at $0600 (or wherever .ORG says) and start at the
+START label if defined, otherwise at the first instruction. BRK halts a node;
+unused memory is $00 (BRK), so running off the end of a program halts too.
+
+Solutions auto-save to ~/.tis6502/puzzleNN.asm (override with $TIS6502_HOME),
+and best scores go to ~/.tis6502/scores.json.
+
 Usage:
-  python3 tis6502.py              # Launch interactive curses TUI
-  python3 tis6502.py --test       # Run built-in assembler, CPU & puzzle tests
-  python3 tis6502.py --list       # List all puzzles
-  python3 tis6502.py --puzzle N --solve  # Run reference solution for puzzle N
+  tis6502                     # Launch interactive curses TUI
+  tis6502 --test              # Run built-in assembler, CPU & puzzle tests
+  tis6502 --list              # List all puzzles
+  tis6502 --puzzle N --solve  # Run reference solution for puzzle N
 """
 
 from __future__ import annotations
 
 import argparse
 import curses
+import json
+import os
+import random
 import re
 import sys
 import textwrap
@@ -154,8 +164,10 @@ DECODE_TABLE: Dict[int, Tuple[str, str, int]] = {
     op: (mnem, mode, cyc) for (mnem, mode), (op, cyc) in OPCODES.items()
 }
 
+MNEMONICS = {mnem for (mnem, _mode) in OPCODES}
 BRANCH_MNEMONICS = {"BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BVC", "BVS"}
 ACC_MNEMONICS = {"ASL", "LSR", "ROL", "ROR"}
+RMW_MNEMONICS = ACC_MNEMONICS | {"INC", "DEC"}
 
 
 # =============================================================================
@@ -238,14 +250,22 @@ def _parse_number(token: str, symbols: Dict[str, int]) -> Optional[int]:
     # Decimal
     if re.fullmatch(r"-?\d+", token):
         return int(token, 10)
-    # Simple + / - expression on symbols or numbers
-    for op in ("+", "-"):
-        if op in token and not token.startswith(op):
-            parts = token.split(op, 1)
-            left = _parse_number(parts[0], symbols)
-            right = _parse_number(parts[1], symbols)
-            if left is not None and right is not None:
-                return left + right if op == "+" else left - right
+    # Simple + / - expression, left-associative: split on the LAST binary operator
+    in_quote = False
+    for i in range(len(token) - 1, 0, -1):
+        ch = token[i]
+        if ch == "'":
+            in_quote = not in_quote
+            continue
+        if in_quote or ch not in "+-":
+            continue
+        if token[i - 1] in "+-<>#":
+            continue  # unary sign, not a binary operator
+        left = _parse_number(token[:i], symbols)
+        right = _parse_number(token[i + 1:], symbols)
+        if left is not None and right is not None:
+            return left + right if ch == "+" else left - right
+        return None
     # Symbol lookup (case-insensitive)
     up = token.upper()
     if up in symbols:
@@ -301,6 +321,8 @@ def _classify_operand(
         val = _parse_number(op[1:], symbols)
         if val is None and pass_num == 2:
             raise ValueError(f"Undefined immediate value '{op[1:]}'")
+        if val is not None and not (-128 <= val <= 0xFF):
+            raise ValueError(f"Immediate value {val} out of range (-128..255)")
         return IMM, val
 
     # Indirect forms: ($10,X), ($10),Y, ($1234)
@@ -310,12 +332,16 @@ def _classify_operand(
             val = _parse_number(m_izx.group(1), symbols)
             if val is None and pass_num == 2:
                 raise ValueError(f"Undefined operand '{m_izx.group(1)}'")
+            if val is not None and not (0 <= val <= 0xFF):
+                raise ValueError(f"(zp,X) pointer ${val:X} is not in zero page")
             return IZX, val
         m_izy = re.fullmatch(r"\((.+)\),\s*[Yy]", op)
         if m_izy:
             val = _parse_number(m_izy.group(1), symbols)
             if val is None and pass_num == 2:
                 raise ValueError(f"Undefined operand '{m_izy.group(1)}'")
+            if val is not None and not (0 <= val <= 0xFF):
+                raise ValueError(f"(zp),Y pointer ${val:X} is not in zero page")
             return IZY, val
         m_ind = re.fullmatch(r"\((.+)\)", op)
         if m_ind:
@@ -333,8 +359,14 @@ def _classify_operand(
         if val is None:
             if pass_num == 2:
                 raise ValueError(f"Undefined symbol '{expr}'")
-            # Forward reference defaults to 16-bit absolute
-            return (ABX if idx == "X" else ABY), None
+            # Forward reference defaults to 16-bit absolute (unless the
+            # instruction only has a zero-page indexed form, e.g. STX zp,Y)
+            abs_mode, zp_mode = (ABX, ZPX) if idx == "X" else (ABY, ZPY)
+            if (mnem, abs_mode) not in OPCODES and (mnem, zp_mode) in OPCODES:
+                return zp_mode, None
+            return abs_mode, None
+        if not (0 <= val <= 0xFFFF):
+            raise ValueError(f"Address {val} out of range")
         if 0 <= val <= 0xFF:
             zp_mode = ZPX if idx == "X" else ZPY
             if (mnem, zp_mode) in OPCODES:
@@ -347,6 +379,8 @@ def _classify_operand(
         if pass_num == 2:
             raise ValueError(f"Undefined symbol '{op}'")
         return ABS, None
+    if not (0 <= val <= 0xFFFF):
+        raise ValueError(f"Address {val} out of range")
     if 0 <= val <= 0xFF and (mnem, ZP) in OPCODES and mnem not in ("JMP", "JSR"):
         return ZP, val
     return ABS, val
@@ -359,6 +393,8 @@ def assemble(source: str, default_org: int = 0x0600) -> AssembledProgram:
     # Pass 1: collect labels, constants, and compute instruction sizes
     pc = default_org
     parsed_lines: List[Tuple[int, str, str, int]] = []  # (line_no, kind, payload, addr)
+    pass1_modes: Dict[int, str] = {}  # line_no -> addressing mode sized in pass 1
+    entry: Optional[int] = None
 
     for line_no, raw in enumerate(lines, start=1):
         clean = _strip_comment(raw).strip()
@@ -371,7 +407,9 @@ def assemble(source: str, default_org: int = 0x0600) -> AssembledProgram:
             if not m_lbl:
                 break
             lbl = m_lbl.group(1).upper()
-            if lbl in symbols and lbl not in DEFAULT_SYMBOLS:
+            if lbl in DEFAULT_SYMBOLS:
+                raise AssemblerError(line_no, f"'{lbl}' is a reserved port name")
+            if lbl in symbols:
                 raise AssemblerError(line_no, f"Duplicate label '{lbl}'")
             symbols[lbl] = pc
             clean = m_lbl.group(2).strip()
@@ -385,6 +423,8 @@ def assemble(source: str, default_org: int = 0x0600) -> AssembledProgram:
         m_eq = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|\bEQU\b)\s*(.+)$", clean, re.IGNORECASE)
         if m_eq:
             name = m_eq.group(1).upper()
+            if name in DEFAULT_SYMBOLS:
+                raise AssemblerError(line_no, f"'{name}' is a reserved port name")
             val = _parse_number(m_eq.group(2), symbols)
             if val is None:
                 raise AssemblerError(line_no, f"Cannot evaluate constant '{m_eq.group(2)}'")
@@ -422,16 +462,27 @@ def assemble(source: str, default_org: int = 0x0600) -> AssembledProgram:
             continue
 
         # Instruction
+        if head not in MNEMONICS:
+            raise AssemblerError(line_no, f"Unknown instruction or directive '{parts[0]}'")
         try:
             mode, _ = _classify_operand(head, rest, symbols, pass_num=1)
         except ValueError as exc:
             raise AssemblerError(line_no, str(exc)) from exc
 
         if (head, mode) not in OPCODES:
-            raise AssemblerError(line_no, f"Unsupported instruction/mode: {head} ({mode})")
+            raise AssemblerError(line_no, f"Unsupported addressing mode for {head} ({mode})")
 
         parsed_lines.append((line_no, "INSN", f"{head} {rest}".strip(), pc))
+        pass1_modes[line_no] = mode
+        if entry is None:
+            entry = pc
         pc = (pc + MODE_SIZE[mode]) & 0xFFFF
+
+    # Execution starts at a START label if present, else the first instruction.
+    if "START" in symbols:
+        entry = symbols["START"]
+    if entry is None:
+        entry = default_org
 
     # Pass 2: emit machine code
     segments: List[Tuple[int, bytearray]] = []
@@ -485,6 +536,13 @@ def assemble(source: str, default_org: int = 0x0600) -> AssembledProgram:
         except ValueError as exc:
             raise AssemblerError(line_no, str(exc)) from exc
 
+        # Pass 1 sized forward references as 16-bit; keep that size so that
+        # later addresses (labels) stay correct even if the value fits in ZP.
+        widen = {ZP: ABS, ZPX: ABX, ZPY: ABY}
+        p1 = pass1_modes.get(line_no)
+        if p1 in (ABS, ABX, ABY) and mode in widen and widen[mode] == p1:
+            mode = p1
+
         if (mnem, mode) not in OPCODES:
             raise AssemblerError(line_no, f"Invalid addressing mode {mode} for {mnem}")
 
@@ -507,7 +565,7 @@ def assemble(source: str, default_org: int = 0x0600) -> AssembledProgram:
             emit_bytes(addr, bytes([opcode, val & 0xFF, (val >> 8) & 0xFF]))
 
     return AssembledProgram(
-        origin=default_org,
+        origin=entry,
         segments=[(a, bytes(b)) for a, b in segments],
         line_to_addr=line_to_addr,
         addr_to_line=addr_to_line,
@@ -547,18 +605,36 @@ class PortBlocked(Exception):
         self.value = value
 
 
+class CpuFault(Exception):
+    """Raised for a programming error that stops a node (shown as ERR)."""
+
+
 @dataclass
 class LinkChannel:
-    """Synchronous single-byte TIS-100-style channel between two endpoints."""
+    """Synchronous single-byte TIS-100-style channel between two endpoints.
+
+    Changes made during a tick only become visible to the other side on the
+    next tick, so transfer latency does not depend on the order in which the
+    grid steps its nodes.
+    """
     name: str
     writer_has_data: bool = False
     value: int = 0
     consumed: bool = False
+    written_at: int = -1
+    consumed_at: int = -1
+    now: int = 0  # current tick, set by GridMachine.step()
 
     def reset(self) -> None:
         self.writer_has_data = False
         self.value = 0
         self.consumed = False
+        self.written_at = -1
+        self.consumed_at = -1
+        self.now = 0
+
+    def readable(self) -> bool:
+        return self.writer_has_data and not self.consumed and self.written_at < self.now
 
 
 class InputStreamChannel:
@@ -690,7 +766,7 @@ class Cpu6502Node:
             ch = self.in_ports.get(d)
             if isinstance(ch, InputStreamChannel) and ch.has_data():
                 stat |= (1 << d)
-            elif isinstance(ch, LinkChannel) and ch.writer_has_data and not ch.consumed:
+            elif isinstance(ch, LinkChannel) and ch.readable():
                 stat |= (1 << d)
         return stat
 
@@ -705,10 +781,13 @@ class Cpu6502Node:
                     raise PortBlocked(d, is_write=False)
                 return val
             if isinstance(ch, LinkChannel):
-                if ch.writer_has_data and not ch.consumed:
+                if ch.readable():
                     ch.consumed = True
+                    ch.consumed_at = ch.now
                     return ch.value & 0xFF
                 raise PortBlocked(d, is_write=False)
+            if ch is None and isinstance(self.out_ports.get(d), OutputStreamChannel):
+                raise CpuFault(f"Read from {PORT_NAMES[d]}, which is an output stream")
             # Unconnected port blocks forever
             raise PortBlocked(d, is_write=False)
         if addr == PORT_STAT:
@@ -725,7 +804,7 @@ class Cpu6502Node:
                 ch.write_byte(val)
                 return
             if isinstance(ch, LinkChannel):
-                if ch.consumed:
+                if ch.consumed and ch.consumed_at < ch.now:
                     # Handshake completed!
                     ch.writer_has_data = False
                     ch.consumed = False
@@ -734,7 +813,10 @@ class Cpu6502Node:
                     ch.value = val
                     ch.writer_has_data = True
                     ch.consumed = False
+                    ch.written_at = ch.now
                 raise PortBlocked(d, is_write=True, value=val)
+            if ch is None and isinstance(self.in_ports.get(d), InputStreamChannel):
+                raise CpuFault(f"Write to {PORT_NAMES[d]}, which is an input stream")
             # Unconnected port blocks forever
             raise PortBlocked(d, is_write=True, value=val)
         self.mem[addr] = val
@@ -756,12 +838,38 @@ class Cpu6502Node:
         c = 1 if self._get_flag(FLAG_C) else 0
         total = self.A + val + c
         overflow = (~(self.A ^ val) & (self.A ^ total) & 0x80) != 0
-        self._set_flag(FLAG_C, total > 0xFF)
         self._set_flag(FLAG_V, overflow)
+        if self._get_flag(FLAG_D):
+            lo = (self.A & 0x0F) + (val & 0x0F) + c
+            hi = (self.A >> 4) + (val >> 4)
+            if lo > 9:
+                lo += 6
+                hi += 1
+            if hi > 9:
+                hi += 6
+            self._set_flag(FLAG_C, hi > 0x0F)
+            self.A = self._set_zn(((hi & 0x0F) << 4) | (lo & 0x0F))
+            return
+        self._set_flag(FLAG_C, total > 0xFF)
         self.A = self._set_zn(total)
 
     def _sbc(self, val: int) -> None:
-        self._adc(val ^ 0xFF)
+        if not self._get_flag(FLAG_D):
+            self._adc(val ^ 0xFF)
+            return
+        borrow = 0 if self._get_flag(FLAG_C) else 1
+        diff = self.A - val - borrow
+        overflow = ((self.A ^ val) & (self.A ^ diff) & 0x80) != 0
+        lo = (self.A & 0x0F) - (val & 0x0F) - borrow
+        hi = (self.A >> 4) - (val >> 4)
+        if lo < 0:
+            lo -= 6
+            hi -= 1
+        if hi < 0:
+            hi -= 6
+        self._set_flag(FLAG_C, diff >= 0)
+        self._set_flag(FLAG_V, overflow)
+        self.A = self._set_zn(((hi & 0x0F) << 4) | (lo & 0x0F))
 
     def _cmp(self, reg: int, val: int) -> None:
         diff = reg - val
@@ -848,8 +956,15 @@ class Cpu6502Node:
             self.state = "WRITE" if pb.is_write else "READ"
             self.blocked_dir = pb.direction
             return False
+        except CpuFault as fault:
+            self.PC = saved_pc
+            self.error_msg = f"{fault} at ${saved_pc:04X}"
+            self.state = "ERR"
+            return False
 
     def _exec(self, mnem: str, mode: str, addr: int) -> None:
+        if mnem in RMW_MNEMONICS and mode != ACC and PORT_UP <= addr <= PORT_STAT:
+            raise CpuFault(f"{mnem} cannot read-modify-write a port")
         if mnem == "LDA":
             self.A = self._set_zn(self.read(addr))
         elif mnem == "LDX":
@@ -1057,9 +1172,12 @@ class GridMachine:
         v       v
        [2] <-> [3]
     """
-    def __init__(self, puzzle: Puzzle, test_idx: int = 0):
+    def __init__(self, puzzle: Puzzle, test_idx: int = 0,
+                 tests: Optional[List[TestCase]] = None):
         self.puzzle = puzzle
+        self.tests: List[TestCase] = tests if tests is not None else puzzle.tests
         self.test_idx = test_idx
+        self.stall_ticks = 0
         self.nodes: List[Cpu6502Node] = [Cpu6502Node(i) for i in range(4)]
         self.links: Dict[Tuple[int, int], LinkChannel] = {}
         self.in_streams: Dict[str, InputStreamChannel] = {}
@@ -1086,7 +1204,7 @@ class GridMachine:
 
     def load_test(self, test_idx: int) -> None:
         self.test_idx = test_idx
-        tc = self.puzzle.tests[test_idx]
+        tc = self.tests[test_idx]
         self.in_streams.clear()
         self.out_streams.clear()
 
@@ -1110,6 +1228,7 @@ class GridMachine:
 
     def reset(self) -> None:
         self.ticks = 0
+        self.stall_ticks = 0
         for ch in self.links.values():
             ch.reset()
         for ch in self.in_streams.values():
@@ -1121,9 +1240,19 @@ class GridMachine:
 
     def step(self) -> None:
         self.ticks += 1
+        for ch in self.links.values():
+            ch.now = self.ticks
         # Step all nodes in parallel (each node advances 1 instruction if unblocked)
+        progressed = False
         for node in self.nodes:
-            node.step()
+            if node.step():
+                progressed = True
+        self.stall_ticks = 0 if progressed else self.stall_ticks + 1
+
+    def is_deadlocked(self) -> bool:
+        # A blocked write can still change channel state on its first tick, so
+        # only two consecutive ticks with no completed instruction prove a stall.
+        return self.stall_ticks >= 2
 
     def has_errors(self) -> bool:
         return any(n.state == "ERR" for n in self.nodes)
@@ -1133,15 +1262,31 @@ class GridMachine:
             return False
         return all(ch.is_satisfied() for ch in self.out_streams.values())
 
-    def is_over_output(self) -> bool:
-        return any(len(ch.received) > len(ch.expected) for ch in self.out_streams.values())
+    def has_wrong_output(self) -> bool:
+        """True as soon as any output stream diverges from what is expected."""
+        return any(ch.received != ch.expected[:len(ch.received)]
+                   for ch in self.out_streams.values())
 
-    def run_until_done(self, max_ticks: int = 5000) -> Tuple[bool, int]:
+    # Backwards-compatible name
+    is_over_output = has_wrong_output
+
+    def failure_reason(self) -> Optional[str]:
+        if self.has_errors():
+            return "node error"
+        if self.has_wrong_output():
+            return "wrong output"
+        if self.is_deadlocked():
+            return "deadlock"
+        return None
+
+    def run_until_done(self, max_ticks: int = 20000) -> Tuple[bool, int]:
         while self.ticks < max_ticks:
-            if self.has_errors() or self.is_over_output():
+            if self.has_errors() or self.has_wrong_output():
                 return False, self.ticks
             if self.is_solved():
                 return True, self.ticks
+            if self.is_deadlocked():
+                return False, self.ticks
             self.step()
         return self.is_solved(), self.ticks
 
@@ -1153,7 +1298,7 @@ class GridMachine:
 
 
 # =============================================================================
-# 5. PUZZLE CAMPAIGN (6 HAND-CRAFTED 6502 PUZZLES)
+# 5. PUZZLE CAMPAIGN
 # =============================================================================
 
 PUZZLES: List[Puzzle] = [
@@ -1173,7 +1318,7 @@ PUZZLES: List[Puzzle] = [
             TestCase("Edges", {"IN.A": [0, 128, 255, 42]}, {"OUT.A": [0, 0, 254, 84]}),
         ],
         starter_code={
-            0: "; NODE 0: IN.A is on UP ($E000)\nLOOP:\n    LDA UP\n    ASL A\n    STA DOWN\n    JMP LOOP\n",
+            0: "; NODE 0: IN.A is on UP ($E000)\nLOOP:\n    LDA UP\n    ; TODO: double A\n    STA DOWN\n    JMP LOOP\n",
             1: "; NODE 1 (unused)\n",
             2: "; NODE 2: OUT.A is on DOWN ($E002)\nLOOP:\n    LDA UP\n    STA DOWN\n    JMP LOOP\n",
             3: "; NODE 3 (unused)\n",
@@ -2216,6 +2361,281 @@ PUZZLES: List[Puzzle] = [
 ]
 
 
+# -----------------------------------------------------------------------------
+# Hidden randomized tests: each generator builds inputs and computes the
+# expected outputs with a Python reference, so solutions cannot hard-code the
+# visible test data. Seeds are fixed per puzzle so scores are reproducible.
+# -----------------------------------------------------------------------------
+
+HIDDEN_TEST_COUNT = 3
+
+
+def _bytes(rng: random.Random, n: int, lo: int = 0, hi: int = 255) -> List[int]:
+    return [rng.randint(lo, hi) for _ in range(n)]
+
+
+def _packets(rng: random.Random, max_len: int = 6) -> List[List[int]]:
+    return [_bytes(rng, rng.randint(0, max_len), 1, 255) for _ in range(rng.randint(3, 6))]
+
+
+def _flatten_packets(pkts: List[List[int]]) -> List[int]:
+    out: List[int] = []
+    for p in pkts:
+        out += p + [0]
+    return out
+
+
+def _map1(f):
+    """Single stream IN.A -> OUT.A, element-wise."""
+    def gen(rng: random.Random):
+        xs = _bytes(rng, rng.randint(8, 16))
+        return {"IN.A": xs}, {"OUT.A": [f(x) & 0xFF for x in xs]}
+    return gen
+
+
+def _map2(f):
+    """IN.A, IN.B -> OUT.A, pairwise."""
+    def gen(rng: random.Random):
+        n = rng.randint(6, 12)
+        a, b = _bytes(rng, n), _bytes(rng, n)
+        return {"IN.A": a, "IN.B": b}, {"OUT.A": [f(x, y) & 0xFF for x, y in zip(a, b)]}
+    return gen
+
+
+def _split(pred):
+    """IN.A -> OUT.A when pred(x) is true, else OUT.B."""
+    def gen(rng: random.Random):
+        xs = _bytes(rng, rng.randint(8, 16))
+        return {"IN.A": xs}, {"OUT.A": [x for x in xs if pred(x)],
+                              "OUT.B": [x for x in xs if not pred(x)]}
+    return gen
+
+
+def _per_packet(f):
+    def gen(rng: random.Random):
+        pkts = _packets(rng)
+        return {"IN.A": _flatten_packets(pkts)}, {"OUT.A": [f(p) & 0xFF for p in pkts]}
+    return gen
+
+
+def _stateful(f):
+    """IN.A -> OUT.A where f(x, prev) uses the previous input (prev starts at 0)."""
+    def gen(rng: random.Random):
+        xs = _bytes(rng, rng.randint(8, 16))
+        prev, out = 0, []
+        for x in xs:
+            out.append(f(x, prev) & 0xFF)
+            prev = x
+        return {"IN.A": xs}, {"OUT.A": out}
+    return gen
+
+
+def _gen_prefix_sum(rng: random.Random):
+    ds = _bytes(rng, rng.randint(8, 16))
+    out, s = [], 0
+    for d in ds:
+        s = (s + d) & 0xFF
+        out.append(s)
+    return {"IN.A": ds}, {"OUT.A": out}
+
+
+def _gen_pair_sort(rng: random.Random):
+    pairs = [(rng.randint(0, 255), rng.randint(0, 255)) for _ in range(rng.randint(4, 8))]
+    return ({"IN.A": [v for p in pairs for v in p]},
+            {"OUT.A": [min(p) for p in pairs], "OUT.B": [max(p) for p in pairs]})
+
+
+def _gen_rle_decode(rng: random.Random):
+    pairs = [(rng.randint(0, 5), rng.randint(0, 255)) for _ in range(rng.randint(3, 7))]
+    return ({"IN.A": [v for p in pairs for v in p]},
+            {"OUT.A": [v for c, v in pairs for _ in range(c)]})
+
+
+def _gen_rle_encode(rng: random.Random):
+    ins: List[int] = []
+    outs: List[int] = []
+    for _ in range(rng.randint(2, 3)):  # packets
+        prev = None
+        for _ in range(rng.randint(1, 4)):  # runs within a packet
+            val = rng.randint(1, 255)
+            if val == prev:
+                val = (val % 255) + 1  # adjacent runs must differ
+            cnt = rng.randint(1, 5)
+            ins += [val] * cnt
+            outs += [cnt, val]
+            prev = val
+        ins.append(0)
+    return {"IN.A": ins}, {"OUT.A": outs}
+
+
+def _gen_ascii(rng: random.Random):
+    xs = [rng.choice([rng.randint(0x20, 0x7E), rng.choice([0x60, 0x61, 0x7A, 0x7B])])
+          for _ in range(rng.randint(10, 20))]
+    return {"IN.A": xs}, {"OUT.A": [x & 0xDF if 0x61 <= x <= 0x7A else x for x in xs]}
+
+
+def _gen_divmod(rng: random.Random):
+    xs = _bytes(rng, rng.randint(6, 12))
+    return {"IN.A": xs}, {"OUT.A": [x // 10 for x in xs], "OUT.B": [x % 10 for x in xs]}
+
+
+def _gen_fib(rng: random.Random):
+    ns = [rng.randint(1, 14) for _ in range(rng.randint(2, 3))]
+    out: List[int] = []
+    for n in ns:
+        a, b = 0, 1
+        for _ in range(n):
+            out.append(b)
+            a, b = b, (a + b) & 0xFF
+    return {"IN.A": ns}, {"OUT.A": out}
+
+
+def _gen_reverse(rng: random.Random):
+    pkts = _packets(rng, max_len=10)
+    return {"IN.A": _flatten_packets(pkts)}, {"OUT.A": [v for p in pkts for v in reversed(p)]}
+
+
+def _xor_all(p: List[int]) -> int:
+    r = 0
+    for v in p:
+        r ^= v
+    return r
+
+
+def _lfsr(s: int) -> int:
+    return (s >> 1) ^ (0xB8 if s & 1 else 0)
+
+
+HIDDEN_GENERATORS = {
+    1: _map1(lambda x: x * 2),
+    2: _map2(lambda a, b: abs(a - b)),
+    3: _split(lambda x: x < 100),
+    4: _per_packet(sum),
+    5: _map1(lambda x: ((x << 4) | (x >> 4))),
+    6: _gen_pair_sort,
+    7: _map1(lambda x: x ^ 0xFF),
+    8: _map1(lambda x: min(200, max(20, x))),
+    9: _map1(lambda x: bin(x).count("1")),
+    10: _map1(lambda x: int(f"{x:08b}"[::-1], 2)),
+    11: _stateful(lambda x, prev: x - prev),
+    12: _gen_prefix_sum,
+    13: _map2(max),
+    14: _stateful(lambda x, prev: (x + prev) >> 1),
+    15: _split(lambda x: x % 2 == 0),
+    16: _per_packet(len),
+    17: _per_packet(lambda p: max(p, default=0)),
+    18: _gen_rle_decode,
+    19: _gen_rle_encode,
+    20: _gen_ascii,
+    21: _map2(lambda a, b: a * b),
+    22: _gen_divmod,
+    23: _gen_fib,
+    24: _gen_reverse,
+    25: _per_packet(_xor_all),
+    26: _map1(_lfsr),
+}
+
+_hidden_cache: Dict[int, List[TestCase]] = {}
+
+
+def hidden_tests(puzzle: Puzzle) -> List[TestCase]:
+    if puzzle.number not in _hidden_cache:
+        gen = HIDDEN_GENERATORS.get(puzzle.number)
+        tests: List[TestCase] = []
+        if gen:
+            rng = random.Random(6502 * 1000 + puzzle.number)
+            for k in range(HIDDEN_TEST_COUNT):
+                ins, outs = gen(rng)
+                tests.append(TestCase(f"Hidden {k + 1}", ins, outs))
+        _hidden_cache[puzzle.number] = tests
+    return _hidden_cache[puzzle.number]
+
+
+def all_tests(puzzle: Puzzle) -> List[TestCase]:
+    return list(puzzle.tests) + hidden_tests(puzzle)
+
+
+def run_suite(puzzle: Puzzle, code_map: Dict[int, str]) -> List[Tuple[str, bool, int, int, Optional[str]]]:
+    """Run every visible and hidden test. Returns (name, ok, ticks, cycles, why)."""
+    results = []
+    for i, tc in enumerate(all_tests(puzzle)):
+        gm = GridMachine(puzzle, test_idx=i, tests=all_tests(puzzle))
+        gm.load_code(code_map)
+        ok, ticks = gm.run_until_done()
+        why = None if ok else (gm.failure_reason() or "timeout")
+        results.append((tc.name, ok, ticks, sum(n.cycles for n in gm.nodes), why))
+    return results
+
+
+# -----------------------------------------------------------------------------
+# Saved solutions & best scores (~/.tis6502, override with $TIS6502_HOME)
+# -----------------------------------------------------------------------------
+
+def save_dir() -> str:
+    return os.environ.get("TIS6502_HOME") or os.path.join(os.path.expanduser("~"), ".tis6502")
+
+
+def _solution_path(puzzle: Puzzle) -> str:
+    return os.path.join(save_dir(), f"puzzle{puzzle.number:02d}.asm")
+
+
+def save_solution(puzzle: Puzzle, code_map: Dict[int, str]) -> None:
+    os.makedirs(save_dir(), exist_ok=True)
+    parts = [f";; TIS-6502 puzzle {puzzle.number}: {puzzle.title}\n"]
+    for nid in range(4):
+        body = code_map.get(nid, "").rstrip("\n")
+        parts.append(f";; NODE {nid}\n{body}\n" if body else f";; NODE {nid}\n")
+    with open(_solution_path(puzzle), "w") as fh:
+        fh.write("".join(parts))
+
+
+def load_solution(puzzle: Puzzle) -> Optional[Dict[int, str]]:
+    try:
+        with open(_solution_path(puzzle)) as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    code: Dict[int, List[str]] = {}
+    cur: Optional[int] = None
+    for line in text.splitlines():
+        m = re.fullmatch(r";; NODE ([0-3])\s*", line)
+        if m:
+            cur = int(m.group(1))
+            code[cur] = []
+        elif cur is not None:
+            code[cur].append(line)
+    if not code:
+        return None
+    return {nid: "\n".join(code.get(nid, [])) for nid in range(4)}
+
+
+def _scores_path() -> str:
+    return os.path.join(save_dir(), "scores.json")
+
+
+def load_scores() -> Dict[str, Dict[str, int]]:
+    try:
+        with open(_scores_path()) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def record_score(puzzle: Puzzle, ticks: int, nodes: int, insns: int) -> Dict[str, int]:
+    """Keep the best (lowest) value of each metric independently, TIS-100 style."""
+    scores = load_scores()
+    best = scores.get(str(puzzle.number), {})
+    for key, val in (("ticks", ticks), ("nodes", nodes), ("insns", insns)):
+        if key not in best or val < best[key]:
+            best[key] = val
+    scores[str(puzzle.number)] = best
+    os.makedirs(save_dir(), exist_ok=True)
+    with open(_scores_path(), "w") as fh:
+        json.dump(scores, fh, indent=1, sort_keys=True)
+    return best
+
+
 # =============================================================================
 # 6. CURSES TUI
 # =============================================================================
@@ -2229,46 +2649,81 @@ class TIS6502TUI:
         self.machine: Optional[GridMachine] = None
         self.running = False
         self.status_msg = "Press [e] to edit node, [s] step, [r] run, [t] test all, [h] help."
-        self.test_results: Optional[List[Tuple[str, bool, int]]] = None
+        self.test_results: Optional[List[Tuple[str, bool, int, int, Optional[str]]]] = None
+        self.speed_idx = 0
         self.load_puzzle(0)
+
+    SPEEDS = [1, 4, 16, 64, 256]  # ticks per frame while running
 
     def load_puzzle(self, idx: int) -> None:
         self.puzzle_idx = idx % len(PUZZLES)
         p = PUZZLES[self.puzzle_idx]
+        saved = load_solution(p)
+        source = saved if saved is not None else p.starter_code
         self.code_buffers = {
-            nid: (p.starter_code.get(nid, "").splitlines() or [""])
+            nid: (source.get(nid, "").splitlines() or [""])
             for nid in range(4)
         }
-        self.machine = GridMachine(p, test_idx=0)
+        self.machine = GridMachine(p, test_idx=0, tests=all_tests(p))
         self._apply_code()
         self.running = False
         self.test_results = None
-        self.status_msg = f"Loaded Puzzle {p.number}: {p.title}"
+        origin = "saved solution" if saved is not None else "starter code"
+        self.status_msg = f"Loaded Puzzle {p.number}: {p.title} ({origin})"
+
+    def _code_map(self) -> Dict[int, str]:
+        return {nid: "\n".join(lines) for nid, lines in self.code_buffers.items()}
 
     def _apply_code(self) -> None:
         assert self.machine is not None
-        code_map = {nid: "\n".join(lines) for nid, lines in self.code_buffers.items()}
-        self.machine.load_code(code_map)
+        self.machine.load_code(self._code_map())
+
+    def _save(self) -> None:
+        try:
+            save_solution(PUZZLES[self.puzzle_idx], self._code_map())
+        except OSError as exc:
+            self.status_msg = f"Could not save solution: {exc}"
+
+    def _switch_test(self, delta: int) -> None:
+        assert self.machine is not None
+        self.running = False
+        n = len(self.machine.tests)
+        self.machine.load_test((self.machine.test_idx + delta) % n)
+        self.status_msg = f"Test case {self.machine.test_idx + 1}/{n}: {self.machine.tests[self.machine.test_idx].name}"
+
+    def _fast_forward(self) -> None:
+        assert self.machine is not None
+        self.running = False
+        ok, ticks = self.machine.run_until_done()
+        if ok:
+            self.status_msg = f"Test case solved in {ticks} ticks."
+        else:
+            self.status_msg = f"Stopped after {ticks} ticks: {self.machine.failure_reason() or 'timeout'}."
+
+    def _confirm(self, question: str) -> bool:
+        h, w = self.stdscr.getmaxyx()
+        self.stdscr.nodelay(False)
+        self.stdscr.addnstr(h - 2, 0, f" {question} (y/n) ".ljust(w), w - 1, curses.A_REVERSE)
+        self.stdscr.refresh()
+        return self.stdscr.getch() in (ord("y"), ord("Y"))
 
     def _run_all_tests(self) -> None:
         p = PUZZLES[self.puzzle_idx]
-        code_map = {nid: "\n".join(lines) for nid, lines in self.code_buffers.items()}
-        results: List[Tuple[str, bool, int]] = []
-        all_ok = True
-        for i, tc in enumerate(p.tests):
-            gm = GridMachine(p, test_idx=i)
-            gm.load_code(code_map)
-            ok, ticks = gm.run_until_done(max_ticks=5000)
-            results.append((tc.name, ok, ticks))
-            if not ok:
-                all_ok = False
+        results = run_suite(p, self._code_map())
         self.test_results = results
-        if all_ok:
+        if all(ok for _, ok, _, _, _ in results):
             assert self.machine is not None
-            cyc, nodes, insns = self.machine.total_metrics()
-            self.status_msg = f"ALL TESTS PASSED! (Nodes: {nodes}, Insns: {insns})"
+            _, nodes, insns = self.machine.total_metrics()
+            ticks = sum(t for _, _, t, _, _ in results)
+            try:
+                best = record_score(p, ticks, nodes, insns)
+                best_s = f" | best {best['ticks']}t/{best['nodes']}n/{best['insns']}i"
+            except OSError:
+                best_s = ""
+            self.status_msg = f"ALL {len(results)} TESTS PASSED! ticks={ticks} nodes={nodes} insns={insns}{best_s}"
         else:
-            self.status_msg = "Some tests failed. Check output streams and node errors."
+            failed = sum(1 for _, ok, _, _, _ in results if not ok)
+            self.status_msg = f"{failed}/{len(results)} tests failed. Use [ / ] to view a test case."
 
     def _edit_active_node(self) -> None:
         self.running = False
@@ -2286,7 +2741,7 @@ class TIS6502TUI:
             p = PUZZLES[self.puzzle_idx]
             header = f" EDITING NODE {self.active_node} | Puzzle {p.number}: {p.title} | [ESC] Save & Exit "
             self.stdscr.addnstr(0, 0, header.ljust(w), w - 1, curses.A_REVERSE)
-            info = " Ports: UP=$E000  RIGHT=$E001  DOWN=$E002  LEFT=$E003  |  Enter=Newline  Backspace=Del "
+            info = " Ports: UP RIGHT DOWN LEFT STAT ($E000-4) | Home/End PgUp/PgDn Del ^K=del line "
             self.stdscr.addnstr(1, 0, info, w - 1, curses.A_DIM)
 
             max_rows = max(1, h - 4)
@@ -2341,6 +2796,29 @@ class TIS6502TUI:
                     lines[row - 1] += lines.pop(row)
                     row -= 1
                     col = prev_len
+            elif ch in (curses.KEY_HOME, 1):  # Home / Ctrl-A
+                col = 0
+            elif ch in (curses.KEY_END, 5):  # End / Ctrl-E
+                col = len(lines[row])
+            elif ch == curses.KEY_PPAGE:
+                row = max(0, row - max_rows)
+                col = min(col, len(lines[row]))
+            elif ch == curses.KEY_NPAGE:
+                row = min(len(lines) - 1, row + max_rows)
+                col = min(col, len(lines[row]))
+            elif ch == curses.KEY_DC:  # Delete
+                cur = lines[row]
+                if col < len(cur):
+                    lines[row] = cur[:col] + cur[col + 1:]
+                elif row < len(lines) - 1:
+                    lines[row] += lines.pop(row + 1)
+            elif ch == 11:  # Ctrl-K: delete line
+                if len(lines) > 1:
+                    lines.pop(row)
+                    row = min(row, len(lines) - 1)
+                else:
+                    lines[0] = ""
+                col = min(col, len(lines[row]))
             elif ch == 9:  # Tab -> 4 spaces
                 cur = lines[row]
                 lines[row] = cur[:col] + "    " + cur[col:]
@@ -2353,12 +2831,14 @@ class TIS6502TUI:
         curses.curs_set(0)
         self.code_buffers[self.active_node] = lines
         self._apply_code()
+        self.test_results = None
         assert self.machine is not None
         node = self.machine.nodes[self.active_node]
         if node.error_msg:
             self.status_msg = f"Node {self.active_node} asm error: {node.error_msg}"
         else:
             self.status_msg = f"Node {self.active_node} assembled OK."
+        self._save()
 
     def _show_help(self) -> None:
         self.running = False
@@ -2373,6 +2853,12 @@ class TIS6502TUI:
             "  STAT  = $E004    (Bit 0=UP, 1=RIGHT, 2=DOWN, 3=LEFT data ready)",
             "  Reading an empty port stalls the node until a value arrives.",
             "  Writing a port stalls the node until the neighbor reads it.",
+            "  INC/DEC/shifts on a port, or using a stream the wrong way, is an error.",
+            "",
+            "PROGRAM: code is assembled at $0600 (or .ORG); execution starts at",
+            "  the START label if present, else the first instruction.",
+            "  BRK halts the node. Unused memory is $00 = BRK, so running off the",
+            "  end of your code halts too. Tests also include 3 hidden random cases.",
             "",
             "6502 QUICK REFERENCE:",
             "  LDA/LDX/LDY  STA/STX/STY   (Load/Store A, X, Y)",
@@ -2383,14 +2869,17 @@ class TIS6502TUI:
             "  TAX TAY TXA TYA TSX TXS    (Register transfers)",
             "  PHA PLA PHP PLP            (Stack $0100-$01FF)",
             "  JMP JSR RTS RTI            (Jumps & Subroutines)",
-            "  BCC BCS BEQ BNE BMI BPL    (Conditional Branches)",
-            "  CLC SEC CLD SED CLI SEI    (Processor Flags)",
+            "  BCC BCS BEQ BNE BMI BPL BVC BVS  (Conditional Branches)",
+            "  CLC SEC CLD SED CLI SEI CLV      (Flags; SED = BCD arithmetic)",
+            "  NOP  BRK (halt)",
             "",
             "KEYBINDINGS:",
             "  1-4 / Tab : Select Node    e / Enter : Edit Node Code",
             "  s         : Step All       r         : Run / Pause",
-            "  x         : Reset          t         : Run All Tests",
-            "  n / p     : Next/Prev Puz  l         : Load Reference Solution",
+            "  + / -     : Run Speed      f         : Fast-forward test",
+            "  [ / ]     : Prev/Next Test x         : Reset",
+            "  t         : Run All Tests  l         : Load Reference Solution",
+            "  n / p     : Next/Prev Puz  Code auto-saves to ~/.tis6502/",
             "",
             "Press any key to return...",
         ]
@@ -2406,7 +2895,8 @@ class TIS6502TUI:
         p = PUZZLES[self.puzzle_idx]
 
         # Top Bar
-        title = f" TIS-6502 | Puzzle {p.number}/{len(PUZZLES)}: {p.title} | Ticks: {self.machine.ticks} "
+        speed = self.SPEEDS[self.speed_idx]
+        title = f" TIS-6502 | Puzzle {p.number}/{len(PUZZLES)}: {p.title} | Ticks: {self.machine.ticks} | Speed x{speed} "
         if self.machine.is_solved():
             title += "[SOLVED] "
         self.stdscr.addnstr(0, 0, title.ljust(w), w - 1, curses.A_REVERSE)
@@ -2432,9 +2922,15 @@ class TIS6502TUI:
 
         y += 1
         if y < h - 3:
-            tc = p.tests[self.machine.test_idx]
-            self.stdscr.addnstr(y, 1, f"TEST CASE: {tc.name}", left_inner, curses.A_BOLD)
+            tc = self.machine.tests[self.machine.test_idx]
+            label = f"TEST {self.machine.test_idx + 1}/{len(self.machine.tests)}: {tc.name}  [ ]"
+            self.stdscr.addnstr(y, 1, label, left_inner, curses.A_BOLD)
             y += 1
+            best = load_scores().get(str(p.number))
+            if best and y < h - 3:
+                self.stdscr.addnstr(y, 1, f"BEST: {best.get('ticks')} ticks, {best.get('nodes')} nodes, "
+                                          f"{best.get('insns')} insns", left_inner, curses.A_DIM)
+                y += 1
 
         for name, ch in self.machine.in_streams.items():
             vals = ",".join(str(v) for v in ch.initial_data[:8])
@@ -2462,9 +2958,10 @@ class TIS6502TUI:
             y += 1
             self.stdscr.addnstr(y, 1, "SUITE RESULTS:", left_w - 2, curses.A_BOLD)
             y += 1
-            for tname, ok, ticks in self.test_results:
+            for tname, ok, ticks, _cyc, why in self.test_results:
                 if y < h - 3:
-                    self.stdscr.addnstr(y, 1, f"  {tname}: {'PASS' if ok else 'FAIL'} ({ticks}t)", left_w - 2)
+                    verdict = "PASS" if ok else f"FAIL: {why}"
+                    self.stdscr.addnstr(y, 1, f"  {tname}: {verdict} ({ticks}t)", left_w - 2)
                     y += 1
 
         # Active Node Debugger Display (A, X, Y, PC, SP, Flags, ZP $10-$17)
@@ -2516,9 +3013,13 @@ class TIS6502TUI:
             else:
                 cur_line = node.program.addr_to_line.get(node.PC) if node.program else None
                 code_lines = self.code_buffers[nid]
-                max_code = max(1, row_h - 3)
-                for li in range(min(len(code_lines), max_code)):
-                    ly = ny + 2 + li
+                max_code = max(1, min(row_h - 3, h - 4 - ny))
+                # Scroll so the executing line stays visible
+                first = 0
+                if cur_line is not None and len(code_lines) > max_code:
+                    first = min(max(0, cur_line - 1 - max_code // 2), len(code_lines) - max_code)
+                for li in range(first, min(len(code_lines), first + max_code)):
+                    ly = ny + 2 + (li - first)
                     if ly >= h - 2:
                         break
                     marker = ">" if cur_line == li + 1 else " "
@@ -2527,7 +3028,7 @@ class TIS6502TUI:
 
         # Bottom Status & Keys
         self.stdscr.addnstr(h - 2, 0, f" {self.status_msg} ".ljust(w), w - 1, curses.A_DIM)
-        keys = " [1-4/Tab]Node [e]Edit [s]Step [r]Run/Pause [x]Reset [t]TestAll [l]Solution [n/p]Puzzle [h]Help [q]Quit "
+        keys = " [1-4]Node [e]Edit [s]Step [r]Run [+-]Speed [f]FF [[]]Test [x]Reset [t]TestAll [l]Soln [n/p]Puzzle [h]Help [q]Quit "
         self.stdscr.addnstr(h - 1, 0, keys.ljust(w), w - 1, curses.A_REVERSE)
         self.stdscr.refresh()
 
@@ -2542,11 +3043,15 @@ class TIS6502TUI:
                     self.running = False
                     self.status_msg = f"Test case solved in {self.machine.ticks} ticks! Press [t] to run full suite."
                     continue
-                if self.machine.has_errors() or self.machine.is_over_output():
+                why = self.machine.failure_reason()
+                if why:
                     self.running = False
-                    self.status_msg = "Execution halted (error or extra output)."
+                    self.status_msg = f"Execution stopped: {why}."
                     continue
-                self.machine.step()
+                for _ in range(self.SPEEDS[self.speed_idx]):
+                    self.machine.step()
+                    if self.machine.is_solved() or self.machine.failure_reason():
+                        break
                 time.sleep(0.03)
 
             ch = self.stdscr.getch()
@@ -2579,13 +3084,29 @@ class TIS6502TUI:
             elif ch in (ord("p"), ord("P")):
                 self.load_puzzle(self.puzzle_idx - 1)
             elif ch in (ord("l"), ord("L")):
+                self.running = False
+                if not self._confirm("Replace your code with the reference solution?"):
+                    self.status_msg = "Kept your code."
+                    continue
                 p = PUZZLES[self.puzzle_idx]
                 self.code_buffers = {
                     nid: (p.reference_solution.get(nid, "").splitlines() or [""])
                     for nid in range(4)
                 }
                 self._apply_code()
+                self.test_results = None
+                self._save()
                 self.status_msg = "Loaded reference solution. Press [r] or [t] to run!"
+            elif ch in (ord("+"), ord("=")):
+                self.speed_idx = min(len(self.SPEEDS) - 1, self.speed_idx + 1)
+            elif ch in (ord("-"), ord("_")):
+                self.speed_idx = max(0, self.speed_idx - 1)
+            elif ch in (ord("f"), ord("F")):
+                self._fast_forward()
+            elif ch == ord("]"):
+                self._switch_test(1)
+            elif ch == ord("["):
+                self._switch_test(-1)
             elif ch in (ord("h"), ord("H"), ord("?")):
                 self._show_help()
 
@@ -2665,13 +3186,122 @@ class TestTIS6502(unittest.TestCase):
 
     def test_all_puzzles_reference_solutions(self) -> None:
         for puzzle in PUZZLES:
-            for i, tc in enumerate(puzzle.tests):
+            tests = all_tests(puzzle)
+            self.assertEqual(len(tests), len(puzzle.tests) + HIDDEN_TEST_COUNT)
+            for i, tc in enumerate(tests):
                 with self.subTest(puzzle=puzzle.title, test=tc.name):
-                    gm = GridMachine(puzzle, test_idx=i)
+                    gm = GridMachine(puzzle, test_idx=i, tests=tests)
                     gm.load_code(puzzle.reference_solution)
                     self.assertFalse(gm.has_errors(), f"Asm error in puzzle {puzzle.number}")
-                    ok, ticks = gm.run_until_done(max_ticks=5000)
+                    ok, ticks = gm.run_until_done()
                     self.assertTrue(ok, f"Puzzle {puzzle.number} ({tc.name}) failed after {ticks} ticks")
+
+    def test_starter_code_does_not_solve(self) -> None:
+        for puzzle in PUZZLES:
+            with self.subTest(puzzle=puzzle.number):
+                self.assertFalse(all(ok for _, ok, _, _, _ in run_suite(puzzle, puzzle.starter_code)))
+
+    def _run(self, src: str, steps: int = 50) -> Cpu6502Node:
+        node = Cpu6502Node(0)
+        node.load_source(src)
+        for _ in range(steps):
+            if node.halted or node.state == "ERR":
+                break
+            node.step()
+        return node
+
+    def test_forward_reference_keeps_pass1_size(self) -> None:
+        node = self._run("    LDA FOO\n    LDX #7\n    BRK\nFOO = $10\n")
+        self.assertEqual(node.X, 7)
+        node = self._run("    LDA FOO,X\n    LDY #3\n    BRK\nFOO = $10\n")
+        self.assertEqual(node.Y, 3)
+
+    def test_entry_point(self) -> None:
+        self.assertEqual(self._run(".ORG $0800\n    LDA #5\n    BRK\n").A, 5)
+        self.assertEqual(self._run("    LDA #1\n    BRK\nSTART:\n    LDA #9\n    BRK\n").A, 9)
+
+    def test_expressions_left_associative(self) -> None:
+        syms = assemble("A1 = 10-3-2\nA2 = 10-3+2\nA3 = 'a'+1\n NOP").symbols
+        self.assertEqual((syms["A1"], syms["A2"], syms["A3"]), (5, 9, ord("b")))
+
+    def test_assembler_rejects_bad_input(self) -> None:
+        for src in (" LDA #300", " LDA ($1234),Y", " LDA ($100,X)", "UP:\n NOP",
+                    "DOWN = 5", " FOO", " LDA $10000"):
+            with self.subTest(src=src):
+                with self.assertRaises(AssemblerError):
+                    assemble(src)
+        self.assertIn("Unknown instruction", str(self._assemble_err(" FOO $10")))
+
+    @staticmethod
+    def _assemble_err(src: str) -> Optional[AssemblerError]:
+        try:
+            assemble(src)
+        except AssemblerError as exc:
+            return exc
+        return None
+
+    def test_decimal_mode(self) -> None:
+        node = self._run(" SED\n CLC\n LDA #$19\n ADC #$28\n STA $10\n"
+                         " SEC\n LDA #$42\n SBC #$17\n STA $11\n"
+                         " CLC\n LDA #$99\n ADC #$01\n BRK")
+        self.assertEqual((node.mem[0x10], node.mem[0x11], node.A), (0x47, 0x25, 0x00))
+        self.assertTrue(node._get_flag(FLAG_C))
+
+    def _grid(self, code: Dict[int, str]) -> GridMachine:
+        gm = GridMachine(PUZZLES[0])
+        gm.load_code({nid: code.get(nid, "") for nid in range(4)})
+        return gm
+
+    def test_port_misuse_is_an_error(self) -> None:
+        for nid, src in ((0, " LDA #1\n INC UP"), (0, " STA UP"), (2, " LDA DOWN")):
+            with self.subTest(src=src):
+                gm = self._grid({nid: src})
+                for _ in range(5):
+                    gm.step()
+                self.assertEqual(gm.nodes[nid].state, "ERR")
+
+    def test_link_latency_is_symmetric(self) -> None:
+        def latency(a: int, b: int, out: str, inp: str) -> int:
+            gm = self._grid({a: f" LDA #9\n STA {out}\n BRK", b: f" LDA {inp}\n BRK"})
+            for t in range(1, 30):
+                gm.step()
+                if gm.nodes[b].halted:
+                    return t
+            return -1
+        self.assertEqual(latency(0, 1, "RIGHT", "LEFT"), latency(1, 0, "LEFT", "RIGHT"))
+        self.assertEqual(latency(0, 2, "DOWN", "UP"), latency(2, 0, "UP", "DOWN"))
+
+    def test_deadlock_and_wrong_output_stop_early(self) -> None:
+        gm = self._grid({0: "L: LDA RIGHT\n JMP L"})
+        ok, ticks = gm.run_until_done()
+        self.assertFalse(ok)
+        self.assertLess(ticks, 10)
+        self.assertEqual(gm.failure_reason(), "deadlock")
+        gm = self._grid({0: "L: LDA UP\n STA DOWN\n JMP L", 2: "L: LDA UP\n STA DOWN\n JMP L"})
+        ok, ticks = gm.run_until_done()
+        self.assertFalse(ok)
+        self.assertEqual(gm.failure_reason(), "wrong output")
+
+    def test_save_load_and_scores(self) -> None:
+        import tempfile
+        old = os.environ.get("TIS6502_HOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["TIS6502_HOME"] = tmp
+            try:
+                p = PUZZLES[2]
+                save_solution(p, p.reference_solution)
+                loaded = load_solution(p)
+                assert loaded is not None
+                for nid in range(4):
+                    self.assertEqual(loaded[nid].strip(), p.reference_solution.get(nid, "").strip())
+                record_score(p, 100, 4, 20)
+                best = record_score(p, 120, 3, 25)
+                self.assertEqual(best, {"ticks": 100, "nodes": 3, "insns": 20})
+            finally:
+                if old is None:
+                    os.environ.pop("TIS6502_HOME", None)
+                else:
+                    os.environ["TIS6502_HOME"] = old
 
 
 # =============================================================================
@@ -2704,8 +3334,9 @@ def main() -> int:
             return 1
         p = PUZZLES[idx]
         print(f"Puzzle {p.number}: {p.title}")
-        for i, tc in enumerate(p.tests):
-            gm = GridMachine(p, test_idx=i)
+        tests = all_tests(p)
+        for i, tc in enumerate(tests):
+            gm = GridMachine(p, test_idx=i, tests=tests)
             gm.load_code(p.reference_solution)
             ok, ticks = gm.run_until_done()
             cyc, nodes, insns = gm.total_metrics()
@@ -2718,6 +3349,7 @@ def main() -> int:
         print("TIS-6502 requires an interactive terminal for the TUI. Try --test, --list, or --solve.")
         return 0
 
+    os.environ.setdefault("ESCDELAY", "25")  # make ESC respond immediately
     curses.wrapper(lambda stdscr: TIS6502TUI(stdscr).loop())
     return 0
 
