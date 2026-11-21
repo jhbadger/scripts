@@ -18,7 +18,8 @@ Solutions auto-save to ~/.tis6502/puzzleNN.asm (override with $TIS6502_HOME),
 and best scores go to ~/.tis6502/scores.json.
 
 Usage:
-  tis6502                     # Launch interactive curses TUI
+  tis6502                     # Launch the TUI at the first unsolved puzzle
+  tis6502 --puzzle N          # Launch the TUI at puzzle N
   tis6502 --test              # Run built-in assembler, CPU & puzzle tests
   tis6502 --list              # List all puzzles
   tis6502 --puzzle N --solve  # Run reference solution for puzzle N
@@ -2622,6 +2623,15 @@ def load_scores() -> Dict[str, Dict[str, int]]:
         return {}
 
 
+def first_unsolved_index() -> int:
+    """Index of the first puzzle with no recorded score (0 if all are solved)."""
+    scores = load_scores()
+    for idx, p in enumerate(PUZZLES):
+        if str(p.number) not in scores:
+            return idx
+    return 0
+
+
 def record_score(puzzle: Puzzle, ticks: int, nodes: int, insns: int) -> Dict[str, int]:
     """Keep the best (lowest) value of each metric independently, TIS-100 style."""
     scores = load_scores()
@@ -2641,7 +2651,7 @@ def record_score(puzzle: Puzzle, ticks: int, nodes: int, insns: int) -> Dict[str
 # =============================================================================
 
 class TIS6502TUI:
-    def __init__(self, stdscr: "curses._CursesWindow"):
+    def __init__(self, stdscr: "curses._CursesWindow", start_idx: Optional[int] = None):
         self.stdscr = stdscr
         self.puzzle_idx = 0
         self.active_node = 0
@@ -2651,7 +2661,7 @@ class TIS6502TUI:
         self.status_msg = "Press [e] to edit node, [s] step, [r] run, [t] test all, [h] help."
         self.test_results: Optional[List[Tuple[str, bool, int, int, Optional[str]]]] = None
         self.speed_idx = 0
-        self.load_puzzle(0)
+        self.load_puzzle(first_unsolved_index() if start_idx is None else start_idx)
 
     SPEEDS = [1, 4, 16, 64, 256]  # ticks per frame while running
 
@@ -3294,7 +3304,12 @@ class TestTIS6502(unittest.TestCase):
                 assert loaded is not None
                 for nid in range(4):
                     self.assertEqual(loaded[nid].strip(), p.reference_solution.get(nid, "").strip())
+                self.assertEqual(first_unsolved_index(), 0)
+                record_score(PUZZLES[0], 50, 2, 7)
+                record_score(PUZZLES[1], 60, 3, 9)
+                self.assertEqual(first_unsolved_index(), 2)
                 record_score(p, 100, 4, 20)
+                self.assertEqual(first_unsolved_index(), 3)
                 best = record_score(p, 120, 3, 25)
                 self.assertEqual(best, {"ticks": 100, "nodes": 3, "insns": 20})
             finally:
@@ -3312,7 +3327,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="TIS-6502: 6502 Assembly Coding Puzzle Game")
     parser.add_argument("--test", action="store_true", help="Run built-in unit and puzzle verification tests")
     parser.add_argument("--list", action="store_true", help="List all available puzzles")
-    parser.add_argument("--puzzle", type=int, default=1, help=f"Puzzle number (1-{len(PUZZLES)}) for --solve")
+    parser.add_argument("--puzzle", type=int, default=None,
+                        help=f"Puzzle number (1-{len(PUZZLES)}) to open, or to run with --solve "
+                             "(default: first unsolved puzzle)")
     parser.add_argument("--solve", action="store_true", help="Run reference solution for --puzzle in CLI")
     args = parser.parse_args()
 
@@ -3327,12 +3344,15 @@ def main() -> int:
             print(f"{p.number}. {p.title} - {p.description[0]}")
         return 0
 
-    if args.solve:
-        idx = args.puzzle - 1
-        if not (0 <= idx < len(PUZZLES)):
+    start_idx: Optional[int] = None
+    if args.puzzle is not None:
+        start_idx = args.puzzle - 1
+        if not (0 <= start_idx < len(PUZZLES)):
             print(f"Invalid puzzle number {args.puzzle}. Choose 1-{len(PUZZLES)}.")
             return 1
-        p = PUZZLES[idx]
+
+    if args.solve:
+        p = PUZZLES[start_idx if start_idx is not None else 0]
         print(f"Puzzle {p.number}: {p.title}")
         tests = all_tests(p)
         for i, tc in enumerate(tests):
@@ -3350,7 +3370,7 @@ def main() -> int:
         return 0
 
     os.environ.setdefault("ESCDELAY", "25")  # make ESC respond immediately
-    curses.wrapper(lambda stdscr: TIS6502TUI(stdscr).loop())
+    curses.wrapper(lambda stdscr: TIS6502TUI(stdscr, start_idx).loop())
     return 0
 
 
